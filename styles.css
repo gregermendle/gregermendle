@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    body {
+        @apply dark:bg-[#161616] dark:text-[#ebebeb] bg-[#ebebeb] text-[#161616] relative min-h-screen;
+        font-family: "Switzer";
+    }
+
+    h1 {
+        @apply md:text-[190px] md:leading-[114px] tracking-tight font-extrabold text-[max(40vw,190px)] text-right leading-[60%] md:text-left;
+    }
+
+    h1 > span {
+        @apply hidden md:inline;
+    }
+
+    h2 {
+        @apply font-black italic text-5xl tracking-tight pb-2 text-right;
+    }
+
+    main {
+        @apply grid lg:grid-cols-[auto,auto] lg:justify-between grid-rows-[auto,auto] px-6 pb-12 relative z-10;
+    }
+
+    nav {
+        @apply lg:pt-4 pt-32;
+    }
+
+    ul {
+        @apply flex flex-col gap-4 items-end;
+    }
+
+    ul:nth-child(2) {
+        @apply mb-12;
+    }
+
+    li > a {
+        @apply font-normal text-5xl tracking-tight whitespace-nowrap;
+    }
+
+    #dot {
+        @apply absolute inset-0 overflow-hidden;
+    }
+
+    #dot::before {
+        content: '';
+        @apply w-[100vw] h-[100vw] rounded-full border-0 border-solid border-[#6c864a] dark:border-[#923f37] absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-3/4 blur-[10vw] sm:blur-[5vw];
+        animation: breathe 20s ease-in-out infinite;
+    }
+
+    @keyframes breathe {
+        0% {
+            border-width: 0;
+        }
+        50% {
+            border-width: 50vw;
+        }
+        100% {
+            border-width: 0;
+        }
+    }
+}
