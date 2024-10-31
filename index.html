@@ -28,7 +28,10 @@
     <!-- Twitter Meta Tags -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta property="twitter:domain" content="gregermendle.com" />
-    <meta property="twitter:url" content="https://gregermendle.com/social.png" />
+    <meta
+      property="twitter:url"
+      content="https://gregermendle.com/social.png"
+    />
     <meta
       name="twitter:title"
       content="Gregory Jordan - Building products in AI, DevX, Crypto, and empowering small businesses and industry giants."
@@ -41,57 +44,259 @@
 
     <!-- Meta Tags Generated via https://www.opengraph.xyz -->
     <link rel="stylesheet" type="text/css" href="/output.css" />
-    <link rel="stylesheet" type="text/css" href="/fonts/css/switzer.css" />
+    <link
+      rel="stylesheet"
+      type="text/css"
+      href="/assets/css/clash-grotesk.css"
+    />
     <title>gregermendle</title>
   </head>
   <body>
-    <div id="dot"></div>
     <main>
       <header>
-        <h1>greg<span>ory</span></h1>
+        <h1>GREG</h1>
       </header>
-      <nav>
-        <h2>built</h2>
-        <ul>
-          <li>
-            <a target="_blank" href="https://rvsn.xyz">rvsn</a>
-          </li>
-          <li>
-            <a target="_blank" href="https://gnomi.xyz">gnomi</a>
-          </li>
-          <li>
-            <a target="_blank" href="https://remix-mailer.gregermendle.com"
-              >remix-mailer</a
-            >
-          </li>
-          <li>
-            <a target="_blank" href="https://gregermendle.github.io/inframe"
-              >in-frame</a
-            >
-          </li>
-          <li>
-            <a target="_blank" href="https://riptar.gregermendle.com/"
-              >riptar</a
-            >
-          </li>
-        </ul>
-        <h2>at</h2>
-        <ul>
-          <li>
-            <a target="_blank" href="https://github.com/gregermendle">github</a>
-          </li>
-          <li>
-            <a target="_blank" href="https://twitter.com/_studable_">twitter</a>
-          </li>
-          <li>
-            <a
-              target="_blank"
-              href="https://discordapp.com/users/289963161044385802"
-              >discord</a
-            >
-          </li>
-        </ul>
-      </nav>
+      <div></div>
+      <footer>
+        <nav>
+          <ul>
+            <li>
+              <a target="_blank" href="https://github.com/gregermendle"
+                >github</a
+              >
+            </li>
+            <li>
+              <a target="_blank" href="https://twitter.com/_studable_"
+                >twitter</a
+              >
+            </li>
+            <li>
+              <a
+                target="_blank"
+                href="https://discordapp.com/users/289963161044385802"
+                >discord</a
+              >
+            </li>
+          </ul>
+        </nav>
+      </footer>
     </main>
+    <canvas
+      id="canvas"
+      class="fixed inset-0 w-screen h-screen z-20 mix-blend-difference pointer-events-none"
+    ></canvas>
+    <script>
+      const canvas = document.getElementById("canvas");
+      const gl = canvas.getContext("webgl");
+
+      if (!gl) {
+        console.log("WebGL not supported");
+        throw new Error("WebGL not supported");
+      }
+
+      // Vertex shader program
+      const vsSource = `
+            attribute vec4 aVertexPosition;
+            void main() {
+                gl_Position = aVertexPosition;
+            }
+        `;
+
+      // Fragment shader program (your provided shader)
+      const fsSource = `
+            precision highp float;
+
+            uniform vec2 resolution;
+            uniform vec3 color;
+            uniform float time;
+            uniform vec2 mouse;
+
+            const float WAVELENGTH = 0.1;     
+            const float SLIT_SEPARATION = 0.15;  
+            const float DISTANCE = 0.5;         
+
+            float random(vec2 st) {
+                return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
+            }
+
+            vec3 invert(vec3 color) {
+                return vec3(1.0) - color;
+            }
+
+            void main() {
+                vec2 uv = gl_FragCoord.xy/resolution.xy;
+                float aspect = resolution.x/resolution.y;
+                
+                vec2 centered;
+                if(aspect > 1.0) {
+                    centered = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
+                } else {
+                    centered = vec2(uv.x - 0.5, (uv.y - 0.5) / aspect);
+                }
+                
+                float radius = length(centered * (mouse + vec2(0.4, 0.9)));
+                float circle = smoothstep(0.4, 0.0, radius);
+                float x = centered.x * 3.0;
+                float pathDiff = SLIT_SEPARATION * x / DISTANCE;
+                float pattern = 0.5 + 0.5 * cos(2.0 * 3.14159 * pathDiff / WAVELENGTH);
+                float envelope = exp(-radius * radius * 4.0);
+                pattern *= envelope;
+                pattern = pow(pattern, 0.4);
+                pattern = smoothstep(0.2, 1.0, pattern);
+                vec3 color = mix(color, invert(color), pattern * circle * 0.9);
+                float r = random(uv + time / 900.0);
+                color *= 0.95 + r * 0.25;
+                
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `;
+
+      // Initialize a shader program
+      function initShaderProgram(gl, vsSource, fsSource) {
+        const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+        const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+
+        const shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+          alert(
+            "Unable to initialize the shader program: " +
+              gl.getProgramInfoLog(shaderProgram)
+          );
+          return null;
+        }
+
+        return shaderProgram;
+      }
+
+      // Create a shader of the given type, upload source and compile it
+      function loadShader(gl, type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          alert(
+            "An error occurred compiling the shaders: " +
+              gl.getShaderInfoLog(shader)
+          );
+          gl.deleteShader(shader);
+          return null;
+        }
+
+        return shader;
+      }
+
+      // Initialize buffers
+      function initBuffers(gl) {
+        const positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+
+        const positions = [-1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0];
+
+        gl.bufferData(
+          gl.ARRAY_BUFFER,
+          new Float32Array(positions),
+          gl.STATIC_DRAW
+        );
+
+        return {
+          position: positionBuffer,
+        };
+      }
+
+      // Initialize everything
+      const shaderProgram = initShaderProgram(gl, vsSource, fsSource);
+      const programInfo = {
+        program: shaderProgram,
+        attribLocations: {
+          vertexPosition: gl.getAttribLocation(
+            shaderProgram,
+            "aVertexPosition"
+          ),
+        },
+        uniformLocations: {
+          resolution: gl.getUniformLocation(shaderProgram, "resolution"),
+          time: gl.getUniformLocation(shaderProgram, "time"),
+          mouse: gl.getUniformLocation(shaderProgram, "mouse"),
+          color: gl.getUniformLocation(shaderProgram, "color"),
+        },
+      };
+
+      const buffers = initBuffers(gl);
+
+      // Mouse handling
+      let mouseX = 1.0;
+      let mouseY = 1.0;
+      document.addEventListener("mousemove", (e) => {
+        mouseX = e.clientX / window.innerWidth;
+        mouseY = 1.0 - e.clientY / window.innerHeight;
+      });
+
+      function clamp(n, min, max) {
+        return Math.min(Math.max(n, min), max);
+      }
+
+      // Scrolling
+      let r = 1.0;
+      let g = 1.0;
+      let b = 1.0;
+      window.addEventListener("mousewheel", (e) => {
+        // r = clamp(r + Math.sign(e.deltaY) * 0.004, 0.02, 1.0);
+        // g = clamp(g + Math.sign(e.deltaY) * 0.004, 0.02, 1.0);
+        // b = clamp(b + Math.sign(e.deltaY) * 0.004, 0.02, 1.0);
+      });
+
+      // Render loop
+      function render(now) {
+        // Update canvas size if needed
+        const displayWidth = canvas.clientWidth;
+        const displayHeight = canvas.clientHeight;
+
+        if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+          canvas.width = displayWidth;
+          canvas.height = displayHeight;
+          gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        gl.useProgram(programInfo.program);
+
+        // Set uniforms
+        gl.uniform2f(
+          programInfo.uniformLocations.resolution,
+          canvas.width,
+          canvas.height
+        );
+        gl.uniform1f(programInfo.uniformLocations.time, now * 0.001);
+        gl.uniform2f(programInfo.uniformLocations.mouse, mouseX, mouseY);
+        gl.uniform3f(programInfo.uniformLocations.color, r, g, b);
+
+        // Set up vertex attributes
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
+        gl.vertexAttribPointer(
+          programInfo.attribLocations.vertexPosition,
+          2,
+          gl.FLOAT,
+          false,
+          0,
+          0
+        );
+        gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+
+        // Draw
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+        requestAnimationFrame(render);
+      }
+
+      // Start the render loop
+      requestAnimationFrame(render);
+    </script>
   </body>
 </html>
