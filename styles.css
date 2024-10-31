@@ -62,6 +62,6 @@
   }
 
   #star {
-    @apply h-[52px] flex items-center justify-center cursor-pointer;
+    @apply h-[54px] flex items-center justify-center cursor-pointer;
   }
 }

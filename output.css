@@ -671,7 +671,7 @@ li > a {
 
 #star {
   display: flex;
-  height: 52px;
+  height: 54px;
   cursor: pointer;
   align-items: center;
   justify-content: center;
