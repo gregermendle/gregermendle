@@ -595,7 +595,7 @@ main {
   z-index: 10;
   display: grid;
   min-height: 100dvh;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: min-content 1fr;
   padding-left: 1.5rem;
   padding-right: 1.5rem;
   padding-bottom: 1.5rem;
@@ -610,10 +610,11 @@ main {
 nav {
   display: flex;
   align-self: flex-end;
-  padding-left: 0.75rem;
-  padding-right: 0.75rem;
-  padding-bottom: 0.125rem;
-  padding-top: 2rem;
+}
+
+footer {
+  display: flex;
+  align-items: flex-end;
 }
 
 footer ul {

@@ -22,11 +22,15 @@
     }
 
     main {
-        @apply grid grid-rows-[auto,1fr,auto] px-6 pb-6 md:p-6 relative z-10 min-h-dvh;
+        @apply grid grid-rows-[min-content,1fr] px-6 pb-6 md:p-6 relative z-10 min-h-dvh;
     }
 
     nav {
-        @apply pt-8 flex self-end px-3 py-0.5;
+        @apply flex self-end;
+    }
+
+    footer {
+        @apply flex items-end;
     }
 
     footer ul {
