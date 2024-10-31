@@ -86,7 +86,7 @@
               >
                 <path
                   d="M241 0L281.935 161.998L434.112 92.998L332.98 226.006L481.807 301.963L314.762 305.824L348.169 469.539L241 341.346L133.831 469.539L167.238 305.824L0.19281 301.963L149.02 226.006L47.8876 92.998L200.065 161.998L241 0Z"
-                  fill="#D9D9D9"
+                  fill="currentColor"
                 />
               </svg>
             </li>
@@ -251,19 +251,18 @@
         );
       }
 
+      function startAccelerometer() {
+
+      }
+
       async function requestAccelerometerPermission() {
         try {
           // Check if we need to request permission (iOS 13+)
           if (DeviceMotionEvent.requestPermission) {
             const permissionState = await DeviceMotionEvent.requestPermission();
-            if (permissionState === "granted") {
-              startAccelerometer();
-            } else {
-              console.log("Permission denied");
+            if (permissionState !== "granted") {
+              throw new Error("Accelerometer Permission denied")
             }
-          } else {
-            // Permission not required (Android, older iOS, desktop)
-            startAccelerometer();
           }
         } catch (error) {
           console.error("Error requesting accelerometer permission:", error);

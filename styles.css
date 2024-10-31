@@ -3,10 +3,6 @@
 @tailwind utilities;
 
 @layer base {
-  * {
-    @apply overscroll-none;
-  }
-
   body {
     @apply text-[#ebebeb] relative min-h-dvh;
     font-display: swap;
@@ -57,11 +53,15 @@
     @apply flex gap-4 flex-wrap items-start;
   }
 
+  li {
+    @apply overflow-visible;
+  }
+
   li > a {
     @apply font-normal text-5xl tracking-tight whitespace-nowrap;
   }
 
   #star {
-    @apply h-[54px] flex items-center justify-center cursor-pointer;
+    @apply h-[54px] flex items-center justify-center cursor-pointer bg-white rounded-full text-black;
   }
 }
