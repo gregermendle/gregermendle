@@ -556,7 +556,7 @@ video {
 
 body {
   position: relative;
-  min-height: 100vh;
+  min-height: 100dvh;
   --tw-text-opacity: 1;
   color: rgb(235 235 235 / var(--tw-text-opacity));
   font-display: swap;

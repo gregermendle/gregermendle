@@ -250,21 +250,23 @@
 
       let mouseX = 1.0;
       let mouseY = 1.0;
-      if (isMobile()) {
-        const acl = new Accelerometer({ frequency: 60 });
-        acl.addEventListener("reading", () => {
-          mouseX = acl.x;
-          mouseY = acl.y;
-        });
+      try {
+        if (isMobile()) {
+          const acl = new Accelerometer({ frequency: 60 });
+          acl.addEventListener("reading", () => {
+            mouseX = acl.x;
+            mouseY = acl.y;
+          });
 
-        acl.start();
-      } else {
-        // Mouse handling
-        document.addEventListener("mousemove", (e) => {
-          mouseX = e.clientX / window.innerWidth;
-          mouseY = 1.0 - e.clientY / window.innerHeight;
-        });
-      }
+          acl.start();
+        } else {
+          // Mouse handling
+          document.addEventListener("mousemove", (e) => {
+            mouseX = e.clientX / window.innerWidth;
+            mouseY = 1.0 - e.clientY / window.innerHeight;
+          });
+        }
+      } catch {}
 
       // Render loop
       function render(now) {
