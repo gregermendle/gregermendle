@@ -251,10 +251,6 @@
         );
       }
 
-      function startAccelerometer() {
-
-      }
-
       async function requestAccelerometerPermission() {
         try {
           // Check if we need to request permission (iOS 13+)
@@ -293,7 +289,8 @@
 
               acl.start();
             })
-            .catch(() => {
+            .catch((e) => {
+              console.error(e);
               document.addEventListener("pointermove", (e) => {
                 mouseX = e.clientX / window.innerWidth;
                 mouseY = 1.0 - e.clientY / window.innerHeight;
