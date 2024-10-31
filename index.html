@@ -76,6 +76,20 @@
                 >discord</a
               >
             </li>
+            <li id="star">
+              <svg
+                width="40"
+                height="40"
+                viewBox="0 0 482 470"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M241 0L281.935 161.998L434.112 92.998L332.98 226.006L481.807 301.963L314.762 305.824L348.169 469.539L241 341.346L133.831 469.539L167.238 305.824L0.19281 301.963L149.02 226.006L47.8876 92.998L200.065 161.998L241 0Z"
+                  fill="#D9D9D9"
+                />
+              </svg>
+            </li>
           </ul>
         </nav>
       </footer>
@@ -269,22 +283,24 @@
       let mouseX = 1.0;
       let mouseY = 1.0;
       if (isMobile()) {
-        requestAccelerometerPermission()
-          .then(() => {
-            const acl = new Accelerometer({ frequency: 60 });
-            acl.addEventListener("reading", () => {
-              mouseX = acl.x;
-              mouseY = acl.y;
-            });
+        document.getElementById("star").addEventListener("click", () => {
+          requestAccelerometerPermission()
+            .then(() => {
+              const acl = new Accelerometer({ frequency: 60 });
+              acl.addEventListener("reading", () => {
+                mouseX = acl.x;
+                mouseY = acl.y;
+              });
 
-            acl.start();
-          })
-          .catch(() => {
-            document.addEventListener("pointermove", (e) => {
-              mouseX = e.clientX / window.innerWidth;
-              mouseY = 1.0 - e.clientY / window.innerHeight;
+              acl.start();
+            })
+            .catch(() => {
+              document.addEventListener("pointermove", (e) => {
+                mouseX = e.clientX / window.innerWidth;
+                mouseY = 1.0 - e.clientY / window.innerHeight;
+              });
             });
-          });
+        });
       } else {
         // Mouse handling
         document.addEventListener("mousemove", (e) => {

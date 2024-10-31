@@ -60,4 +60,8 @@
   li > a {
     @apply font-normal text-5xl tracking-tight whitespace-nowrap;
   }
+
+  #star {
+    @apply h-[52px] flex items-center justify-center cursor-pointer;
+  }
 }

@@ -669,6 +669,14 @@ li > a {
   letter-spacing: -0.025em;
 }
 
+#star {
+  display: flex;
+  height: 52px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+}
+
 .pointer-events-none {
   pointer-events: none;
 }
