@@ -4,7 +4,7 @@
 
 @layer base {
     body {
-        @apply text-[#ebebeb] relative min-h-dvh;
+        @apply text-[#ebebeb] relative min-h-dvh overscroll-none;
         font-display: swap;
         font-family: "ClashGrotesk-Variable", sans-serif;
     }
