@@ -237,6 +237,25 @@
         );
       }
 
+      async function requestAccelerometerPermission() {
+        try {
+          // Check if we need to request permission (iOS 13+)
+          if (DeviceMotionEvent.requestPermission) {
+            const permissionState = await DeviceMotionEvent.requestPermission();
+            if (permissionState === "granted") {
+              startAccelerometer();
+            } else {
+              console.log("Permission denied");
+            }
+          } else {
+            // Permission not required (Android, older iOS, desktop)
+            startAccelerometer();
+          }
+        } catch (error) {
+          console.error("Error requesting accelerometer permission:", error);
+        }
+      }
+
       // Scrolling
       let r = 1.0;
       let g = 1.0;
@@ -249,23 +268,30 @@
 
       let mouseX = 1.0;
       let mouseY = 1.0;
-      try {
-        if (isMobile()) {
-          const acl = new Accelerometer({ frequency: 60 });
-          acl.addEventListener("reading", () => {
-            mouseX = acl.x;
-            mouseY = acl.y;
-          });
+      if (isMobile()) {
+        requestAccelerometerPermission()
+          .then(() => {
+            const acl = new Accelerometer({ frequency: 60 });
+            acl.addEventListener("reading", () => {
+              mouseX = acl.x;
+              mouseY = acl.y;
+            });
 
-          acl.start();
-        } else {
-          // Mouse handling
-          document.addEventListener("mousemove", (e) => {
-            mouseX = e.clientX / window.innerWidth;
-            mouseY = 1.0 - e.clientY / window.innerHeight;
+            acl.start();
+          })
+          .catch(() => {
+            document.addEventListener("pointermove", (e) => {
+              mouseX = e.clientX / window.innerWidth;
+              mouseY = 1.0 - e.clientY / window.innerHeight;
+            });
           });
-        }
-      } catch {}
+      } else {
+        // Mouse handling
+        document.addEventListener("mousemove", (e) => {
+          mouseX = e.clientX / window.innerWidth;
+          mouseY = 1.0 - e.clientY / window.innerHeight;
+        });
+      }
 
       // Render loop
       function render(now) {
