@@ -228,16 +228,14 @@
 
       const buffers = initBuffers(gl);
 
-      // Mouse handling
-      let mouseX = 1.0;
-      let mouseY = 1.0;
-      document.addEventListener("mousemove", (e) => {
-        mouseX = e.clientX / window.innerWidth;
-        mouseY = 1.0 - e.clientY / window.innerHeight;
-      });
-
       function clamp(n, min, max) {
         return Math.min(Math.max(n, min), max);
+      }
+
+      function isMobile() {
+        return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+          navigator.userAgent
+        );
       }
 
       // Scrolling
@@ -249,6 +247,24 @@
         // g = clamp(g + Math.sign(e.deltaY) * 0.004, 0.02, 1.0);
         // b = clamp(b + Math.sign(e.deltaY) * 0.004, 0.02, 1.0);
       });
+
+      let mouseX = 1.0;
+      let mouseY = 1.0;
+      if (isMobile()) {
+        const acl = new Accelerometer({ frequency: 60 });
+        acl.addEventListener("reading", () => {
+          mouseX = acl.x;
+          mouseY = acl.y;
+        });
+
+        acl.start();
+      } else {
+        // Mouse handling
+        document.addEventListener("mousemove", (e) => {
+          mouseX = e.clientX / window.innerWidth;
+          mouseY = 1.0 - e.clientY / window.innerHeight;
+        });
+      }
 
       // Render loop
       function render(now) {
