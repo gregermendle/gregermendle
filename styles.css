@@ -3,57 +3,61 @@
 @tailwind utilities;
 
 @layer base {
-    body {
-        @apply text-[#ebebeb] relative min-h-dvh overscroll-none;
-        font-display: swap;
-        font-family: "ClashGrotesk-Variable", sans-serif;
-    }
+  * {
+    @apply overscroll-none;
+  }
 
-    h1 {
-        @apply tracking-tight font-[700] text-8xl leading-tight border-b;
-    }
+  body {
+    @apply text-[#ebebeb] relative min-h-dvh;
+    font-display: swap;
+    font-family: "ClashGrotesk-Variable", sans-serif;
+  }
 
-    h1 > span {
-        @apply hidden sm:inline;
-    }
+  h1 {
+    @apply tracking-tight font-[700] text-8xl leading-tight border-b;
+  }
 
-    h2 {
-        @apply font-black text-4xl tracking-tight pb-2 text-left;
-    }
+  h1 > span {
+    @apply hidden sm:inline;
+  }
 
-    main {
-        @apply grid grid-rows-[min-content,1fr] px-6 pb-6 md:p-6 relative z-10 min-h-dvh;
-    }
+  h2 {
+    @apply font-black text-4xl tracking-tight pb-2 text-left;
+  }
 
-    nav {
-        @apply flex self-end;
-    }
+  main {
+    @apply grid grid-rows-[min-content,1fr] px-6 pb-6 md:p-6 relative z-10 min-h-dvh;
+  }
 
-    footer {
-        @apply flex items-end;
-    }
+  nav {
+    @apply flex self-end;
+  }
 
-    footer ul {
-        @apply flex flex-row gap-4 flex-wrap;
-    }
+  footer {
+    @apply flex items-end;
+  }
 
-    footer ul li {
-        @apply relative px-3 py-0.5;
-    }
+  footer ul {
+    @apply flex flex-row gap-4 flex-wrap;
+  }
 
-    footer ul li:hover::before {
-        @apply blur-[2px] transition-[filter,border-color] duration-200;
-    }
+  footer ul li {
+    @apply relative px-3 py-0.5;
+  }
 
-    footer ul li::before {
-        @apply absolute inset-0 border rounded-full content-[''] pointer-events-none;
-    }
+  footer ul li:hover::before {
+    @apply blur-[2px] transition-[filter,border-color] duration-200;
+  }
 
-    ul {
-        @apply flex gap-4 flex-wrap items-start;
-    }
+  footer ul li::before {
+    @apply absolute inset-0 border rounded-full content-[''] pointer-events-none;
+  }
 
-    li > a {
-        @apply font-normal text-5xl tracking-tight whitespace-nowrap;
-    }
+  ul {
+    @apply flex gap-4 flex-wrap items-start;
+  }
+
+  li > a {
+    @apply font-normal text-5xl tracking-tight whitespace-nowrap;
+  }
 }

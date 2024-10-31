@@ -554,10 +554,13 @@ video {
   display: none;
 }
 
+* {
+  overscroll-behavior: none;
+}
+
 body {
   position: relative;
   min-height: 100dvh;
-  overscroll-behavior: none;
   --tw-text-opacity: 1;
   color: rgb(235 235 235 / var(--tw-text-opacity));
   font-display: swap;
