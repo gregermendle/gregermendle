@@ -257,7 +257,7 @@
           if (DeviceMotionEvent.requestPermission) {
             const permissionState = await DeviceMotionEvent.requestPermission();
             if (permissionState !== "granted") {
-              throw new Error("Accelerometer Permission denied")
+              throw new Error("Accelerometer Permission denied");
             }
           }
         } catch (error) {
@@ -277,33 +277,29 @@
 
       let mouseX = 1.0;
       let mouseY = 1.0;
-      if (isMobile()) {
-        document.getElementById("star").addEventListener("click", () => {
-          requestAccelerometerPermission()
-            .then(() => {
-              const acl = new Accelerometer({ frequency: 60 });
-              acl.addEventListener("reading", () => {
-                mouseX = acl.x;
-                mouseY = acl.y;
-              });
-
-              acl.start();
-            })
-            .catch((e) => {
-              console.error(e);
-              document.addEventListener("pointermove", (e) => {
-                mouseX = e.clientX / window.innerWidth;
-                mouseY = 1.0 - e.clientY / window.innerHeight;
-              });
+      document.getElementById("star").addEventListener("click", () => {
+        requestAccelerometerPermission()
+          .then(() => {
+            const acl = new window.Accelerometer({ frequency: 60 });
+            acl.addEventListener("reading", () => {
+              mouseX = acl.x;
+              mouseY = acl.y;
             });
-        });
-      } else {
-        // Mouse handling
-        document.addEventListener("mousemove", (e) => {
-          mouseX = e.clientX / window.innerWidth;
-          mouseY = 1.0 - e.clientY / window.innerHeight;
-        });
-      }
+            acl.start();
+          })
+          .catch((e) => {
+            console.error(e);
+            document.addEventListener("pointermove", (e) => {
+              mouseX = e.clientX / window.innerWidth;
+              mouseY = 1.0 - e.clientY / window.innerHeight;
+            });
+          });
+      });
+
+      document.addEventListener("mousemove", (e) => {
+        mouseX = e.clientX / window.innerWidth;
+        mouseY = 1.0 - e.clientY / window.innerHeight;
+      });
 
       // Render loop
       function render(now) {

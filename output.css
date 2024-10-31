@@ -650,13 +650,6 @@ footer ul li::before {
   content: var(--tw-content);
 }
 
-ul {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 1rem;
-}
-
 li {
   overflow: visible;
 }

@@ -49,10 +49,6 @@
     @apply absolute inset-0 border rounded-full content-[''] pointer-events-none;
   }
 
-  ul {
-    @apply flex gap-4 flex-wrap items-start;
-  }
-
   li {
     @apply overflow-visible;
   }
