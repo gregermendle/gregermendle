@@ -4,7 +4,7 @@
     <!-- HTML Meta Tags -->
     <title>
       Gregory Jordan - Building products in AI, DevX, Crypto, and empowering
-      small businesses and industry giants.
+      small businesses.
     </title>
     <meta
       name="description"
@@ -54,7 +54,7 @@
   <body>
     <main>
       <header>
-        <h1>GREG</h1>
+        <h1>GREGORY</h1>
       </header>
       <footer>
         <nav>
@@ -77,18 +77,20 @@
               >
             </li>
             <li id="star">
-              <svg
-                width="40"
-                height="40"
-                viewBox="0 0 482 470"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                <path
-                  d="M241 0L281.935 161.998L434.112 92.998L332.98 226.006L481.807 301.963L314.762 305.824L348.169 469.539L241 341.346L133.831 469.539L167.238 305.824L0.19281 301.963L149.02 226.006L47.8876 92.998L200.065 161.998L241 0Z"
-                  fill="currentColor"
-                />
-              </svg>
+              <button>
+                <svg
+                  width="40"
+                  height="40"
+                  viewBox="0 0 482 470"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    d="M241 0L281.935 161.998L434.112 92.998L332.98 226.006L481.807 301.963L314.762 305.824L348.169 469.539L241 341.346L133.831 469.539L167.238 305.824L0.19281 301.963L149.02 226.006L47.8876 92.998L200.065 161.998L241 0Z"
+                    fill="currentColor"
+                  />
+                </svg>
+              </button>
             </li>
           </ul>
         </nav>
@@ -158,7 +160,7 @@
                 pattern = smoothstep(0.2, 1.0, pattern);
                 vec3 color = mix(color, invert(color), pattern * circle * 0.9);
                 float r = random(uv + time / 900.0);
-                color *= 0.95 + r * 0.25;
+                color *= 0.95 + r * 0.4;
                 
                 gl_FragColor = vec4(color, 1.0);
             }
@@ -245,65 +247,24 @@
         return Math.min(Math.max(n, min), max);
       }
 
-      function isMobile() {
-        return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
-          navigator.userAgent
-        );
-      }
-
-      async function requestAccelerometerPermission() {
-        try {
-          // Check if we need to request permission (iOS 13+)
-          if (DeviceMotionEvent.requestPermission) {
-            const permissionState = await DeviceMotionEvent.requestPermission();
-            if (permissionState !== "granted") {
-              throw new Error("Accelerometer Permission denied");
-            }
-          }
-        } catch (error) {
-          console.error("Error requesting accelerometer permission:", error);
-        }
-      }
-
       // Scrolling
       let r = 1.0;
       let g = 1.0;
       let b = 1.0;
-      window.addEventListener("mousewheel", (e) => {
-        // r = clamp(r + Math.sign(e.deltaY) * 0.004, 0.02, 1.0);
-        // g = clamp(g + Math.sign(e.deltaY) * 0.004, 0.02, 1.0);
-        // b = clamp(b + Math.sign(e.deltaY) * 0.004, 0.02, 1.0);
+      document.getElementById("star").addEventListener("click", (e) => {
+        r = clamp(Math.random(), 0.01, 1.0);
+        g = clamp(Math.random(), 0.01, 1.0);
+        b = clamp(Math.random(), 0.01, 1.0);
       });
 
       let mouseX = 1.0;
       let mouseY = 1.0;
-      document.getElementById("star").addEventListener("click", () => {
-        requestAccelerometerPermission()
-          .then(() => {
-            const acl = new window.Accelerometer({ frequency: 60 });
-            acl.addEventListener("reading", () => {
-              mouseX = acl.x;
-              mouseY = acl.y;
-            });
-            acl.start();
-          })
-          .catch((e) => {
-            console.error(e);
-            document.addEventListener("pointermove", (e) => {
-              mouseX = e.clientX / window.innerWidth;
-              mouseY = 1.0 - e.clientY / window.innerHeight;
-            });
-          });
-      });
-
       document.addEventListener("mousemove", (e) => {
         mouseX = e.clientX / window.innerWidth;
         mouseY = 1.0 - e.clientY / window.innerHeight;
       });
 
-      // Render loop
       function render(now) {
-        // Update canvas size if needed
         const displayWidth = canvas.clientWidth;
         const displayHeight = canvas.clientHeight;
 
@@ -318,7 +279,6 @@
 
         gl.useProgram(programInfo.program);
 
-        // Set uniforms
         gl.uniform2f(
           programInfo.uniformLocations.resolution,
           canvas.width,
@@ -328,7 +288,6 @@
         gl.uniform2f(programInfo.uniformLocations.mouse, mouseX, mouseY);
         gl.uniform3f(programInfo.uniformLocations.color, r, g, b);
 
-        // Set up vertex attributes
         gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
         gl.vertexAttribPointer(
           programInfo.attribLocations.vertexPosition,
@@ -340,13 +299,10 @@
         );
         gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
 
-        // Draw
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
         requestAnimationFrame(render);
       }
 
-      // Start the render loop
       requestAnimationFrame(render);
     </script>
   </body>

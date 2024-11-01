@@ -41,7 +41,11 @@
     @apply relative px-3 py-0.5;
   }
 
-  footer ul li:hover::before {
+  *:focus {
+    @apply ring-0 outline-none border-none;
+  }
+
+  footer ul li:hover::before, footer ul li:has(a:focus)::before {
     @apply blur-[2px] transition-[filter,border-color] duration-200;
   }
 
@@ -57,7 +61,11 @@
     @apply font-normal text-5xl tracking-tight whitespace-nowrap;
   }
 
+  #star:has(button:focus), #star:hover {
+    @apply [&_svg]:animate-[spin_3s_infinite_linear];
+  }
+
   #star {
-    @apply h-[54px] flex items-center justify-center cursor-pointer bg-white rounded-full text-black;
+    @apply h-[54px] flex items-center justify-center bg-white rounded-full text-black;
   }
 }
