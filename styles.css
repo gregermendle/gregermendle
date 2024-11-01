@@ -10,11 +10,7 @@
   }
 
   h1 {
-    @apply tracking-tight font-[700] md:text-[120px] md:text-left leading-tight border-b inline uppercase text-[20vw] text-center;
-  }
-
-  h1 > span {
-    @apply hidden sm:inline;
+    @apply tracking-tight font-[700] md:text-[120px] md:text-left leading-tight md:leading-[84px] border-b inline uppercase text-[20vw] text-center;
   }
 
   h2 {
@@ -67,5 +63,18 @@
 
   #star {
     @apply h-[54px] flex items-center justify-center bg-white rounded-full text-black;
+  }
+
+  canvas {
+    animation: unblur 2s;
+  }
+}
+
+@keyframes unblur {
+  from {
+    filter: blur(5px);
+  }
+  to {
+    filter: blur(0);
   }
 }

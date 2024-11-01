@@ -126,9 +126,9 @@
             uniform float time;
             uniform vec2 mouse;
 
-            const float WAVELENGTH = 0.1;     
-            const float SLIT_SEPARATION = 0.15;  
-            const float DISTANCE = 0.5;         
+            const float WAVELENGTH = 0.1;
+            const float SLIT_SEPARATION = 0.15;
+            const float DISTANCE = 0.5;
 
             float random(vec2 st) {
                 return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
@@ -141,19 +141,19 @@
             void main() {
                 vec2 uv = gl_FragCoord.xy/resolution.xy;
                 float aspect = resolution.x/resolution.y;
-                
+
                 vec2 centered;
                 if(aspect > 1.0) {
                     centered = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
                 } else {
                     centered = vec2(uv.x - 0.5, (uv.y - 0.5) / aspect);
                 }
-                
+
                 float radius = length(centered * (mouse + vec2(0.4, 0.9)));
                 float circle = smoothstep(0.4, 0.0, radius);
                 float x = centered.x * 3.0;
                 float pathDiff = SLIT_SEPARATION * x / DISTANCE;
-                float pattern = 0.5 + 0.5 * tan(2.0 * 3.14159 * pathDiff / WAVELENGTH) + cos(pathDiff / WAVELENGTH);             
+                float pattern = 0.5 + 0.5 * tan(2.0 * 3.14159 * pathDiff / WAVELENGTH) + cos(pathDiff / WAVELENGTH);
                 float envelope = exp(-radius * radius * 4.0);
                 pattern *= envelope;
                 pattern = pow(pattern, 0.4);
@@ -161,7 +161,7 @@
                 vec3 color = mix(color, invert(color), pattern * circle * 0.9);
                 float r = random(uv + time / 900.0);
                 color *= 0.95 + r * 0.3;
-                
+
                 gl_FragColor = vec4(color, 1.0);
             }
         `;
@@ -224,11 +224,7 @@
       }
 
       // Initialize everything
-      const shaderProgram = initShaderProgram(
-        gl,
-        vsSource,
-        fsSource
-      );
+      const shaderProgram = initShaderProgram(gl, vsSource, fsSource);
       const programInfo = {
         program: shaderProgram,
         attribLocations: {
@@ -242,7 +238,6 @@
           time: gl.getUniformLocation(shaderProgram, "time"),
           mouse: gl.getUniformLocation(shaderProgram, "mouse"),
           color: gl.getUniformLocation(shaderProgram, "color"),
-          selected_pattern: gl.getUniformLocation(shaderProgram, "selected_pattern"),
         },
       };
 
@@ -269,16 +264,19 @@
 
       let mouseX = 1.0;
       let mouseY = 1.0;
+
+      let nextMouseX = 1.0;
+      let nextMouseY = 1.0;
       document.addEventListener("mousemove", (e) => {
-        mouseX = e.clientX / window.innerWidth;
-        mouseY = 1.0 - e.clientY / window.innerHeight;
+        nextMouseX = e.clientX / window.innerWidth;
+        nextMouseY = 1.0 - e.clientY / window.innerHeight;
       });
 
-      document.addEventListener("click", () => {
-        pattern = (pattern + 1) % 3;
-      });
-
+      let prevNow = 0;
       function render(now) {
+        const dt = now - prevNow;
+        prevNow = now;
+        const timeScale = Math.abs(1 - (dt - 1));
         const displayWidth = canvas.clientWidth;
         const displayHeight = canvas.clientHeight;
 
@@ -286,9 +284,14 @@
         let dg = nextG - g;
         let db = nextB - b;
 
-        r = r + dr * 0.005;
-        g = g + dg * 0.01;
-        b = b + db * 0.01;
+        r = r + dr * 0.005 * timeScale;
+        g = g + dg * 0.01 * timeScale;
+        b = b + db * 0.01 * timeScale;
+
+        let dx = nextMouseX - mouseX;
+        let dy = nextMouseY - mouseY;
+        mouseX = mouseX + dx * 0.01 * timeScale;
+        mouseY = mouseY + dy * 0.01 * timeScale;
 
         if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
           canvas.width = displayWidth;
@@ -306,7 +309,10 @@
           canvas.width,
           canvas.height
         );
-        gl.uniform1f(programInfo.uniformLocations.time, now * 0.001);
+        gl.uniform1f(
+          programInfo.uniformLocations.time,
+          now * 0.001 * timeScale
+        );
         gl.uniform2f(programInfo.uniformLocations.mouse, mouseX, mouseY);
         gl.uniform3f(programInfo.uniformLocations.color, r, g, b);
 

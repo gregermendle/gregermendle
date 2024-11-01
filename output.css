@@ -578,16 +578,7 @@ h1 {
   h1 {
     text-align: left;
     font-size: 120px;
-  }
-}
-
-h1 > span {
-  display: none;
-}
-
-@media (min-width: 640px) {
-  h1 > span {
-    display: inline;
+    line-height: 84px;
   }
 }
 
@@ -703,6 +694,10 @@ li > a {
   color: rgb(0 0 0 / var(--tw-text-opacity));
 }
 
+canvas {
+  animation: unblur 2s;
+}
+
 .pointer-events-none {
   pointer-events: none;
 }
@@ -734,4 +729,14 @@ li > a {
 .invert {
   --tw-invert: invert(100%);
   filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
+}
+
+@keyframes unblur {
+  from {
+    filter: blur(5px);
+  }
+
+  to {
+    filter: blur(0);
+  }
 }
