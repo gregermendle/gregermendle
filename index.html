@@ -54,7 +54,7 @@
   <body>
     <main>
       <header>
-        <h1>GREGORY</h1>
+        <h1>Gregory</h1>
       </header>
       <footer>
         <nav>
@@ -153,14 +153,14 @@
                 float circle = smoothstep(0.4, 0.0, radius);
                 float x = centered.x * 3.0;
                 float pathDiff = SLIT_SEPARATION * x / DISTANCE;
-                float pattern = 0.5 + 0.5 * cos(2.0 * 3.14159 * pathDiff / WAVELENGTH);
+                float pattern = 0.5 + 0.5 * tan(2.0 * 3.14159 * pathDiff / WAVELENGTH) + cos(pathDiff / WAVELENGTH);             
                 float envelope = exp(-radius * radius * 4.0);
                 pattern *= envelope;
                 pattern = pow(pattern, 0.4);
                 pattern = smoothstep(0.2, 1.0, pattern);
                 vec3 color = mix(color, invert(color), pattern * circle * 0.9);
                 float r = random(uv + time / 900.0);
-                color *= 0.95 + r * 0.4;
+                color *= 0.95 + r * 0.3;
                 
                 gl_FragColor = vec4(color, 1.0);
             }
@@ -224,7 +224,11 @@
       }
 
       // Initialize everything
-      const shaderProgram = initShaderProgram(gl, vsSource, fsSource);
+      const shaderProgram = initShaderProgram(
+        gl,
+        vsSource,
+        fsSource
+      );
       const programInfo = {
         program: shaderProgram,
         attribLocations: {
@@ -238,6 +242,7 @@
           time: gl.getUniformLocation(shaderProgram, "time"),
           mouse: gl.getUniformLocation(shaderProgram, "mouse"),
           color: gl.getUniformLocation(shaderProgram, "color"),
+          selected_pattern: gl.getUniformLocation(shaderProgram, "selected_pattern"),
         },
       };
 
@@ -251,10 +256,15 @@
       let r = 1.0;
       let g = 1.0;
       let b = 1.0;
+
+      let nextR = 1.0;
+      let nextG = 1.0;
+      let nextB = 1.0;
+
       document.getElementById("star").addEventListener("click", (e) => {
-        r = clamp(Math.random(), 0.01, 1.0);
-        g = clamp(Math.random(), 0.01, 1.0);
-        b = clamp(Math.random(), 0.01, 1.0);
+        nextR = clamp(Math.random(), 0.01, 1.0);
+        nextG = clamp(Math.random(), 0.01, 1.0);
+        nextB = clamp(Math.random(), 0.01, 1.0);
       });
 
       let mouseX = 1.0;
@@ -264,9 +274,21 @@
         mouseY = 1.0 - e.clientY / window.innerHeight;
       });
 
+      document.addEventListener("click", () => {
+        pattern = (pattern + 1) % 3;
+      });
+
       function render(now) {
         const displayWidth = canvas.clientWidth;
         const displayHeight = canvas.clientHeight;
+
+        let dr = nextR - r;
+        let dg = nextG - g;
+        let db = nextB - b;
+
+        r = r + dr * 0.005;
+        g = g + dg * 0.01;
+        b = b + db * 0.01;
 
         if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
           canvas.width = displayWidth;

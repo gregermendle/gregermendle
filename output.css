@@ -564,11 +564,21 @@ body {
 }
 
 h1 {
+  display: inline;
   border-bottom-width: 1px;
-  font-size: 6rem;
+  text-align: center;
+  font-size: 20vw;
   font-weight: 700;
+  text-transform: uppercase;
   line-height: 1.25;
   letter-spacing: -0.025em;
+}
+
+@media (min-width: 768px) {
+  h1 {
+    text-align: left;
+    font-size: 120px;
+  }
 }
 
 h1 > span {

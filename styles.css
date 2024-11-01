@@ -10,7 +10,7 @@
   }
 
   h1 {
-    @apply tracking-tight font-[700] text-8xl leading-tight border-b;
+    @apply tracking-tight font-[700] md:text-[120px] md:text-left leading-tight border-b inline uppercase text-[20vw] text-center;
   }
 
   h1 > span {
