@@ -13,6 +13,7 @@
       name="description"
       content="Gregory Jordan is a seasoned multi-disciplinary engineer empowering businesses in AI, DevX, Crypto, and more."
     />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta property="og:url" content="https://gregermendle.com" />
     <meta property="og:type" content="website" />
     <meta
@@ -23,10 +24,7 @@
       property="og:description"
       content="Gregory Jordan is a seasoned multi-disciplinary engineer empowering businesses in AI, DevX, Crypto, and more."
     />
-    <meta
-      property="og:image"
-      content="https://gregermendle.com/social.png"
-    />
+    <meta property="og:image" content="https://gregermendle.com/social.png" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta property="twitter:domain" content="gregermendle.com" />
     <meta property="twitter:url" content="https://gregermendle.com" />
@@ -38,10 +36,7 @@
       name="twitter:description"
       content="Gregory Jordan is a seasoned multi-disciplinary engineer empowering businesses in AI, DevX, Crypto, and more."
     />
-    <meta
-      name="twitter:image"
-      content="https://gregermendle.com/social.png"
-    />
+    <meta name="twitter:image" content="https://gregermendle.com/social.png" />
     <link rel="stylesheet" type="text/css" href="/output.css" />
     <noscript>
       <style>
@@ -53,6 +48,9 @@
         }
       </style>
     </noscript>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Source+Code+Pro:wght@200..900&display=swap" rel="stylesheet">
     <title>gregermendle</title>
   </head>
   <body>
@@ -122,6 +120,12 @@
         }
       `;
 
+      // Reduce load on mobile devices
+      let maxSteps = isMobile() ? 128 : 512;
+      let schwarzschildRadius = isMobile() ? 0.6 : 0.4;
+      let stepSize = isMobile() ? 0.2 : 0.1;
+      let warpSize = isMobile() ? 0.1 : 0.02;
+
       // Fragment shader program (your provided shader)
       const fsSource = `
         precision highp float;
@@ -130,11 +134,12 @@
         uniform vec2 mouse;
         uniform float invert;
         uniform float progress;
+        uniform float stepSize;
 
-        #define MAX_STEPS 512
-        #define SCHWARZSCHILD_RADIUS 0.4
+        #define MAX_STEPS ${maxSteps}
+        #define SCHWARZSCHILD_RADIUS ${schwarzschildRadius.toFixed(2)}
         #define PI 3.14159265359
-        #define NUM_OCTAVES 1
+        #define WARP_SIZE ${warpSize.toFixed(2)}
 
         vec3 diskColor(float dist)
         {
@@ -163,7 +168,6 @@
             float r = length(p);
             vec3 col = mix(vec3(0.), vec3(1.), invert);
             float totalDist = 0.0;
-            float stepSize = 0.1;
 
             for (int i = 0; i < MAX_STEPS; i++)
             {
@@ -206,9 +210,9 @@
             vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / min(resolution.x, resolution.y);
             vec2 aspect = resolution.xy / min(resolution.x, resolution.y);
             vec2 muv = (mouse.xy - 0.5) * aspect;
-            
+
             // setup camera
-            float warp = smoothstep(0.0, .06, sqrt(dot(uv - muv, uv - muv)));
+            float warp = smoothstep(0.0, WARP_SIZE, sqrt(dot(uv - muv, uv - muv)));
             vec3 ro = vec3(-1.0, 2.0, -20.0) - vec3(muv * 2., 0.) + warp;
             vec3 rd = normalize(vec3(uv, 1.0)) - vec3(0., 0.2, 0.);
 
@@ -217,7 +221,7 @@
 
             gl_FragColor = vec4(col, 1.0);
         }
-      `
+      `;
 
       // Initialize a shader program
       function initShaderProgram(gl, vsSource, fsSource) {
@@ -258,6 +262,12 @@
         return shader;
       }
 
+      function isMobile() {
+        return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+          navigator.userAgent
+        );
+      }
+
       // Initialize buffers
       function initBuffers(gl) {
         const positionBuffer = gl.createBuffer();
@@ -292,6 +302,7 @@
           mouse: gl.getUniformLocation(shaderProgram, "mouse"),
           invert: gl.getUniformLocation(shaderProgram, "invert"),
           progress: gl.getUniformLocation(shaderProgram, "progress"),
+          stepSize: gl.getUniformLocation(shaderProgram, "stepSize"),
         },
       };
 
@@ -313,7 +324,7 @@
 
       let nextMouseX = 1.0;
       let nextMouseY = 1.0;
-      document.addEventListener("mousemove", (e) => {
+      document.addEventListener("pointermove", (e) => {
         nextMouseX = e.clientX / window.innerWidth;
         nextMouseY = 1.0 - e.clientY / window.innerHeight;
       });
@@ -327,6 +338,7 @@
 
       let prevNow = 0;
       let progress = 0;
+
       function render(now) {
         const dt = now - prevNow;
         prevNow = now;
@@ -336,7 +348,7 @@
 
         let di = nextInvert - invert;
 
-        progress = Math.min(1., progress + 0.0025);
+        progress = Math.min(1, progress + 0.0025);
 
         invert = invert + di * 0.01 * timeScale;
 
@@ -361,16 +373,15 @@
           canvas.width,
           canvas.height
         );
-        gl.uniform1f(
-          programInfo.uniformLocations.time,
-          now * 0.001 
-        );
+        gl.uniform1f(programInfo.uniformLocations.time, now * 0.001);
         gl.uniform1f(
           programInfo.uniformLocations.progress,
           easeOutBack(progress)
         );
         gl.uniform2f(programInfo.uniformLocations.mouse, mouseX, mouseY);
         gl.uniform1f(programInfo.uniformLocations.invert, invert);
+
+        gl.uniform1f(programInfo.uniformLocations.stepSize, stepSize);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
         gl.vertexAttribPointer(

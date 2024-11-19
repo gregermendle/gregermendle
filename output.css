@@ -558,20 +558,24 @@ video {
   overscroll-behavior: none;
 }
 
+html {
+  font-size: 14px;
+}
+
 body {
   position: relative;
   min-height: 100dvh;
   --tw-text-opacity: 1;
   color: rgb(235 235 235 / var(--tw-text-opacity));
   font-display: swap;
-  font-family: monospace;
+  font-family: "Source Code Pro", monospace;
 }
 
 h1 {
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 650;
   text-transform: uppercase;
-  line-height: 1;
+  line-height: 1.25;
   letter-spacing: 0.025em;
 }
 
@@ -612,8 +616,10 @@ footer ul {
 
 footer ul li {
   position: relative;
-  padding-left: 0.5rem;
-  padding-right: 0.5rem;
+  display: flex;
+  align-items: center;
+  padding-left: 0.625rem;
+  padding-right: 0.625rem;
   padding-top: 0.125rem;
   padding-bottom: 0.125rem;
 }

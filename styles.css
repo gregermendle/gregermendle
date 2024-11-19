@@ -7,14 +7,18 @@
     overscroll-behavior: none;
   }
 
+  html {
+    font-size: 14px;
+  }
+
   body {
     @apply text-[#ebebeb] relative min-h-dvh;
     font-display: swap;
-    font-family: monospace;
+    font-family: "Source Code Pro", monospace;
   }
 
   h1 {
-    @apply tracking-wide font-[700] text-[16px] uppercase leading-none;
+    @apply tracking-wide font-[650] text-[14px] uppercase leading-tight;
   }
 
   h2 {
@@ -38,7 +42,7 @@
   }
 
   footer ul li {
-    @apply relative px-2 py-0.5;
+    @apply flex items-center relative px-2.5 py-0.5;
   }
 
   *:focus {
