@@ -14,7 +14,7 @@
   }
 
   h1 {
-    @apply tracking-wide font-[700] text-[16px] uppercase;
+    @apply tracking-wide font-[700] text-[16px] uppercase leading-none;
   }
 
   h2 {
@@ -69,18 +69,5 @@
 
   #star {
     @apply h-[28px] flex items-center justify-center px-5 bg-white rounded-full text-black;
-  }
-
-  canvas {
-    animation: unblur 2s;
-  }
-}
-
-@keyframes unblur {
-  from {
-    filter: blur(5px);
-  }
-  to {
-    filter: blur(0);
   }
 }

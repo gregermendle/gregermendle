@@ -571,6 +571,7 @@ h1 {
   font-size: 16px;
   font-weight: 700;
   text-transform: uppercase;
+  line-height: 1;
   letter-spacing: 0.025em;
 }
 
@@ -682,10 +683,6 @@ li > a {
   color: rgb(0 0 0 / var(--tw-text-opacity));
 }
 
-canvas {
-  animation: unblur 2s;
-}
-
 .pointer-events-none {
   pointer-events: none;
 }
@@ -717,14 +714,4 @@ canvas {
 .invert {
   --tw-invert: invert(100%);
   filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
-}
-
-@keyframes unblur {
-  from {
-    filter: blur(5px);
-  }
-
-  to {
-    filter: blur(0);
-  }
 }

@@ -1,12 +1,10 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <!-- HTML Meta Tags -->
     <title>
       Gregory Jordan - Building products in AI, DevX, Crypto, and empowering
       small businesses.
     </title>
-    <!-- HTML Meta Tags -->
     <title>
       Gregory Jordan - Building products in AI, DevX, Crypto, and empowering
       small businesses and industry giants.
@@ -15,8 +13,6 @@
       name="description"
       content="Gregory Jordan is a seasoned multi-disciplinary engineer empowering businesses in AI, DevX, Crypto, and more."
     />
-
-    <!-- Facebook Meta Tags -->
     <meta property="og:url" content="https://gregermendle.com" />
     <meta property="og:type" content="website" />
     <meta
@@ -31,8 +27,6 @@
       property="og:image"
       content="https://gregermendle.com/social.png"
     />
-
-    <!-- Twitter Meta Tags -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta property="twitter:domain" content="gregermendle.com" />
     <meta property="twitter:url" content="https://gregermendle.com" />
@@ -48,17 +42,24 @@
       name="twitter:image"
       content="https://gregermendle.com/social.png"
     />
-
-    <!-- Meta Tags Generated via https://www.opengraph.xyz -->
-
-    <!-- Meta Tags Generated via https://www.opengraph.xyz -->
     <link rel="stylesheet" type="text/css" href="/output.css" />
+    <noscript>
+      <style>
+        #canvas {
+          background-color: white;
+        }
+        #star {
+          display: none;
+        }
+      </style>
+    </noscript>
     <title>gregermendle</title>
   </head>
   <body>
     <main>
       <header>
         <h1>Gregory Jordan</h1>
+        <p>[gregermendle]</p>
       </header>
       <footer>
         <nav>
@@ -115,60 +116,108 @@
 
       // Vertex shader program
       const vsSource = `
-            attribute vec4 aVertexPosition;
-            void main() {
-                gl_Position = aVertexPosition;
-            }
-        `;
+        attribute vec4 aVertexPosition;
+        void main() {
+            gl_Position = aVertexPosition;
+        }
+      `;
 
       // Fragment shader program (your provided shader)
       const fsSource = `
-            precision highp float;
+        precision highp float;
+        uniform vec2 resolution;
+        uniform float time;
+        uniform vec2 mouse;
+        uniform float invert;
+        uniform float progress;
 
-            uniform vec2 resolution;
-            uniform vec3 color;
-            uniform float time;
-            uniform vec2 mouse;
+        #define MAX_STEPS 512
+        #define SCHWARZSCHILD_RADIUS 0.4
+        #define PI 3.14159265359
+        #define NUM_OCTAVES 1
 
-            const float WAVELENGTH = 0.1;
-            const float SLIT_SEPARATION = 0.15;
-            const float DISTANCE = 0.5;
+        vec3 diskColor(float dist)
+        {
+            vec3 hotColor = mix(vec3(1.), vec3(0., -1., -1.), invert); // hot
+            vec3 midColor = hotColor / 3.; // middle
+            vec3 coolColor = hotColor / 5.; // cooler
 
-            float random(vec2 st) {
-                return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
-            }
+            float innerTemp = smoothstep(2.0, 4.0, dist);
+            float outerTemp = smoothstep(4.0, 8.0, dist);
 
-            vec3 invert(vec3 color) {
-                return vec3(1.0) - color;
-            }
+            vec3 c = mix(hotColor, midColor, innerTemp);
+            c = mix(c, coolColor, outerTemp);
 
-            void main() {
-                vec2 uv = gl_FragCoord.xy/resolution.xy;
-                float aspect = resolution.x/resolution.y;
+            // add temperature-based intensity
+            float intensity = exp(-dist * 0.25);
+            return c * intensity;
+        }
 
-                vec2 centered;
-                if(aspect > 1.0) {
-                    centered = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
-                } else {
-                    centered = vec2(uv.x - 0.5, (uv.y - 0.5) / aspect);
+        float rand(vec2 c){
+          return fract(sin(dot(c.xy, vec2(12.9898,78.233))) * 43758.5453);
+        }
+
+        vec3 rayMarch(vec3 ro, vec3 rd, vec2 uv, float radius)
+        {
+            vec3 p = ro;
+            float r = length(p);
+            vec3 col = mix(vec3(0.), vec3(1.), invert);
+            float totalDist = 0.0;
+            float stepSize = 0.1;
+
+            for (int i = 0; i < MAX_STEPS; i++)
+            {
+                r = length(p);
+
+                float force = radius / (r * r);
+                vec3 gravity = normalize(p) * -force;
+
+                // update ray direction based on gravity
+                rd += gravity * stepSize;
+                rd = normalize(rd);
+
+                // move along the ray
+                p += rd * stepSize;
+                totalDist += stepSize;
+
+                // check if we're in the accretion disk region
+                float diskDist = abs(p.y);
+                float diskRadius = length(vec2(p.x, p.z));
+
+                if (diskDist < 0.1 && diskRadius > 1. * radius)
+                {
+                  // calculate disk color based on temperature/distance
+                  vec3 diskCol = diskColor(diskRadius) * rand(uv.xy + time * 0.000001) * 0.5;
+                
+                  // add time-based rotation
+                  float angle = atan(p.z, p.x) + time * 0.3;
+                  diskCol *= 1.0 + 0.08 * sin(angle * 8.0);
+
+                  // accumulate color with distance falloff
+                  col += diskCol * exp(-totalDist * 0.05);
                 }
-
-                float radius = length(centered * (mouse + vec2(0.4, 0.9)));
-                float circle = smoothstep(0.4, 0.0, radius);
-                float x = centered.x * 3.0;
-                float pathDiff = SLIT_SEPARATION * x / DISTANCE;
-                float pattern = 0.5 + 0.5 * tan(2.0 * 3.14159 * pathDiff / WAVELENGTH) + cos(pathDiff / WAVELENGTH);
-                float envelope = exp(-radius * radius * 4.0);
-                pattern *= envelope;
-                pattern = pow(pattern, 0.4);
-                pattern = smoothstep(0.2, 1.0, pattern);
-                vec3 color = mix(color, invert(color), pattern * circle * 0.9);
-                float r = random(uv + time / 900.0);
-                color *= 0.95 + r * 0.3;
-
-                gl_FragColor = vec4(color, 1.0);
             }
-        `;
+
+            return col;
+        }
+
+        void main()
+        {
+            vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / min(resolution.x, resolution.y);
+            vec2 aspect = resolution.xy / min(resolution.x, resolution.y);
+            vec2 muv = (mouse.xy - 0.5) * aspect;
+            
+            // setup camera
+            float warp = smoothstep(0.0, .06, sqrt(dot(uv - muv, uv - muv)));
+            vec3 ro = vec3(-1.0, 2.0, -20.0) - vec3(muv * 2., 0.) + warp;
+            vec3 rd = normalize(vec3(uv, 1.0)) - vec3(0., 0.2, 0.);
+
+            // ray march the scene
+            vec3 col = rayMarch(ro, rd, uv * aspect * 5., SCHWARZSCHILD_RADIUS * progress);
+
+            gl_FragColor = vec4(col, 1.0);
+        }
+      `
 
       // Initialize a shader program
       function initShaderProgram(gl, vsSource, fsSource) {
@@ -241,7 +290,8 @@
           resolution: gl.getUniformLocation(shaderProgram, "resolution"),
           time: gl.getUniformLocation(shaderProgram, "time"),
           mouse: gl.getUniformLocation(shaderProgram, "mouse"),
-          color: gl.getUniformLocation(shaderProgram, "color"),
+          invert: gl.getUniformLocation(shaderProgram, "invert"),
+          progress: gl.getUniformLocation(shaderProgram, "progress"),
         },
       };
 
@@ -251,19 +301,11 @@
         return Math.min(Math.max(n, min), max);
       }
 
-      // Scrolling
-      let r = 1.0;
-      let g = 1.0;
-      let b = 1.0;
-
-      let nextR = 1.0;
-      let nextG = 1.0;
-      let nextB = 1.0;
+      let invert = 0.0;
+      let nextInvert = 0.0;
 
       document.getElementById("star").addEventListener("click", (e) => {
-        nextR = clamp(Math.random(), 0.01, 1.0);
-        nextG = clamp(Math.random(), 0.01, 1.0);
-        nextB = clamp(Math.random(), 0.01, 1.0);
+        nextInvert = Math.abs(1 - nextInvert);
       });
 
       let mouseX = 1.0;
@@ -276,7 +318,15 @@
         nextMouseY = 1.0 - e.clientY / window.innerHeight;
       });
 
+      function easeOutBack(x) {
+        const c1 = 1.70158;
+        const c3 = c1 + 1;
+
+        return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+      }
+
       let prevNow = 0;
+      let progress = 0;
       function render(now) {
         const dt = now - prevNow;
         prevNow = now;
@@ -284,13 +334,11 @@
         const displayWidth = canvas.clientWidth;
         const displayHeight = canvas.clientHeight;
 
-        let dr = nextR - r;
-        let dg = nextG - g;
-        let db = nextB - b;
+        let di = nextInvert - invert;
 
-        r = r + dr * 0.005 * timeScale;
-        g = g + dg * 0.01 * timeScale;
-        b = b + db * 0.01 * timeScale;
+        progress = Math.min(1., progress + 0.0025);
+
+        invert = invert + di * 0.01 * timeScale;
 
         let dx = nextMouseX - mouseX;
         let dy = nextMouseY - mouseY;
@@ -315,10 +363,14 @@
         );
         gl.uniform1f(
           programInfo.uniformLocations.time,
-          now * 0.001 * timeScale
+          now * 0.001 
+        );
+        gl.uniform1f(
+          programInfo.uniformLocations.progress,
+          easeOutBack(progress)
         );
         gl.uniform2f(programInfo.uniformLocations.mouse, mouseX, mouseY);
-        gl.uniform3f(programInfo.uniformLocations.color, r, g, b);
+        gl.uniform1f(programInfo.uniformLocations.invert, invert);
 
         gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
         gl.vertexAttribPointer(
@@ -389,7 +441,7 @@
       })(document, window.posthog || []);
       posthog.init("phc_xT6rtTPbZa8WF5BFsVQsgy5yhs56cRxZlTJmhmstg5d", {
         api_host: "https://us.i.posthog.com",
-        person_profiles: "identified_only", // or 'always' to create profiles for anonymous users as well
+        person_profiles: "always", // or 'always' to create profiles for anonymous users as well
       });
     </script>
   </body>
