@@ -709,8 +709,16 @@ li > a {
   height: 100vh;
 }
 
+.h-\[50dvh\] {
+  height: 50dvh;
+}
+
 .w-screen {
   width: 100vw;
+}
+
+.w-\[50dvw\] {
+  width: 50dvw;
 }
 
 .mix-blend-difference {
