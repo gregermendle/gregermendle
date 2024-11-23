@@ -27,7 +27,8 @@
   }
 
   main {
-    @apply grid grid-rows-[min-content,1fr] p-6 relative z-20 min-h-dvh;
+    @apply grid grid-rows-[min-content,1fr,min-content] p-6 relative z-20 min-h-dvh overflow-hidden;
+    perspective: 4000px;
   }
 
   nav {
@@ -78,5 +79,31 @@
 
   #star {
     @apply h-[28px] flex items-center justify-center px-5 dark:bg-white rounded-full dark:text-black;
+  }
+
+  #cloud ul {
+    @apply absolute pl-6 h-1/2 sm:left-3/4 left-[60%] transition-[left] top-1/4;
+  }
+
+  #cloud li {
+    @apply relative;
+  }
+
+  #cloud li .pole {
+    @apply absolute -translate-x-full -translate-y-1/2 origin-top-right border-b dark:border-white border-red-500 -ml-4 mt-4;
+    content: "";
+  }
+
+  #cloud li:hover a {
+    @apply underline underline-offset-2;
+  }
+
+  #cloud a:hover::before {
+    @apply dark:bg-white bg-red-500;
+  }
+
+  #cloud a::before {
+    @apply absolute top-2 -left-4 w-2 h-2 border dark:border-white border-red-500 bg-transparent;
+    content: "";
   }
 }

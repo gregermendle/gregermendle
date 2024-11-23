@@ -1,9 +1,7 @@
 <!DOCTYPE html>
 <html class="dark">
   <head>
-    <title>
-      Gregory Jordan - Building products in AI, DevX, and Crypto.
-    </title>
+    <title>Gregory Jordan - Building products in AI, DevX, and Crypto.</title>
     <meta
       name="description"
       content="Gregory Jordan is a seasoned multi-disciplinary engineer building for businesses in AI, DevX, Crypto, and more."
@@ -57,6 +55,28 @@
         <h1>Gregory Jordan</h1>
         <p>[gregermendle]</p>
       </header>
+      <!-- <div id="cloud">
+        <ul>
+          <li>
+            <a target="_blank" href="https://remix-mailer.gregermendle.com">remix-mailer</a>
+          </li>
+          <li>
+            <a target="_blank" href="https://gnomi.xyz">gnomi</a>
+          </li>
+          <li>
+            <a target="_blank" href="https://rvsn.xyz">rvsn</a>
+          </li>
+          <li>
+            <a target="_blank" href="https://cnvrt.run">cnvrt</a>
+          </li>
+          <li>
+            <a target="_blank" href="https://riptar.gregermendle.com">riptar</a>
+          </li>
+          <li>
+            <a target="_blank" href="https://gregermendle.github.io/inframe/">inframe</a>
+          </li>
+        </ul>
+      </div> -->
       <footer>
         <nav>
           <ul>
@@ -334,14 +354,20 @@
         nextInvert = Math.abs(1 - nextInvert);
       });
 
-      let mouseX = 0.;
-      let mouseY = 0.;
+      let mouseX = 0;
+      let mouseY = 0;
 
-      let nextMouseX = 0.;
-      let nextMouseY = 0.;
+      let nextMouseX = 0;
+      let nextMouseY = 0;
+
       document.addEventListener("pointermove", (e) => {
         nextMouseX = e.clientX / window.innerWidth;
         nextMouseY = 1.0 - e.clientY / window.innerHeight;
+        const x = (nextMouseX - 0.5) / 0.5;
+        const y = (nextMouseY - 0.5) / 0.5;
+        const rotY = Math.atan(x) * 0.2;
+        const rotX = Math.atan(y) * 0.2;
+        cloud.style.transform = `rotateY(${rotY}rad) rotateX(${-rotX}rad)`;
       });
 
       function easeOutBack(x) {
@@ -359,7 +385,8 @@
         prevNow = now;
         const timeScale = Math.abs(1 - (dt - 1));
         const displayWidth = canvas.clientWidth * Math.max(1, devicePixelRatio);
-        const displayHeight = canvas.clientHeight * Math.max(1, devicePixelRatio);
+        const displayHeight =
+          canvas.clientHeight * Math.max(1, devicePixelRatio);
 
         let di = nextInvert - invert;
         progress = Math.min(1, progress + 0.0025);
