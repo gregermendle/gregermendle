@@ -12,7 +12,8 @@
   }
 
   body {
-    @apply text-[#ebebeb] relative min-h-dvh;
+    @apply dark:text-white dark:bg-black bg-gray-200 text-red-500 relative min-h-dvh;
+    color-scheme: dark;
     font-display: swap;
     font-family: "Source Code Pro", monospace;
   }
@@ -26,7 +27,7 @@
   }
 
   main {
-    @apply grid grid-rows-[min-content,1fr] p-6 relative z-10 min-h-dvh;
+    @apply grid grid-rows-[min-content,1fr] p-6 relative z-20 min-h-dvh;
   }
 
   nav {
@@ -55,7 +56,7 @@
   }
 
   footer ul li::before {
-    @apply absolute inset-0 border rounded-full content-[''] pointer-events-none;
+    @apply absolute inset-0 border dark:border-white border-red-500 rounded-full content-[''] pointer-events-none;
   }
 
   li {
@@ -66,12 +67,16 @@
     @apply font-normal text-base tracking-tight whitespace-nowrap;
   }
 
+  canvas {
+    @apply fixed inset-0 w-screen h-screen z-10 pointer-events-none;
+  }
+
   #star:has(button:focus),
   #star:hover {
     @apply [&_svg]:animate-[spin_3s_infinite_linear];
   }
 
   #star {
-    @apply h-[28px] flex items-center justify-center px-5 bg-white rounded-full text-black;
+    @apply h-[28px] flex items-center justify-center px-5 dark:bg-white rounded-full dark:text-black;
   }
 }

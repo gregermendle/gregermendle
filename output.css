@@ -565,8 +565,21 @@ html {
 body {
   position: relative;
   min-height: 100dvh;
+  --tw-bg-opacity: 1;
+  background-color: rgb(229 231 235 / var(--tw-bg-opacity));
   --tw-text-opacity: 1;
-  color: rgb(235 235 235 / var(--tw-text-opacity));
+  color: rgb(239 68 68 / var(--tw-text-opacity));
+}
+
+body:is(.dark *) {
+  --tw-bg-opacity: 1;
+  background-color: rgb(0 0 0 / var(--tw-bg-opacity));
+  --tw-text-opacity: 1;
+  color: rgb(255 255 255 / var(--tw-text-opacity));
+}
+
+body {
+  color-scheme: dark;
   font-display: swap;
   font-family: "Source Code Pro", monospace;
 }
@@ -590,7 +603,7 @@ h2 {
 
 main {
   position: relative;
-  z-index: 10;
+  z-index: 20;
   display: grid;
   min-height: 100dvh;
   grid-template-rows: min-content 1fr;
@@ -648,8 +661,15 @@ footer ul li::before {
   inset: 0px;
   border-radius: 9999px;
   border-width: 1px;
+  --tw-border-opacity: 1;
+  border-color: rgb(239 68 68 / var(--tw-border-opacity));
   --tw-content: '';
   content: var(--tw-content);
+}
+
+footer ul li:is(.dark *)::before {
+  --tw-border-opacity: 1;
+  border-color: rgb(255 255 255 / var(--tw-border-opacity));
 }
 
 li {
@@ -662,6 +682,15 @@ li > a {
   line-height: 1.5rem;
   font-weight: 400;
   letter-spacing: -0.025em;
+}
+
+canvas {
+  pointer-events: none;
+  position: fixed;
+  inset: 0px;
+  z-index: 10;
+  height: 100vh;
+  width: 100vw;
 }
 
 @keyframes spin {
@@ -681,48 +710,15 @@ li > a {
   align-items: center;
   justify-content: center;
   border-radius: 9999px;
-  --tw-bg-opacity: 1;
-  background-color: rgb(255 255 255 / var(--tw-bg-opacity));
   padding-left: 1.25rem;
   padding-right: 1.25rem;
+}
+
+#star:is(.dark *) {
+  --tw-bg-opacity: 1;
+  background-color: rgb(255 255 255 / var(--tw-bg-opacity));
   --tw-text-opacity: 1;
   color: rgb(0 0 0 / var(--tw-text-opacity));
-}
-
-.pointer-events-none {
-  pointer-events: none;
-}
-
-.fixed {
-  position: fixed;
-}
-
-.inset-0 {
-  inset: 0px;
-}
-
-.z-20 {
-  z-index: 20;
-}
-
-.h-screen {
-  height: 100vh;
-}
-
-.h-\[50dvh\] {
-  height: 50dvh;
-}
-
-.w-screen {
-  width: 100vw;
-}
-
-.w-\[50dvw\] {
-  width: 50dvw;
-}
-
-.mix-blend-difference {
-  mix-blend-mode: difference;
 }
 
 .invert {

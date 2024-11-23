@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html class="dark">
   <head>
     <title>
       Gregory Jordan - Building products in AI, DevX, Crypto, and empowering
@@ -102,10 +102,7 @@
         </nav>
       </footer>
     </main>
-    <canvas
-      id="canvas"
-      class="fixed inset-0 w-screen h-screen z-20 mix-blend-difference pointer-events-none"
-    ></canvas>
+    <canvas id="canvas"></canvas>
     <script>
       const canvas = document.getElementById("canvas");
       const gl = canvas.getContext("webgl");
@@ -124,10 +121,10 @@
       `;
 
       // Reduce load on mobile devices
-      let maxSteps = isMobile() ? 128 : 512;
+      let maxSteps = isMobile() ? 84 : 512;
       let schwarzschildRadius = isMobile() ? 0.6 : 0.4;
-      let stepSize = isMobile() ? 0.2 : 0.1;
-      let warpSize = isMobile() ? 0.1 : 0.02;
+      let stepSize = isMobile() ? 0.25 : 0.1;
+      let warpSize = isMobile() ? 0.1 : 0.03;
       let pixelRatio = window.devicePixelRatio;
 
       // Fragment shader program (your provided shader)
@@ -166,52 +163,70 @@
           return fract(sin(dot(c.xy, vec2(12.9898,78.233))) * 43758.5453);
         }
 
-        vec3 rayMarch(vec3 ro, vec3 rd, vec2 uv, float radius, vec2 aspect)
-        {
-            vec3 p = ro;
-            float r = length(p);
-            vec3 col = mix(vec3(0.), vec3(1.), invert);
-            float totalDist = 0.0;
+        vec3 rayMarch(vec3 ro, vec3 rd, vec2 uv, float radius, vec2 aspect) {
+          vec3 p = ro;
+          float r = length(p);
+          vec3 col = mix(vec3(0.), vec3(1.), invert);
+          float totalDist = 0.0;
+          const float diskThickness = 0.12;
+          const float diskColorFalloff = 0.05;
+          const float rotationSpeed = 0.3;
+          const float spiralFreq = 8.0;
+          const float spiralAmp = 0.08;
+          const float randTimeScale = 0.000001;
+          float rdDotP = dot(rd, normalize(p));
+          float influenceRadius = radius * 200.0;
+          if (r > influenceRadius && rdDotP > 0.0) {
+              return col;
+          }
 
-            for (int i = 0; i < MAX_STEPS; i++)
-            {
-                r = length(p);
+          float baseStepSize = stepSize;
+          float adaptiveStepSize;
+          bool inInfluenceZone = false;
+          bool nearDisk = false;
+          
+          for (int i = 0; i < MAX_STEPS; i++) {
+              r = length(p);
+              adaptiveStepSize = baseStepSize * max(1.0, r * 0.1);
+              inInfluenceZone = r < influenceRadius;
+              
+              if (inInfluenceZone) {
+                  float force = radius / (r * r);
+                  vec3 gravity = normalize(p) * -force;
+                  rd += gravity * adaptiveStepSize;
+                  rd = normalize(rd);
+              } else {
+                break;
+              }
 
-                float force = radius / (r * r);
-                vec3 gravity = normalize(p) * -force;
+              p += rd * adaptiveStepSize;
+              totalDist += adaptiveStepSize;
+              nearDisk = abs(p.y) < diskThickness;
+              
+              if (nearDisk) {
+                  float diskRadius = length(vec2(p.x, p.z));
+                  
+                  if (diskRadius > radius) {
+                      vec3 diskCol = diskColor(diskRadius) * 
+                                  (rand(uv.xy + time * randTimeScale) + exp(-totalDist * 0.07));
+                      
+                      float angle = atan(p.z, p.x) + time * rotationSpeed;
+                      diskCol *= 1.0 + spiralAmp * sin(angle * spiralFreq);
 
-                // update ray direction based on gravity
-                rd += gravity * stepSize;
-                rd = normalize(rd);
+                      angle = atan(rd.x, rd.y) + time * rotationSpeed;
+                      diskCol *= .75 + spiralAmp * sin(angle * spiralFreq);
 
-                // move along the ray
-                p += rd * stepSize;
-                totalDist += stepSize;
+                      col += diskCol * exp(-totalDist * diskColorFalloff);
+                  }
+              }
+              
+              if (r < radius || totalDist > 100.0 || length(col) > 10.0) {
+                  break;
+              }
+          }
 
-                // check if we're in the accretion disk region
-                float diskDist = abs(p.y);
-                float diskRadius = length(vec2(p.x, p.z));
-
-                if (diskDist < 0.1 && diskRadius > radius)
-                {
-                  // calculate disk color based on temperature/distance
-                  vec3 diskCol = diskColor(diskRadius) * rand(uv.xy + time * 0.000001) * 0.5;
-                
-                  // add time-based rotation
-                  float angle = atan(p.z, p.x) + time * 0.3;
-                  diskCol *= 1.0 + 0.08 * sin(angle * 8.0);
-
-                  // accumulate color with distance falloff
-                  col += diskCol * exp(-totalDist * 0.05);
-                }
-
-                if (abs(uv.y / aspect.y) > 1.2) {
-                  return col;
-                }
-            }
-
-            return col;
-        }
+          return col;
+      }
 
         void main()
         {
@@ -221,7 +236,7 @@
 
             // setup camera
             float warp = smoothstep(0.0, WARP_SIZE, sqrt(dot(uv - muv, uv - muv)));
-            vec3 ro = vec3(-1.0, 2.0, -20.0) - vec3(muv * 2., 0.) + warp;
+            vec3 ro = vec3(-1.0, 2.0, -20.0) + vec3(muv * 2., 0.) + warp;
             vec3 rd = normalize(vec3(uv, 1.0)) - vec3(0., 0.2, 0.);
 
             // ray march the scene
@@ -231,7 +246,6 @@
         }
       `;
 
-      // Initialize a shader program
       function initShaderProgram(gl, vsSource, fsSource) {
         const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
         const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
@@ -252,7 +266,6 @@
         return shaderProgram;
       }
 
-      // Create a shader of the given type, upload source and compile it
       function loadShader(gl, type, source) {
         const shader = gl.createShader(type);
         gl.shaderSource(shader, source);
@@ -276,7 +289,6 @@
         );
       }
 
-      // Initialize buffers
       function initBuffers(gl) {
         const positionBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
@@ -294,7 +306,6 @@
         };
       }
 
-      // Initialize everything
       const shaderProgram = initShaderProgram(gl, vsSource, fsSource);
       const programInfo = {
         program: shaderProgram,
@@ -324,14 +335,15 @@
       let nextInvert = 0.0;
 
       document.getElementById("star").addEventListener("click", (e) => {
+        document.querySelector("html").classList.toggle("dark");
         nextInvert = Math.abs(1 - nextInvert);
       });
 
-      let mouseX = 1.0;
-      let mouseY = 1.0;
+      let mouseX = 0.;
+      let mouseY = 0.;
 
-      let nextMouseX = 1.0;
-      let nextMouseY = 1.0;
+      let nextMouseX = 0.;
+      let nextMouseY = 0.;
       document.addEventListener("pointermove", (e) => {
         nextMouseX = e.clientX / window.innerWidth;
         nextMouseY = 1.0 - e.clientY / window.innerHeight;
@@ -351,13 +363,11 @@
         const dt = now - prevNow;
         prevNow = now;
         const timeScale = Math.abs(1 - (dt - 1));
-        const displayWidth = canvas.clientWidth * devicePixelRatio;
-        const displayHeight = canvas.clientHeight * devicePixelRatio;
+        const displayWidth = canvas.clientWidth * Math.max(1, devicePixelRatio);
+        const displayHeight = canvas.clientHeight * Math.max(1, devicePixelRatio);
 
         let di = nextInvert - invert;
-
         progress = Math.min(1, progress + 0.0025);
-
         invert = invert + di * 0.01 * timeScale;
 
         let dx = nextMouseX - mouseX;
