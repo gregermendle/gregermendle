@@ -12,7 +12,7 @@
   }
 
   body {
-    @apply dark:text-white dark:bg-black bg-gray-200 text-red-500 relative min-h-dvh;
+    @apply dark:text-white dark:bg-black bg-[#eed3f7] text-[#3200FF] relative min-h-dvh;
     color-scheme: dark;
     font-display: swap;
     font-family: "Source Code Pro", monospace;
@@ -26,8 +26,12 @@
     @apply font-black text-4xl tracking-tight pb-2 text-left;
   }
 
+  header {
+    @apply bg-gradient-to-b dark:from-[#100900aa] to-transparent p-6 dark:h-96 h-[50vh] transition-[height] flex justify-between;
+  }
+
   main {
-    @apply grid grid-rows-[min-content,1fr,min-content] p-6 relative z-20 min-h-dvh overflow-hidden;
+    @apply grid grid-rows-[min-content,1fr,min-content] relative z-20 min-h-dvh overflow-hidden;
     perspective: 4000px;
   }
 
@@ -36,7 +40,7 @@
   }
 
   footer {
-    @apply flex items-end;
+    @apply flex items-end p-6;
   }
 
   footer ul {
@@ -57,7 +61,7 @@
   }
 
   footer ul li::before {
-    @apply absolute inset-0 border dark:border-white border-red-500 rounded-full content-[''] pointer-events-none;
+    @apply absolute inset-0 border dark:border-white border-[#3200FF] rounded-full content-[''] pointer-events-none;
   }
 
   li {
@@ -81,17 +85,16 @@
     @apply h-[28px] flex items-center justify-center px-5 dark:bg-white rounded-full dark:text-black;
   }
 
+  #cloud {
+    @apply sm:static fixed bottom-32 right-6;
+  }
+
   #cloud ul {
-    @apply absolute pl-6 h-1/2 sm:left-3/4 left-[60%] transition-[left] top-1/4;
+    @apply pr-6 h-1/2;
   }
 
   #cloud li {
-    @apply relative;
-  }
-
-  #cloud li .pole {
-    @apply absolute -translate-x-full -translate-y-1/2 origin-top-right border-b dark:border-white border-red-500 -ml-4 mt-4;
-    content: "";
+    @apply relative text-right;
   }
 
   #cloud li:hover a {
@@ -99,11 +102,11 @@
   }
 
   #cloud a:hover::before {
-    @apply dark:bg-white bg-red-500;
+    @apply dark:bg-white bg-[#3200FF];
   }
 
   #cloud a::before {
-    @apply absolute top-2 -left-4 w-2 h-2 border dark:border-white border-red-500 bg-transparent;
+    @apply absolute top-2 -right-[18px] w-2 h-2 border dark:border-white border-[#3200FF] bg-transparent;
     content: "";
   }
 }

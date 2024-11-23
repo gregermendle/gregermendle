@@ -566,9 +566,9 @@ body {
   position: relative;
   min-height: 100dvh;
   --tw-bg-opacity: 1;
-  background-color: rgb(229 231 235 / var(--tw-bg-opacity));
+  background-color: rgb(238 211 247 / var(--tw-bg-opacity));
   --tw-text-opacity: 1;
-  color: rgb(239 68 68 / var(--tw-text-opacity));
+  color: rgb(50 0 255 / var(--tw-text-opacity));
 }
 
 body:is(.dark *) {
@@ -601,6 +601,25 @@ h2 {
   letter-spacing: -0.025em;
 }
 
+header {
+  display: flex;
+  height: 50vh;
+  justify-content: space-between;
+  background-image: linear-gradient(to bottom, var(--tw-gradient-stops));
+  --tw-gradient-to: transparent var(--tw-gradient-to-position);
+  padding: 1.5rem;
+  transition-property: height;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+
+header:is(.dark *) {
+  height: 24rem;
+  --tw-gradient-from: #100900aa var(--tw-gradient-from-position);
+  --tw-gradient-to: rgb(16 9 0 / 0) var(--tw-gradient-to-position);
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
+}
+
 main {
   position: relative;
   z-index: 20;
@@ -608,7 +627,6 @@ main {
   min-height: 100dvh;
   grid-template-rows: min-content 1fr min-content;
   overflow: hidden;
-  padding: 1.5rem;
   perspective: 4000px;
 }
 
@@ -620,6 +638,7 @@ nav {
 footer {
   display: flex;
   align-items: flex-end;
+  padding: 1.5rem;
 }
 
 footer ul {
@@ -664,7 +683,7 @@ footer ul li::before {
   border-radius: 9999px;
   border-width: 1px;
   --tw-border-opacity: 1;
-  border-color: rgb(239 68 68 / var(--tw-border-opacity));
+  border-color: rgb(50 0 255 / var(--tw-border-opacity));
   --tw-content: '';
   content: var(--tw-content);
 }
@@ -723,25 +742,26 @@ canvas {
   color: rgb(0 0 0 / var(--tw-text-opacity));
 }
 
-#cloud ul {
-  position: absolute;
-  left: 60%;
-  top: 25%;
-  height: 50%;
-  padding-left: 1.5rem;
-  transition-property: left;
-  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-  transition-duration: 150ms;
+#cloud {
+  position: fixed;
+  bottom: 8rem;
+  right: 1.5rem;
 }
 
 @media (min-width: 640px) {
-  #cloud ul {
-    left: 75%;
+  #cloud {
+    position: static;
   }
+}
+
+#cloud ul {
+  height: 50%;
+  padding-right: 1.5rem;
 }
 
 #cloud li {
   position: relative;
+  text-align: right;
 }
 
 #cloud li:hover a {
@@ -751,7 +771,7 @@ canvas {
 
 #cloud a:hover::before {
   --tw-bg-opacity: 1;
-  background-color: rgb(239 68 68 / var(--tw-bg-opacity));
+  background-color: rgb(50 0 255 / var(--tw-bg-opacity));
 }
 
 #cloud a:hover:is(.dark *)::before {
@@ -762,12 +782,12 @@ canvas {
 #cloud a::before {
   position: absolute;
   top: 0.5rem;
-  left: -1rem;
+  right: -18px;
   height: 0.5rem;
   width: 0.5rem;
   border-width: 1px;
   --tw-border-opacity: 1;
-  border-color: rgb(239 68 68 / var(--tw-border-opacity));
+  border-color: rgb(50 0 255 / var(--tw-border-opacity));
   background-color: transparent;
 }
 
@@ -778,10 +798,6 @@ canvas {
 
 #cloud a::before {
   content: "";
-}
-
-.transform {
-  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
 }
 
 .invert {

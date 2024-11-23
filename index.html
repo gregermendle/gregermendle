@@ -52,31 +52,33 @@
   <body>
     <main>
       <header>
-        <h1>Gregory Jordan</h1>
-        <p>[gregermendle]</p>
+        <div>
+          <h1>Gregory Jordan</h1>
+          <p>[gregermendle]</p>
+        </div>
+        <div id="cloud">
+          <ul>
+            <li>
+              <a target="_blank" href="https://gnomi.xyz">gnomi</a>
+            </li>
+            <li>
+              <a target="_blank" href="https://rvsn.xyz">rvsn</a>
+            </li>
+            <li>
+              <a target="_blank" href="https://cnvrt.run">cnvrt</a>
+            </li>
+            <li>
+              <a target="_blank" href="https://riptar.gregermendle.com">riptar</a>
+            </li>
+            <li>
+              <a target="_blank" href="https://gregermendle.github.io/inframe/">inframe</a>
+            </li>
+            <li>
+              <a target="_blank" href="https://remix-mailer.gregermendle.com">remix-mailer</a>
+            </li>
+          </ul>
+        </div>
       </header>
-      <!-- <div id="cloud">
-        <ul>
-          <li>
-            <a target="_blank" href="https://remix-mailer.gregermendle.com">remix-mailer</a>
-          </li>
-          <li>
-            <a target="_blank" href="https://gnomi.xyz">gnomi</a>
-          </li>
-          <li>
-            <a target="_blank" href="https://rvsn.xyz">rvsn</a>
-          </li>
-          <li>
-            <a target="_blank" href="https://cnvrt.run">cnvrt</a>
-          </li>
-          <li>
-            <a target="_blank" href="https://riptar.gregermendle.com">riptar</a>
-          </li>
-          <li>
-            <a target="_blank" href="https://gregermendle.github.io/inframe/">inframe</a>
-          </li>
-        </ul>
-      </div> -->
       <footer>
         <nav>
           <ul>
@@ -157,16 +159,16 @@
         #define PI 3.14159265359
         #define WARP_SIZE ${warpSize.toFixed(2)}
 
-        vec3 diskColor(float dist)
+        vec4 diskColor(float dist)
         {
-            vec3 hotColor = mix(vec3(1.), vec3(0., -1., -1.), invert); // hot
-            vec3 midColor = hotColor / 3.; // middle
-            vec3 coolColor = hotColor / 5.; // cooler
+            vec4 hotColor = mix(vec4(1., 240. / 255., 200. / 255., 1.), vec4(50. / 255., 0., 255. / 255., 1.), invert); // hot
+            vec4 midColor = mix(vec4(1., 220. / 255., 190. / 255., 1.) / 3., vec4(50. / 255., 0., 255. / 255., 1.) / 3., invert); // middle
+            vec4 coolColor = mix(vec4(1., 185. / 255., 140. / 255., 1.) / 5., vec4(50. / 255., 0., 255. / 255., 1.) / 5., invert); // cooler
 
             float innerTemp = smoothstep(2.0, 4.0, dist);
             float outerTemp = smoothstep(4.0, 8.0, dist);
 
-            vec3 c = mix(hotColor, midColor, innerTemp);
+            vec4 c = mix(hotColor, midColor, innerTemp);
             c = mix(c, coolColor, outerTemp);
 
             // add temperature-based intensity
@@ -178,10 +180,10 @@
           return fract(sin(dot(c.xy, vec2(12.9898,78.233))) * 43758.5453);
         }
 
-        vec3 rayMarch(vec3 ro, vec3 rd, vec2 uv, float radius, vec2 aspect) {
+        vec4 rayMarch(vec3 ro, vec3 rd, vec2 uv, float radius, vec2 aspect) {
           vec3 p = ro;
           float r = length(p);
-          vec3 col = mix(vec3(0.), vec3(1.), invert);
+          vec4 col = vec4(0.);
           float totalDist = 0.0;
           const float diskThickness = 0.12;
           const float diskColorFalloff = 0.05;
@@ -222,7 +224,7 @@
                   float diskRadius = length(vec2(p.x, p.z));
                   
                   if (diskRadius > radius) {
-                      vec3 diskCol = diskColor(diskRadius) * 
+                      vec4 diskCol = diskColor(diskRadius) * 
                                   (rand(uv.xy + time * randTimeScale) + exp(-totalDist * 0.07));
                       
                       float angle = atan(p.z, p.x) + time * rotationSpeed;
@@ -241,23 +243,28 @@
           }
 
           return col;
-      }
+        }
 
         void main()
         {
-            vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / min(resolution.x, resolution.y);
-            vec2 aspect = resolution.xy / min(resolution.x, resolution.y);
-            vec2 muv = (mouse.xy - 0.5) * aspect;
+          vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / min(resolution.x, resolution.y);
+          vec2 aspect = resolution.xy / min(resolution.x, resolution.y);
+          vec2 muv = (mouse.xy - 0.5) * aspect;
 
-            // setup camera
-            float warp = smoothstep(0.0, WARP_SIZE, sqrt(dot(uv - muv, uv - muv)));
-            vec3 ro = vec3(-1.0, 2.0, -20.0) + vec3(muv * 2., 0.) + warp;
-            vec3 rd = normalize(vec3(uv, 1.0)) - vec3(0., 0.2, 0.);
+          // setup camera
+          float warp = smoothstep(0.0, WARP_SIZE, sqrt(dot(uv - muv, uv - muv)));
+          vec3 ro = vec3(-1.0, 2.0, -20.0) + vec3(muv * 2., 0.) + warp;
+          vec3 rd = normalize(vec3(uv, 1.0)) - vec3(0., 0.2, 0.);
 
-            // ray march the scene
-            vec3 col = rayMarch(ro, rd, uv * aspect * 5., SCHWARZSCHILD_RADIUS * progress, aspect);
+          // ray march the scene
+          vec4 col = rayMarch(
+            ro, 
+            rd, 
+            uv * aspect * 5., 
+            SCHWARZSCHILD_RADIUS * progress, 
+            aspect);
 
-            gl_FragColor = vec4(col, 1.0);
+          gl_FragColor = col;
         }
       `;
 
@@ -363,11 +370,6 @@
       document.addEventListener("pointermove", (e) => {
         nextMouseX = e.clientX / window.innerWidth;
         nextMouseY = 1.0 - e.clientY / window.innerHeight;
-        const x = (nextMouseX - 0.5) / 0.5;
-        const y = (nextMouseY - 0.5) / 0.5;
-        const rotY = Math.atan(x) * 0.2;
-        const rotX = Math.atan(y) * 0.2;
-        cloud.style.transform = `rotateY(${rotY}rad) rotateX(${-rotX}rad)`;
       });
 
       function easeOutBack(x) {
