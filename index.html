@@ -58,22 +58,22 @@
         </div>
         <div id="cloud">
           <ul>
-            <li>
+            <li style="--n: 0">
               <a target="_blank" href="https://gnomi.xyz">gnomi</a>
             </li>
-            <li>
+            <li style="--n: 1">
               <a target="_blank" href="https://rvsn.xyz">rvsn</a>
             </li>
-            <li>
+            <li style="--n: 2">
               <a target="_blank" href="https://cnvrt.run">cnvrt</a>
             </li>
-            <li>
+            <li style="--n: 3">
               <a target="_blank" href="https://riptar.gregermendle.com">riptar</a>
             </li>
-            <li>
+            <li style="--n: 4">
               <a target="_blank" href="https://gregermendle.github.io/inframe/">inframe</a>
             </li>
-            <li>
+            <li style="--n: 5">
               <a target="_blank" href="https://remix-mailer.gregermendle.com">remix-mailer</a>
             </li>
           </ul>
@@ -82,24 +82,24 @@
       <footer>
         <nav>
           <ul>
-            <li>
+            <li style="--n: 0">
               <a target="_blank" href="https://github.com/gregermendle"
                 >github</a
               >
             </li>
-            <li>
+            <li style="--n: 1">
               <a target="_blank" href="https://twitter.com/_studable_"
                 >twitter</a
               >
             </li>
-            <li>
+            <li style="--n: 2">
               <a
                 target="_blank"
                 href="https://discordapp.com/users/289963161044385802"
                 >discord</a
               >
             </li>
-            <li id="star">
+            <li id="star" style="--n: 3">
               <button>
                 <svg
                   width="16"
@@ -264,7 +264,7 @@
             SCHWARZSCHILD_RADIUS * progress, 
             aspect);
 
-          gl_FragColor = col;
+          gl_FragColor = col * progress;
         }
       `;
 
@@ -356,10 +356,17 @@
       let invert = 0.0;
       let nextInvert = 0.0;
 
-      document.getElementById("star").addEventListener("click", (e) => {
+      function toggleInvert() {
         document.querySelector("html").classList.toggle("dark");
         nextInvert = Math.abs(1 - nextInvert);
-      });
+        localStorage.setItem("invert", nextInvert);
+      }
+
+      if (localStorage.getItem("invert") > 0) {
+        toggleInvert();
+      }
+
+      document.getElementById("star").addEventListener("click", toggleInvert);
 
       let mouseX = 0;
       let mouseY = 0;

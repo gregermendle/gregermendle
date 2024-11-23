@@ -20,10 +20,12 @@
 
   h1 {
     @apply tracking-wide font-[650] text-[14px] uppercase leading-tight;
+    animation: fadeIn 1.5s ease-in both;
   }
 
-  h2 {
-    @apply font-black text-4xl tracking-tight pb-2 text-left;
+  p {
+    animation: fadeIn 1.5s ease-in both;
+    animation-delay: 250ms;
   }
 
   header {
@@ -33,6 +35,10 @@
   main {
     @apply grid grid-rows-[min-content,1fr,min-content] relative z-20 min-h-dvh overflow-hidden;
     perspective: 4000px;
+  }
+
+  canvas {
+    animation: fadeIn 3s ease-in 1;
   }
 
   nav {
@@ -64,8 +70,10 @@
     @apply absolute inset-0 border dark:border-white border-[#3200FF] rounded-full content-[''] pointer-events-none;
   }
 
-  li {
+  footer ul li {
     @apply overflow-visible;
+    animation: fadeIn 750ms ease-in both;
+    animation-delay: calc(250ms * 5 + 500ms + 250ms * var(--n));
   }
 
   li > a {
@@ -74,6 +82,8 @@
 
   canvas {
     @apply fixed inset-0 w-screen h-screen z-10 pointer-events-none;
+    animation: fadeIn 1.5s ease-in both;
+    animation-delay: calc(250ms * 5 + 250ms * 3);
   }
 
   #star:has(button:focus),
@@ -95,6 +105,8 @@
 
   #cloud li {
     @apply relative text-right;
+    animation: fadeIn 1s ease-in both;
+    animation-delay: calc(250ms * var(--n));
   }
 
   #cloud li:hover a {
@@ -108,5 +120,14 @@
   #cloud a::before {
     @apply absolute top-2 -right-[18px] w-2 h-2 border dark:border-white border-[#3200FF] bg-transparent;
     content: "";
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }

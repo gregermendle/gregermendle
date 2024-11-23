@@ -590,15 +590,12 @@ h1 {
   text-transform: uppercase;
   line-height: 1.25;
   letter-spacing: 0.025em;
+  animation: fadeIn 1.5s ease-in both;
 }
 
-h2 {
-  padding-bottom: 0.5rem;
-  text-align: left;
-  font-size: 2.25rem;
-  line-height: 2.5rem;
-  font-weight: 900;
-  letter-spacing: -0.025em;
+p {
+  animation: fadeIn 1.5s ease-in both;
+  animation-delay: 250ms;
 }
 
 header {
@@ -628,6 +625,10 @@ main {
   grid-template-rows: min-content 1fr min-content;
   overflow: hidden;
   perspective: 4000px;
+}
+
+canvas {
+  animation: fadeIn 3s ease-in 1;
 }
 
 nav {
@@ -693,8 +694,10 @@ footer ul li:is(.dark *)::before {
   border-color: rgb(255 255 255 / var(--tw-border-opacity));
 }
 
-li {
+footer ul li {
   overflow: visible;
+  animation: fadeIn 750ms ease-in both;
+  animation-delay: calc(250ms * 5 + 500ms + 250ms * var(--n));
 }
 
 li > a {
@@ -712,6 +715,8 @@ canvas {
   z-index: 10;
   height: 100vh;
   width: 100vw;
+  animation: fadeIn 1.5s ease-in both;
+  animation-delay: calc(250ms * 5 + 250ms * 3);
 }
 
 @keyframes spin {
@@ -762,6 +767,8 @@ canvas {
 #cloud li {
   position: relative;
   text-align: right;
+  animation: fadeIn 1s ease-in both;
+  animation-delay: calc(250ms * var(--n));
 }
 
 #cloud li:hover a {
@@ -803,4 +810,14 @@ canvas {
 .invert {
   --tw-invert: invert(100%);
   filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
