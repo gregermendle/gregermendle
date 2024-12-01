@@ -138,11 +138,10 @@
       `;
 
       // Reduce load on mobile devices
-      let maxSteps = isMobile() ? 84 : 512;
+      let maxSteps = isMobile() ? 84 : 128;
       let schwarzschildRadius = isMobile() ? 0.6 : 0.4;
-      let stepSize = isMobile() ? 0.25 : 0.1;
+      let stepSize = isMobile() ? 0.25 : 0.15;
       let warpSize = isMobile() ? 0.1 : 0.03;
-      let pixelRatio = window.devicePixelRatio;
 
       // Fragment shader program (your provided shader)
       const fsSource = `
@@ -192,7 +191,7 @@
           const float spiralAmp = 0.08;
           const float randTimeScale = 0.000001;
           float rdDotP = dot(rd, normalize(p));
-          float influenceRadius = radius * 200.0;
+          float influenceRadius = radius * 50.0;
           if (r > influenceRadius && rdDotP > 0.0) {
               return col;
           }
@@ -213,7 +212,7 @@
                   rd += gravity * adaptiveStepSize;
                   rd = normalize(rd);
               } else {
-                break;
+                return col;
               }
 
               p += rd * adaptiveStepSize;
@@ -238,7 +237,7 @@
               }
               
               if (r < radius || totalDist > 100.0 || length(col) > 10.0) {
-                  break;
+                return col;
               }
           }
 
@@ -393,9 +392,8 @@
         const dt = now - prevNow;
         prevNow = now;
         const timeScale = Math.abs(1 - (dt - 1));
-        const displayWidth = canvas.clientWidth * Math.max(1, devicePixelRatio);
-        const displayHeight =
-          canvas.clientHeight * Math.max(1, devicePixelRatio);
+        const displayWidth = canvas.clientWidth;
+        const displayHeight = canvas.clientHeight;
 
         let di = nextInvert - invert;
         progress = Math.min(1, progress + 0.0025);
