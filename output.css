@@ -680,26 +680,26 @@ footer ul li:not(:has(a))::before {
   content: var(--tw-content);
 }
 
-#cloud li,
+.cloud li,
   footer ul li:has(a) {
   position: relative;
   padding-left: 1.25rem;
   text-align: left;
 }
 
-#cloud li:hover a,
+.cloud li:hover a,
   footer ul li:has(a):hover a {
   text-decoration-line: underline;
   text-underline-offset: 2px;
 }
 
-#cloud li:hover::before,
+.cloud li:hover::before,
   footer ul li:has(a):hover::before {
   --tw-bg-opacity: 1;
   background-color: rgb(255 255 255 / var(--tw-bg-opacity));
 }
 
-#cloud li::before,
+.cloud li::before,
   footer ul li:has(a)::before {
   position: absolute;
   left: 0px;
@@ -744,7 +744,7 @@ canvas {
   color: rgb(0 0 0 / var(--tw-text-opacity));
 }
 
-#cloud ul {
+.cloud ul {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -753,6 +753,10 @@ canvas {
 
 .flex {
   display: flex;
+}
+
+.inline-flex {
+  display: inline-flex;
 }
 
 .w-16 {
@@ -765,6 +769,14 @@ canvas {
 
 .gap-2 {
   gap: 0.5rem;
+}
+
+.gap-6 {
+  gap: 1.5rem;
+}
+
+.border-dotted {
+  border-style: dotted;
 }
 
 .border-white {

@@ -72,22 +72,22 @@
     @apply absolute inset-0 border border-white rounded-full content-[''] pointer-events-none;
   }
 
-  #cloud li,
+  .cloud li,
   footer ul li:has(a) {
     @apply relative text-left pl-5;
   }
 
-  #cloud li:hover a,
+  .cloud li:hover a,
   footer ul li:has(a):hover a {
     @apply underline underline-offset-2;
   }
 
-  #cloud li:hover::before,
+  .cloud li:hover::before,
   footer ul li:has(a):hover::before {
     @apply bg-white;
   }
 
-  #cloud li::before,
+  .cloud li::before,
   footer ul li:has(a)::before {
     @apply absolute left-0 top-2 w-2 h-2 border border-white bg-transparent;
     content: "";
@@ -105,7 +105,7 @@
     @apply w-7 h-7 flex items-center justify-center bg-white rounded-full text-black ml-auto;
   }
 
-  #cloud ul {
+  .cloud ul {
     @apply flex flex-col gap-1 items-start;
   }
 }
