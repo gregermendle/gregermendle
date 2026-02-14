@@ -58,13 +58,15 @@ function getFragmentShaderSource() {
     #define SCHWARZSCHILD_RADIUS ${schwarzschildRadius.toFixed(2)}
     #define PI 3.14159265359
     #define WARP_SIZE ${warpSize.toFixed(2)}
+    #define DISK_SCALE 1.
 
     vec4 diskColor(float dist) {
-      float innerTemp = smoothstep(2.0, 4.0, dist);
-      float outerTemp = smoothstep(4.0, 8.0, dist);
+      float d = dist / DISK_SCALE;
+      float innerTemp = smoothstep(2.0, 4.0, d);
+      float outerTemp = smoothstep(4.0, 8.0, d);
       float gray = mix(1.0, mix(0.4, 0.1, outerTemp), innerTemp);
       gray = mix(gray, 1.0 - gray, invert);
-      float intensity = exp(-dist * 0.25);
+      float intensity = exp(-d * 0.25);
       return vec4(vec3(gray * intensity), 1.0);
     }
 
