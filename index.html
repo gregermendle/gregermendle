@@ -31,16 +31,6 @@
     />
     <meta name="twitter:image" content="https://gregermendle.com/social.png" />
     <link rel="stylesheet" type="text/css" href="/output.css" />
-    <noscript>
-      <style>
-        #canvas {
-          background-color: white;
-        }
-        #star {
-          display: none;
-        }
-      </style>
-    </noscript>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -52,54 +42,48 @@
   <body>
     <main>
       <header>
-        <div>
+        <div class="flex flex-col gap-2">
           <h1>Gregory Jordan</h1>
-          <p>[gregermendle]</p>
-        </div>
-        <div id="cloud">
-          <ul>
-            <li style="--n: 0">
-              <a target="_blank" href="https://gnomi.xyz">gnomi</a>
-            </li>
-            <li style="--n: 1">
-              <a target="_blank" href="https://rvsn.xyz">rvsn</a>
-            </li>
-            <li style="--n: 2">
-              <a target="_blank" href="https://cnvrt.run">cnvrt</a>
-            </li>
-            <li style="--n: 3">
-              <a target="_blank" href="https://riptar.gregermendle.com">riptar</a>
-            </li>
-            <li style="--n: 4">
-              <a target="_blank" href="https://gregermendle.github.io/inframe/">inframe</a>
-            </li>
-            <li style="--n: 5">
-              <a target="_blank" href="https://remix-mailer.gregermendle.com">remix-mailer</a>
-            </li>
-          </ul>
+          <hr class="border-white w-16" />
+          <div id="cloud">
+            <ul>
+              <li>
+                <a target="_blank" href="https://cnvrt.run">cnvrt</a>
+              </li>
+              <li>
+                <a target="_blank" href="https://riptar.gregermendle.com">riptar</a>
+              </li>
+              <li>
+                <a target="_blank" href="https://gregermendle.github.io/inframe/">inframe</a>
+              </li>
+              <li>
+                <a target="_blank" href="https://remix-mailer.gregermendle.com">remix-mailer</a>
+              </li>
+            </ul>
+          </div>
         </div>
       </header>
       <footer>
         <nav>
           <ul>
-            <li style="--n: 0">
+            <li>
               <a target="_blank" href="https://github.com/gregermendle"
                 >github</a
               >
             </li>
-            <li style="--n: 1">
+            <li>
               <a target="_blank" href="https://twitter.com/_studable_"
                 >twitter</a
               >
             </li>
-            <li style="--n: 2">
+            <li>
               <a
                 target="_blank"
                 href="https://discordapp.com/users/289963161044385802"
                 >discord</a
               >
             </li>
-            <li id="star" style="--n: 3">
+            <li id="star">
               <button>
                 <svg
                   width="16"
@@ -141,7 +125,7 @@
       let maxSteps = isMobile() ? 84 : 128;
       let schwarzschildRadius = isMobile() ? 0.6 : 0.4;
       let stepSize = isMobile() ? 0.25 : 0.15;
-      let warpSize = isMobile() ? 0.1 : 0.03;
+      let warpSize = isMobile() ? 0.05 : 0.25;
 
       // Fragment shader program (your provided shader)
       const fsSource = `
@@ -160,36 +144,30 @@
 
         vec4 diskColor(float dist)
         {
-            vec4 hotColor = mix(vec4(1., 240. / 255., 200. / 255., 1.), vec4(50. / 255., 0., 255. / 255., 1.), invert); // hot
-            vec4 midColor = mix(vec4(1., 220. / 255., 190. / 255., 1.) / 3., vec4(50. / 255., 0., 255. / 255., 1.) / 3., invert); // middle
-            vec4 coolColor = mix(vec4(1., 185. / 255., 140. / 255., 1.) / 5., vec4(50. / 255., 0., 255. / 255., 1.) / 5., invert); // cooler
-
             float innerTemp = smoothstep(2.0, 4.0, dist);
             float outerTemp = smoothstep(4.0, 8.0, dist);
 
-            vec4 c = mix(hotColor, midColor, innerTemp);
-            c = mix(c, coolColor, outerTemp);
-
-            // add temperature-based intensity
+            float gray = mix(1.0, mix(0.4, 0.1, outerTemp), innerTemp);
+            gray = mix(gray, 1.0 - gray, invert);
             float intensity = exp(-dist * 0.25);
-            return c * intensity;
+            return vec4(vec3(gray * intensity), 1.0);
         }
 
-        float rand(vec2 c){
-          return fract(sin(dot(c.xy, vec2(12.9898,78.233))) * 43758.5453);
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
         }
 
         vec4 rayMarch(vec3 ro, vec3 rd, vec2 uv, float radius, vec2 aspect) {
-          vec3 p = ro;
+          float jitter = hash(uv) * stepSize;
+          vec3 p = ro + rd * jitter;
           float r = length(p);
           vec4 col = vec4(0.);
-          float totalDist = 0.0;
+          float totalDist = jitter;
           const float diskThickness = 0.12;
           const float diskColorFalloff = 0.05;
           const float rotationSpeed = 0.3;
           const float spiralFreq = 8.0;
           const float spiralAmp = 0.08;
-          const float randTimeScale = 0.000001;
           float rdDotP = dot(rd, normalize(p));
           float influenceRadius = radius * 50.0;
           if (r > influenceRadius && rdDotP > 0.0) {
@@ -223,8 +201,7 @@
                   float diskRadius = length(vec2(p.x, p.z));
                   
                   if (diskRadius > radius) {
-                      vec4 diskCol = diskColor(diskRadius) * 
-                                  (rand(uv.xy + time * randTimeScale) + exp(-totalDist * 0.07));
+                      vec4 diskCol = diskColor(diskRadius) * exp(-totalDist * 0.07);
                       
                       float angle = atan(p.z, p.x) + time * rotationSpeed;
                       diskCol *= 1.0 + spiralAmp * sin(angle * spiralFreq);
@@ -250,12 +227,12 @@
           vec2 aspect = resolution.xy / min(resolution.x, resolution.y);
           vec2 muv = (mouse.xy - 0.5) * aspect;
 
-          // setup camera
-          float warp = smoothstep(0.0, WARP_SIZE, sqrt(dot(uv - muv, uv - muv)));
-          vec3 ro = vec3(-1.0, 2.0, -20.0) + vec3(muv * 2., 0.) + warp;
+          float warp = 1.0 - smoothstep(0.0, WARP_SIZE, length(uv - muv));
+          vec2 outward = normalize(muv - uv + 0.001) * warp * 2.0;
+          vec3 ro = vec3(-1.0, 2.0, -10.0) + vec3(muv * 2., 0.) + vec3(outward, 0.);
+
           vec3 rd = normalize(vec3(uv, 1.0)) - vec3(0., 0.2, 0.);
 
-          // ray march the scene
           vec4 col = rayMarch(
             ro, 
             rd, 
@@ -346,23 +323,189 @@
         },
       };
 
+      const blitVsSource = `
+        attribute vec4 aVertexPosition;
+        varying vec2 vTexCoord;
+        void main() {
+          gl_Position = aVertexPosition;
+          vTexCoord = aVertexPosition.xy * 0.5 + 0.5;
+        }
+      `;
+
+      const blitFsSource = `
+        precision highp float;
+        uniform sampler2D uTex;
+        varying vec2 vTexCoord;
+        void main() {
+          gl_FragColor = texture2D(uTex, vTexCoord);
+        }
+      `;
+
+      const blitProgram = initShaderProgram(gl, blitVsSource, blitFsSource);
+
+      const DITHER_THRESHOLD = 128;
+      const LUM_SCALE = 1 / 3;
+      const RENDER_SCALE = 0.3;
+
+      let ditherLum = null;
+      let ditherWork = null;
+      let ditherOut = null;
+      let ditherOutput = null;
+
+      function applyDitheringAndAberration(pixels, width, height, aberrationOff) {
+        const n = width * height;
+        const w = width;
+        const w4 = w * 4;
+
+        if (!ditherLum || ditherLum.length < n) {
+          ditherLum = new Float32Array(n);
+          ditherWork = new Float32Array(n);
+          ditherOut = new Uint8Array(n);
+          ditherOutput = new Uint8Array(n * 4);
+        }
+
+        const out = ditherOutput;
+        const off = Math.max(0, aberrationOff | 0);
+        const clampX = (x) => (x < 0 ? 0 : x >= w ? w - 1 : x);
+
+        for (let i = 0; i < n; i++) {
+          const i4 = i * 4;
+          ditherLum[i] = (pixels[i4] + pixels[i4 + 1] + pixels[i4 + 2]) * LUM_SCALE;
+        }
+
+        ditherWork.set(ditherLum);
+
+        const e7 = 7 / 16, e3 = 3 / 16, e5 = 5 / 16, e1 = 1 / 16;
+        for (let y = 0; y < height; y++) {
+          const rowBase = y * w;
+          for (let x = 0; x < w; x++) {
+            const i = rowBase + x;
+            const oldVal = ditherWork[i];
+            if (oldVal === 0) {
+              ditherOut[i] = 0;
+            } else {
+              const newVal = oldVal < DITHER_THRESHOLD ? 0 : 255;
+              const err = oldVal - newVal;
+              ditherOut[i] = newVal;
+              if (x + 1 < w) ditherWork[i + 1] += err * e7;
+              if (y + 1 < height) {
+                if (x > 0) ditherWork[i + w - 1] += err * e3;
+                ditherWork[i + w] += err * e5;
+                if (x + 1 < w) ditherWork[i + w + 1] += err * e1;
+              }
+            }
+          }
+        }
+
+        for (let i = 0; i < n; i++) {
+          const y = (i / w) | 0;
+          const x = i % w;
+          const d = ditherOut[i];
+          const oi = i * 4;
+          out[oi + 3] = 255;
+          if (d === 0) {
+            out[oi] = out[oi + 1] = out[oi + 2] = 0;
+          } else if (off > 0) {
+            const row = y * w4;
+            out[oi] = pixels[row + clampX(x + off) * 4];
+            out[oi + 1] = pixels[row + x * 4 + 1];
+            out[oi + 2] = pixels[row + clampX(x - off) * 4 + 2];
+          } else {
+            const i4 = i * 4;
+            out[oi] = pixels[i4];
+            out[oi + 1] = pixels[i4 + 1];
+            out[oi + 2] = pixels[i4 + 2];
+          }
+        }
+
+        return out;
+      }
+
+      let framebuffer = null;
+      let sceneTexture = null;
+      let displayTexture = null;
+      let pixelBuffer = null;
+
+      function initFramebuffer(gl, width, height) {
+        if (framebuffer) {
+          gl.deleteFramebuffer(framebuffer);
+          gl.deleteTexture(sceneTexture);
+          gl.deleteTexture(displayTexture);
+        }
+        sceneTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, sceneTexture);
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          0,
+          gl.RGBA,
+          width,
+          height,
+          0,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          null
+        );
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        displayTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, displayTexture);
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          0,
+          gl.RGBA,
+          width,
+          height,
+          0,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          null
+        );
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        framebuffer = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        gl.framebufferTexture2D(
+          gl.FRAMEBUFFER,
+          gl.COLOR_ATTACHMENT0,
+          gl.TEXTURE_2D,
+          sceneTexture,
+          0
+        );
+
+        pixelBuffer = new Uint8Array(width * height * 4);
+      }
+
+      const blitProgramInfo = {
+        program: blitProgram,
+        attribLocations: {
+          vertexPosition: gl.getAttribLocation(blitProgram, "aVertexPosition"),
+        },
+        uniformLocations: {
+          uTex: gl.getUniformLocation(blitProgram, "uTex"),
+        },
+      };
+
       const buffers = initBuffers(gl);
 
       function clamp(n, min, max) {
         return Math.min(Math.max(n, min), max);
       }
 
-      let invert = 0.0;
-      let nextInvert = 0.0;
-
       function toggleInvert() {
-        document.querySelector("html").classList.toggle("dark");
-        nextInvert = Math.abs(1 - nextInvert);
-        localStorage.setItem("invert", nextInvert);
+        const html = document.querySelector("html");
+        html.classList.toggle("inverted");
+        const inverted = html.classList.contains("inverted");
+        localStorage.setItem("invert", inverted ? "1" : "0");
       }
 
-      if (localStorage.getItem("invert") > 0) {
-        toggleInvert();
+      if (localStorage.getItem("invert") === "1") {
+        document.querySelector("html").classList.add("inverted");
       }
 
       document.getElementById("star").addEventListener("click", toggleInvert);
@@ -395,21 +538,34 @@
         const displayWidth = canvas.clientWidth;
         const displayHeight = canvas.clientHeight;
 
-        let di = nextInvert - invert;
         progress = Math.min(1, progress + 0.0025);
-        invert = invert + di * 0.01 * timeScale;
 
         let dx = nextMouseX - mouseX;
         let dy = nextMouseY - mouseY;
         mouseX = mouseX + dx * 0.01 * timeScale;
         mouseY = mouseY + dy * 0.01 * timeScale;
 
+        const renderWidth = Math.max(1, (displayWidth * RENDER_SCALE) | 0);
+        const renderHeight = Math.max(1, (displayHeight * RENDER_SCALE) | 0);
+
         if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
           canvas.width = displayWidth;
           canvas.height = displayHeight;
           gl.viewport(0, 0, canvas.width, canvas.height);
+          initFramebuffer(gl, renderWidth, renderHeight);
         }
 
+        if (!framebuffer && canvas.width > 0 && canvas.height > 0) {
+          initFramebuffer(gl, renderWidth, renderHeight);
+        }
+
+        if (!framebuffer || canvas.width === 0 || canvas.height === 0) {
+          requestAnimationFrame(render);
+          return;
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        gl.viewport(0, 0, renderWidth, renderHeight);
         gl.clearColor(0.0, 0.0, 0.0, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT);
 
@@ -417,8 +573,8 @@
 
         gl.uniform2f(
           programInfo.uniformLocations.resolution,
-          canvas.width,
-          canvas.height
+          renderWidth,
+          renderHeight
         );
         gl.uniform1f(programInfo.uniformLocations.time, now * 0.001);
         gl.uniform1f(
@@ -426,7 +582,7 @@
           easeOutBack(progress)
         );
         gl.uniform2f(programInfo.uniformLocations.mouse, mouseX, mouseY);
-        gl.uniform1f(programInfo.uniformLocations.invert, invert);
+        gl.uniform1f(programInfo.uniformLocations.invert, 0);
 
         gl.uniform1f(programInfo.uniformLocations.stepSize, stepSize);
 
@@ -440,6 +596,52 @@
           0
         );
         gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+        gl.readPixels(0, 0, renderWidth, renderHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixelBuffer);
+
+        const aberrationOffset = 4;
+        const dithered = applyDitheringAndAberration(
+          pixelBuffer,
+          renderWidth,
+          renderHeight,
+          aberrationOffset
+        );
+
+        gl.bindTexture(gl.TEXTURE_2D, displayTexture);
+        gl.texSubImage2D(
+          gl.TEXTURE_2D,
+          0,
+          0,
+          0,
+          renderWidth,
+          renderHeight,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          dithered
+        );
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, displayWidth, displayHeight);
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        gl.useProgram(blitProgramInfo.program);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, displayTexture);
+        gl.uniform1i(blitProgramInfo.uniformLocations.uTex, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
+        gl.vertexAttribPointer(
+          blitProgramInfo.attribLocations.vertexPosition,
+          2,
+          gl.FLOAT,
+          false,
+          0,
+          0
+        );
+        gl.enableVertexAttribArray(blitProgramInfo.attribLocations.vertexPosition);
 
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         requestAnimationFrame(render);

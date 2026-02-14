@@ -11,25 +11,27 @@
     font-size: 14px;
   }
 
+  html.inverted {
+    filter: invert(1);
+  }
+
   body {
-    @apply dark:text-white dark:bg-black bg-[#eed3f7] text-[#3200FF] relative min-h-dvh;
+    @apply bg-black text-white relative min-h-dvh lowercase;
     color-scheme: dark;
     font-display: swap;
     font-family: "Source Code Pro", monospace;
   }
 
   h1 {
-    @apply tracking-wide font-[650] text-[14px] uppercase leading-tight;
-    animation: fadeIn 1.5s ease-in both;
+    @apply tracking-wide font-[650] text-[14px] leading-none;
   }
 
   p {
-    animation: fadeIn 1.5s ease-in both;
-    animation-delay: 250ms;
+    @apply leading-none opacity-70;
   }
 
   header {
-    @apply bg-gradient-to-b dark:from-[#100900aa] to-transparent p-6 dark:h-96 h-[50vh] transition-[height] flex justify-between;
+    @apply bg-gradient-to-b from-[#100900aa] to-transparent p-6 h-96 transition-[height] flex justify-between;
   }
 
   main {
@@ -37,12 +39,8 @@
     perspective: 4000px;
   }
 
-  canvas {
-    animation: fadeIn 3s ease-in 1;
-  }
-
   nav {
-    @apply flex self-end;
+    @apply flex self-end w-full;
   }
 
   footer {
@@ -50,30 +48,49 @@
   }
 
   footer ul {
-    @apply flex flex-row gap-2 flex-wrap;
+    @apply flex flex-row gap-4 flex-wrap w-full;
   }
 
   footer ul li {
-    @apply flex items-center relative px-2.5 py-0.5;
+    @apply relative overflow-visible;
+  }
+
+  footer ul li:not(:has(a)) {
+    @apply flex items-center px-2.5 py-0.5;
   }
 
   *:focus {
     @apply ring-0 outline-none border-none;
   }
 
-  footer ul li:hover::before,
-  footer ul li:has(a:focus)::before {
+  footer ul li:not(:has(a)):hover::before,
+  footer ul li:not(:has(a)):has(button:focus)::before {
     @apply blur-[2px] transition-[filter,border-color] duration-200;
   }
 
-  footer ul li::before {
-    @apply absolute inset-0 border dark:border-white border-[#3200FF] rounded-full content-[''] pointer-events-none;
+  footer ul li:not(:has(a))::before {
+    @apply absolute inset-0 border border-white rounded-full content-[''] pointer-events-none;
   }
 
-  footer ul li {
-    @apply overflow-visible;
-    animation: fadeIn 750ms ease-in both;
-    animation-delay: calc(250ms * 5 + 500ms + 250ms * var(--n));
+  #cloud li,
+  footer ul li:has(a) {
+    @apply relative text-left pl-5;
+  }
+
+  #cloud li:hover a,
+  footer ul li:has(a):hover a {
+    @apply underline underline-offset-2;
+  }
+
+  #cloud li:hover::before,
+  footer ul li:has(a):hover::before {
+    @apply bg-white;
+  }
+
+  #cloud li::before,
+  footer ul li:has(a)::before {
+    @apply absolute left-0 top-2 w-2 h-2 border border-white bg-transparent;
+    content: "";
   }
 
   li > a {
@@ -82,52 +99,13 @@
 
   canvas {
     @apply fixed inset-0 w-screen h-screen z-10 pointer-events-none;
-    animation: fadeIn 1.5s ease-in both;
-    animation-delay: calc(250ms * 5 + 250ms * 3);
-  }
-
-  #star:has(button:focus),
-  #star:hover {
-    @apply [&_svg]:animate-[spin_3s_infinite_linear];
   }
 
   #star {
-    @apply h-[28px] flex items-center justify-center px-5 dark:bg-white rounded-full dark:text-black;
-  }
-
-  #cloud {
-    @apply sm:static fixed bottom-32 right-6;
+    @apply w-7 h-7 flex items-center justify-center bg-white rounded-full text-black ml-auto;
   }
 
   #cloud ul {
-    @apply pr-6 h-1/2;
-  }
-
-  #cloud li {
-    @apply relative text-right;
-    animation: fadeIn 1s ease-in both;
-    animation-delay: calc(250ms * var(--n));
-  }
-
-  #cloud li:hover a {
-    @apply underline underline-offset-2;
-  }
-
-  #cloud a:hover::before {
-    @apply dark:bg-white bg-[#3200FF];
-  }
-
-  #cloud a::before {
-    @apply absolute top-2 -right-[18px] w-2 h-2 border dark:border-white border-[#3200FF] bg-transparent;
-    content: "";
-  }
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
+    @apply flex flex-col gap-1 items-start;
   }
 }

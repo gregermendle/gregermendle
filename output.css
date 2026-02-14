@@ -562,23 +562,18 @@ html {
   font-size: 14px;
 }
 
+html.inverted {
+  filter: invert(1);
+}
+
 body {
   position: relative;
   min-height: 100dvh;
   --tw-bg-opacity: 1;
-  background-color: rgb(238 211 247 / var(--tw-bg-opacity));
-  --tw-text-opacity: 1;
-  color: rgb(50 0 255 / var(--tw-text-opacity));
-}
-
-body:is(.dark *) {
-  --tw-bg-opacity: 1;
   background-color: rgb(0 0 0 / var(--tw-bg-opacity));
+  text-transform: lowercase;
   --tw-text-opacity: 1;
   color: rgb(255 255 255 / var(--tw-text-opacity));
-}
-
-body {
   color-scheme: dark;
   font-display: swap;
   font-family: "Source Code Pro", monospace;
@@ -587,34 +582,28 @@ body {
 h1 {
   font-size: 14px;
   font-weight: 650;
-  text-transform: uppercase;
-  line-height: 1.25;
+  line-height: 1;
   letter-spacing: 0.025em;
-  animation: fadeIn 1.5s ease-in both;
 }
 
 p {
-  animation: fadeIn 1.5s ease-in both;
-  animation-delay: 250ms;
+  line-height: 1;
+  opacity: 0.7;
 }
 
 header {
   display: flex;
-  height: 50vh;
+  height: 24rem;
   justify-content: space-between;
   background-image: linear-gradient(to bottom, var(--tw-gradient-stops));
+  --tw-gradient-from: #100900aa var(--tw-gradient-from-position);
+  --tw-gradient-to: rgb(16 9 0 / 0) var(--tw-gradient-to-position);
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
   --tw-gradient-to: transparent var(--tw-gradient-to-position);
   padding: 1.5rem;
   transition-property: height;
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   transition-duration: 150ms;
-}
-
-header:is(.dark *) {
-  height: 24rem;
-  --tw-gradient-from: #100900aa var(--tw-gradient-from-position);
-  --tw-gradient-to: rgb(16 9 0 / 0) var(--tw-gradient-to-position);
-  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
 }
 
 main {
@@ -627,12 +616,9 @@ main {
   perspective: 4000px;
 }
 
-canvas {
-  animation: fadeIn 3s ease-in 1;
-}
-
 nav {
   display: flex;
+  width: 100%;
   align-self: flex-end;
 }
 
@@ -644,13 +630,18 @@ footer {
 
 footer ul {
   display: flex;
+  width: 100%;
   flex-direction: row;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 1rem;
 }
 
 footer ul li {
   position: relative;
+  overflow: visible;
+}
+
+footer ul li:not(:has(a)) {
   display: flex;
   align-items: center;
   padding-left: 0.625rem;
@@ -668,8 +659,8 @@ footer ul li {
   box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000);
 }
 
-footer ul li:hover::before,
-  footer ul li:has(a:focus)::before {
+footer ul li:not(:has(a)):hover::before,
+  footer ul li:not(:has(a)):has(button:focus)::before {
   --tw-blur: blur(2px);
   filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
   transition-property: filter,border-color;
@@ -677,27 +668,49 @@ footer ul li:hover::before,
   transition-duration: 200ms;
 }
 
-footer ul li::before {
+footer ul li:not(:has(a))::before {
   pointer-events: none;
   position: absolute;
   inset: 0px;
   border-radius: 9999px;
   border-width: 1px;
   --tw-border-opacity: 1;
-  border-color: rgb(50 0 255 / var(--tw-border-opacity));
+  border-color: rgb(255 255 255 / var(--tw-border-opacity));
   --tw-content: '';
   content: var(--tw-content);
 }
 
-footer ul li:is(.dark *)::before {
-  --tw-border-opacity: 1;
-  border-color: rgb(255 255 255 / var(--tw-border-opacity));
+#cloud li,
+  footer ul li:has(a) {
+  position: relative;
+  padding-left: 1.25rem;
+  text-align: left;
 }
 
-footer ul li {
-  overflow: visible;
-  animation: fadeIn 750ms ease-in both;
-  animation-delay: calc(250ms * 5 + 500ms + 250ms * var(--n));
+#cloud li:hover a,
+  footer ul li:has(a):hover a {
+  text-decoration-line: underline;
+  text-underline-offset: 2px;
+}
+
+#cloud li:hover::before,
+  footer ul li:has(a):hover::before {
+  --tw-bg-opacity: 1;
+  background-color: rgb(255 255 255 / var(--tw-bg-opacity));
+}
+
+#cloud li::before,
+  footer ul li:has(a)::before {
+  position: absolute;
+  left: 0px;
+  top: 0.5rem;
+  height: 0.5rem;
+  width: 0.5rem;
+  border-width: 1px;
+  --tw-border-opacity: 1;
+  border-color: rgb(255 255 255 / var(--tw-border-opacity));
+  background-color: transparent;
+  content: "";
 }
 
 li > a {
@@ -715,109 +728,51 @@ canvas {
   z-index: 10;
   height: 100vh;
   width: 100vw;
-  animation: fadeIn 1.5s ease-in both;
-  animation-delay: calc(250ms * 5 + 250ms * 3);
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-#star:has(button:focus) svg,
-  #star:hover svg {
-  animation: spin 3s infinite linear;
 }
 
 #star {
+  margin-left: auto;
   display: flex;
-  height: 28px;
+  height: 1.75rem;
+  width: 1.75rem;
   align-items: center;
   justify-content: center;
   border-radius: 9999px;
-  padding-left: 1.25rem;
-  padding-right: 1.25rem;
-}
-
-#star:is(.dark *) {
   --tw-bg-opacity: 1;
   background-color: rgb(255 255 255 / var(--tw-bg-opacity));
   --tw-text-opacity: 1;
   color: rgb(0 0 0 / var(--tw-text-opacity));
 }
 
-#cloud {
-  position: fixed;
-  bottom: 8rem;
-  right: 1.5rem;
-}
-
-@media (min-width: 640px) {
-  #cloud {
-    position: static;
-  }
-}
-
 #cloud ul {
-  height: 50%;
-  padding-right: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
 }
 
-#cloud li {
-  position: relative;
-  text-align: right;
-  animation: fadeIn 1s ease-in both;
-  animation-delay: calc(250ms * var(--n));
+.flex {
+  display: flex;
 }
 
-#cloud li:hover a {
-  text-decoration-line: underline;
-  text-underline-offset: 2px;
+.w-16 {
+  width: 4rem;
 }
 
-#cloud a:hover::before {
-  --tw-bg-opacity: 1;
-  background-color: rgb(50 0 255 / var(--tw-bg-opacity));
+.flex-col {
+  flex-direction: column;
 }
 
-#cloud a:hover:is(.dark *)::before {
-  --tw-bg-opacity: 1;
-  background-color: rgb(255 255 255 / var(--tw-bg-opacity));
+.gap-2 {
+  gap: 0.5rem;
 }
 
-#cloud a::before {
-  position: absolute;
-  top: 0.5rem;
-  right: -18px;
-  height: 0.5rem;
-  width: 0.5rem;
-  border-width: 1px;
-  --tw-border-opacity: 1;
-  border-color: rgb(50 0 255 / var(--tw-border-opacity));
-  background-color: transparent;
-}
-
-#cloud a:is(.dark *)::before {
+.border-white {
   --tw-border-opacity: 1;
   border-color: rgb(255 255 255 / var(--tw-border-opacity));
-}
-
-#cloud a::before {
-  content: "";
 }
 
 .invert {
   --tw-invert: invert(100%);
   filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
 }
