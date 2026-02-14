@@ -308,7 +308,7 @@ function init() {
   });
 
   const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let webglEnabled = !prefersReducedMotion && localStorage.getItem("webgl") === "1";
+  let webglEnabled = !prefersReducedMotion && localStorage.getItem("webgl") !== "0";
   const webglToggleEl = document.getElementById("webgl-toggle");
 
   function toggleWebGL() {
