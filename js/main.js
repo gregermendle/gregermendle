@@ -166,7 +166,7 @@ const BLIT_FS = `
 
 const DITHER_THRESHOLD = 256;
 const LUM_SCALE = 1 / 3;
-const RENDER_SCALE = 0.3;
+const RENDER_SCALE = 0.2;
 
 let ditherLum, ditherWork, ditherOut, ditherOutput;
 
