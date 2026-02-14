@@ -308,7 +308,8 @@ function init() {
   });
 
   const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let webglEnabled = !prefersReducedMotion && localStorage.getItem("webgl") !== "0";
+  const webglStored = localStorage.getItem("webgl");
+  let webglEnabled = webglStored === null ? true : webglStored !== "0";
   const webglToggleEl = document.getElementById("webgl-toggle");
 
   function toggleWebGL() {
@@ -320,10 +321,8 @@ function init() {
     if (webglEnabled) requestAnimationFrame(render);
   }
 
-  if (!webglEnabled) {
-    canvas.style.display = "none";
-    webglToggleEl.classList.add("webgl-off");
-  }
+  canvas.style.display = webglEnabled ? "" : "none";
+  webglToggleEl.classList.toggle("webgl-off", !webglEnabled);
 
   webglToggleEl.addEventListener("click", toggleWebGL);
 
