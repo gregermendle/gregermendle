@@ -819,10 +819,6 @@ canvas {
   display: flex;
 }
 
-.hidden {
-  display: none;
-}
-
 .w-16 {
   width: 4rem;
 }
@@ -847,10 +843,6 @@ canvas {
   gap: 1.5rem;
 }
 
-.self-start {
-  align-self: flex-start;
-}
-
 .border-dotted {
   border-style: dotted;
 }
@@ -860,26 +852,7 @@ canvas {
   border-color: rgb(255 255 255 / var(--tw-border-opacity));
 }
 
-.text-sm {
-  font-size: 0.875rem;
-  line-height: 1.25rem;
-}
-
-.font-light {
-  font-weight: 300;
-}
-
 .invert {
   --tw-invert: invert(100%);
   filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
-}
-
-@media (min-width: 768px) {
-  .md\:block {
-    display: block;
-  }
-
-  .md\:hidden {
-    display: none;
-  }
 }
