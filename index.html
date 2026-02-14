@@ -43,25 +43,20 @@
     <main>
       <header>
         <div class="flex flex-col gap-6">
-          <h1>Gregory Jordan</h1>
+          <div class="flex flex-col gap-1">
+            <h1>Gregory Jordan</h1>
+            <p class="font-light text-sm md:hidden">10+ years of building in boston. never stop building.</p>
+          </div>
           <hr class="border-white w-16 border-dotted" />
           <div class="flex flex-col gap-6">
             <div class="flex flex-col gap-2">
-              <h1>se.ro</h1>
+              <h1>work</h1>
               <hr class="border-white w-16" />
               <div class="cloud">
                 <ul>
                   <li>
                     <a target="_blank" href="https://se.ro">se.ro</a>
                   </li>
-                </ul>
-              </div>
-            </div>
-            <div class="flex flex-col gap-2">
-              <h1>work</h1>
-              <hr class="border-white w-16" />
-              <div class="cloud">
-                <ul>
                   <li>
                     <a target="_blank" href="https://gexx.ai">gexx</a>
                   </li>
@@ -90,6 +85,7 @@
             </div>
           </div>
         </div>
+        <p class="font-light text-sm self-start hidden md:block">10+ years of building in boston. never stop building.</p>
       </header>
       <footer>
         <nav>
@@ -104,15 +100,25 @@
                 >twitter</a
               >
             </li>
-            <li>
-              <a
-                target="_blank"
-                href="https://discordapp.com/users/289963161044385802"
-                >discord</a
-              >
-            </li>
-            <li id="star">
-              <button>
+            <li class="footer-btn-group flex items-center gap-2 ml-auto">
+              <div id="webgl-toggle" class="webgl-btn">
+                <button type="button" title="Toggle WebGL background">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <ellipse cx="12" cy="12" rx="11" ry="5" stroke="currentColor" stroke-width="1.5" fill="none" />
+                    <ellipse cx="12" cy="12" rx="7" ry="3" stroke="currentColor" stroke-width="1" fill="none" opacity="0.5" />
+                    <circle cx="12" cy="12" r="3.5" fill="currentColor" />
+                    <line x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2" class="webgl-off-line" />
+                  </svg>
+                </button>
+              </div>
+              <div id="star">
+                <button>
                 <svg
                   width="16"
                   height="16"
@@ -125,7 +131,8 @@
                     fill="currentColor"
                   />
                 </svg>
-              </button>
+                </button>
+              </div>
             </li>
           </ul>
         </nav>
@@ -538,6 +545,27 @@
 
       document.getElementById("star").addEventListener("click", toggleInvert);
 
+      const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      let webglEnabled = !prefersReducedMotion && localStorage.getItem("webgl") === "1";
+
+      const webglToggleEl = document.getElementById("webgl-toggle");
+
+      function toggleWebGL() {
+        if (prefersReducedMotion) return;
+        webglEnabled = !webglEnabled;
+        localStorage.setItem("webgl", webglEnabled ? "1" : "0");
+        canvas.style.display = webglEnabled ? "" : "none";
+        webglToggleEl.classList.toggle("webgl-off", !webglEnabled);
+        if (webglEnabled) requestAnimationFrame(render);
+      }
+
+      if (!webglEnabled) {
+        canvas.style.display = "none";
+        webglToggleEl.classList.add("webgl-off");
+      }
+
+      document.getElementById("webgl-toggle").addEventListener("click", toggleWebGL);
+
       let mouseX = 0;
       let mouseY = 0;
 
@@ -589,6 +617,10 @@
 
         if (!framebuffer || canvas.width === 0 || canvas.height === 0) {
           requestAnimationFrame(render);
+          return;
+        }
+
+        if (!webglEnabled) {
           return;
         }
 

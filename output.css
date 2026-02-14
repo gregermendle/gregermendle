@@ -594,6 +594,7 @@ p {
 header {
   display: flex;
   height: 24rem;
+  align-items: flex-start;
   justify-content: space-between;
   background-image: linear-gradient(to bottom, var(--tw-gradient-stops));
   --tw-gradient-from: #100900aa var(--tw-gradient-from-position);
@@ -659,8 +660,8 @@ footer ul li:not(:has(a)) {
   box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000);
 }
 
-footer ul li:not(:has(a)):hover::before,
-  footer ul li:not(:has(a)):has(button:focus)::before {
+footer ul li:not(:has(a)):not(.footer-btn-group):hover::before,
+  footer ul li:not(:has(a)):not(.footer-btn-group):has(button:focus)::before {
   --tw-blur: blur(2px);
   filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
   transition-property: filter,border-color;
@@ -668,7 +669,7 @@ footer ul li:not(:has(a)):hover::before,
   transition-duration: 200ms;
 }
 
-footer ul li:not(:has(a))::before {
+footer ul li:not(:has(a)):not(.footer-btn-group)::before {
   pointer-events: none;
   position: absolute;
   inset: 0px;
@@ -678,6 +679,41 @@ footer ul li:not(:has(a))::before {
   border-color: rgb(255 255 255 / var(--tw-border-opacity));
   --tw-content: '';
   content: var(--tw-content);
+}
+
+.footer-btn-group {
+  border-radius: 9999px;
+  border-width: 1px;
+  --tw-border-opacity: 1;
+  border-color: rgb(255 255 255 / var(--tw-border-opacity));
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+}
+
+.footer-btn-group .webgl-btn::before,
+  .footer-btn-group #star::before {
+  pointer-events: none;
+  position: absolute;
+  inset: 0px;
+  border-radius: 9999px;
+  border-width: 1px;
+  --tw-border-opacity: 1;
+  border-color: rgb(255 255 255 / var(--tw-border-opacity));
+  --tw-content: '';
+  content: var(--tw-content);
+}
+
+.footer-btn-group .webgl-btn:hover::before,
+  .footer-btn-group #star:hover::before,
+  .footer-btn-group .webgl-btn:has(button:focus)::before,
+  .footer-btn-group #star:has(button:focus)::before {
+  --tw-blur: blur(2px);
+  filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
+  transition-property: filter,border-color;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 200ms;
 }
 
 .cloud li,
@@ -730,8 +766,9 @@ canvas {
   width: 100vw;
 }
 
-#star {
-  margin-left: auto;
+#star,
+  .webgl-btn {
+  position: relative;
   display: flex;
   height: 1.75rem;
   width: 1.75rem;
@@ -744,6 +781,14 @@ canvas {
   color: rgb(0 0 0 / var(--tw-text-opacity));
 }
 
+#webgl-toggle .webgl-off-line {
+  display: none;
+}
+
+#webgl-toggle.webgl-off .webgl-off-line {
+  display: block;
+}
+
 .cloud ul {
   display: flex;
   flex-direction: column;
@@ -751,12 +796,16 @@ canvas {
   gap: 0.25rem;
 }
 
+.ml-auto {
+  margin-left: auto;
+}
+
 .flex {
   display: flex;
 }
 
-.inline-flex {
-  display: inline-flex;
+.hidden {
+  display: none;
 }
 
 .w-16 {
@@ -767,12 +816,24 @@ canvas {
   flex-direction: column;
 }
 
+.items-center {
+  align-items: center;
+}
+
+.gap-1 {
+  gap: 0.25rem;
+}
+
 .gap-2 {
   gap: 0.5rem;
 }
 
 .gap-6 {
   gap: 1.5rem;
+}
+
+.self-start {
+  align-self: flex-start;
 }
 
 .border-dotted {
@@ -784,7 +845,26 @@ canvas {
   border-color: rgb(255 255 255 / var(--tw-border-opacity));
 }
 
+.text-sm {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+.font-light {
+  font-weight: 300;
+}
+
 .invert {
   --tw-invert: invert(100%);
   filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
+}
+
+@media (min-width: 768px) {
+  .md\:block {
+    display: block;
+  }
+
+  .md\:hidden {
+    display: none;
+  }
 }

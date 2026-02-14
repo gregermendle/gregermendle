@@ -31,7 +31,7 @@
   }
 
   header {
-    @apply bg-gradient-to-b from-[#100900aa] to-transparent p-6 h-96 transition-[height] flex justify-between;
+    @apply bg-gradient-to-b from-[#100900aa] to-transparent p-6 h-96 transition-[height] flex justify-between items-start;
   }
 
   main {
@@ -63,13 +63,29 @@
     @apply ring-0 outline-none border-none;
   }
 
-  footer ul li:not(:has(a)):hover::before,
-  footer ul li:not(:has(a)):has(button:focus)::before {
+  footer ul li:not(:has(a)):not(.footer-btn-group):hover::before,
+  footer ul li:not(:has(a)):not(.footer-btn-group):has(button:focus)::before {
     @apply blur-[2px] transition-[filter,border-color] duration-200;
   }
 
-  footer ul li:not(:has(a))::before {
+  footer ul li:not(:has(a)):not(.footer-btn-group)::before {
     @apply absolute inset-0 border border-white rounded-full content-[''] pointer-events-none;
+  }
+
+  .footer-btn-group {
+    @apply border border-white rounded-full px-2 py-1;
+  }
+
+  .footer-btn-group .webgl-btn::before,
+  .footer-btn-group #star::before {
+    @apply absolute inset-0 border border-white rounded-full content-[''] pointer-events-none;
+  }
+
+  .footer-btn-group .webgl-btn:hover::before,
+  .footer-btn-group #star:hover::before,
+  .footer-btn-group .webgl-btn:has(button:focus)::before,
+  .footer-btn-group #star:has(button:focus)::before {
+    @apply blur-[2px] transition-[filter,border-color] duration-200;
   }
 
   .cloud li,
@@ -101,8 +117,18 @@
     @apply fixed inset-0 w-screen h-screen z-10 pointer-events-none;
   }
 
-  #star {
-    @apply w-7 h-7 flex items-center justify-center bg-white rounded-full text-black ml-auto;
+  #star,
+  .webgl-btn {
+    @apply relative w-7 h-7 flex items-center justify-center bg-white rounded-full text-black;
+  }
+
+
+  #webgl-toggle .webgl-off-line {
+    display: none;
+  }
+
+  #webgl-toggle.webgl-off .webgl-off-line {
+    display: block;
   }
 
   .cloud ul {
