@@ -42,7 +42,6 @@ function initBuffers(gl) {
 function getFragmentShaderSource() {
   const mobile = isMobile();
   const maxSteps = mobile ? 84 : 128;
-  const schwarzschildRadius = mobile ? 0.6 : 0.4;
   const warpSize = mobile ? 0.05 : 0.25;
 
   return `
@@ -53,15 +52,15 @@ function getFragmentShaderSource() {
     uniform float invert;
     uniform float progress;
     uniform float stepSize;
+    uniform float schwarzschildRadius;
 
     #define MAX_STEPS ${maxSteps}
-    #define SCHWARZSCHILD_RADIUS ${schwarzschildRadius.toFixed(2)}
     #define PI 3.14159265359
     #define WARP_SIZE ${warpSize.toFixed(2)}
     #define DISK_SCALE 1.
 
-    vec4 diskColor(float dist) {
-      float d = dist / DISK_SCALE;
+    vec4 diskColor(float dist, float radius) {
+      float d = (dist - radius) / (radius * DISK_SCALE);
       float innerTemp = smoothstep(2.0, 4.0, d);
       float outerTemp = smoothstep(4.0, 8.0, d);
       float gray = mix(1.0, mix(0.4, 0.1, outerTemp), innerTemp);
@@ -116,7 +115,7 @@ function getFragmentShaderSource() {
         if (nearDisk) {
           float diskRadius = length(vec2(p.x, p.z));
           if (diskRadius > radius) {
-            vec4 diskCol = diskColor(diskRadius) * exp(-totalDist * 0.07);
+            vec4 diskCol = diskColor(diskRadius, radius) * exp(-totalDist * 0.07);
             float angle = atan(p.z, p.x) + time * rotationSpeed;
             diskCol *= 1.0 + spiralAmp * sin(angle * spiralFreq);
             angle = atan(rd.x, rd.y) + time * rotationSpeed;
@@ -138,7 +137,7 @@ function getFragmentShaderSource() {
       vec2 outward = normalize(muv - uv + 0.001) * warp * 2.0;
       vec3 ro = vec3(-1.0, 2.0, -10.0) + vec3(muv * 2., 0.) + vec3(outward, 0.);
       vec3 rd = normalize(vec3(uv, 1.0)) - vec3(0., 0.2, 0.);
-      vec4 col = rayMarch(ro, rd, uv * aspect * 5., SCHWARZSCHILD_RADIUS * progress, aspect);
+      vec4 col = rayMarch(ro, rd, uv * aspect * 5., schwarzschildRadius * progress, aspect);
       gl_FragColor = col * progress;
     }
   `;
@@ -165,7 +164,7 @@ const BLIT_FS = `
   void main() { gl_FragColor = texture2D(uTex, vTexCoord); }
 `;
 
-const DITHER_THRESHOLD = 128;
+const DITHER_THRESHOLD = 256;
 const LUM_SCALE = 1 / 3;
 const RENDER_SCALE = 0.3;
 
@@ -289,6 +288,7 @@ function init() {
       invert: gl.getUniformLocation(program, "invert"),
       progress: gl.getUniformLocation(program, "progress"),
       stepSize: gl.getUniformLocation(program, "stepSize"),
+      schwarzschildRadius: gl.getUniformLocation(program, "schwarzschildRadius"),
     },
   };
 
@@ -331,6 +331,31 @@ function init() {
   let mouseX = 0, mouseY = 0;
   let nextMouseX = 0, nextMouseY = 0;
   let prevNow = 0, progress = 0;
+  const minRadius = 0.25;
+  const maxRadius = 1.2;
+  let schwarzschildRadius = isMobile() ? 0.6 : 0.4;
+  let targetRadius = schwarzschildRadius;
+  let lastTouchY = 0;
+
+  function adjustRadius(delta) {
+    targetRadius = Math.max(minRadius, Math.min(maxRadius, targetRadius + delta));
+  }
+
+  document.addEventListener("wheel", (e) => {
+    adjustRadius(-e.deltaY * 0.00008);
+  }, { passive: true });
+
+  document.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 1) lastTouchY = e.touches[0].clientY;
+  }, { passive: true });
+
+  document.addEventListener("touchmove", (e) => {
+    if (e.touches.length === 1) {
+      const delta = lastTouchY - e.touches[0].clientY;
+      lastTouchY = e.touches[0].clientY;
+      adjustRadius(delta * 0.0005);
+    }
+  }, { passive: true });
 
   document.addEventListener("pointermove", (e) => {
     nextMouseX = e.clientX / window.innerWidth;
@@ -348,6 +373,7 @@ function init() {
 
     mouseX += (nextMouseX - mouseX) * 0.01 * timeScale;
     mouseY += (nextMouseY - mouseY) * 0.01 * timeScale;
+    schwarzschildRadius += (targetRadius - schwarzschildRadius) * 0.02 * timeScale;
 
     const renderWidth = Math.max(1, (displayWidth * RENDER_SCALE) | 0);
     const renderHeight = Math.max(1, (displayHeight * RENDER_SCALE) | 0);
@@ -382,6 +408,7 @@ function init() {
     gl.uniform2f(programInfo.uniformLocations.mouse, mouseX, mouseY);
     gl.uniform1f(programInfo.uniformLocations.invert, 0);
     gl.uniform1f(programInfo.uniformLocations.stepSize, stepSize);
+    gl.uniform1f(programInfo.uniformLocations.schwarzschildRadius, schwarzschildRadius);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
     gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 2, gl.FLOAT, false, 0, 0);
