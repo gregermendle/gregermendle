@@ -43,7 +43,6 @@ function getFragmentShaderSource() {
   const mobile = isMobile();
   const maxSteps = mobile ? 84 : 128;
   const schwarzschildRadius = mobile ? 0.6 : 0.4;
-  const stepSize = mobile ? 0.25 : 0.15;
   const warpSize = mobile ? 0.05 : 0.25;
 
   return `
