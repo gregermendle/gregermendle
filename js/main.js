@@ -336,6 +336,25 @@ function init() {
   let schwarzschildRadius = isMobile() ? 0.6 : 0.4;
   let targetRadius = schwarzschildRadius;
   let lastTouchY = 0;
+  const maxAberration = 12;
+  let aberrationOffset = 0;
+  let targetAberration = 0;
+  let isPressed = false;
+  let holdStartTime = 0;
+
+  document.addEventListener("pointerdown", () => {
+    isPressed = true;
+    holdStartTime = performance.now();
+    document.body.classList.add("pressing");
+  });
+  document.addEventListener("pointerup", () => {
+    isPressed = false;
+    document.body.classList.remove("pressing");
+  });
+  document.addEventListener("pointercancel", () => {
+    isPressed = false;
+    document.body.classList.remove("pressing");
+  });
 
   function adjustRadius(delta) {
     targetRadius = Math.max(minRadius, Math.min(maxRadius, targetRadius + delta));
@@ -374,6 +393,13 @@ function init() {
     mouseX += (nextMouseX - mouseX) * 0.01 * timeScale;
     mouseY += (nextMouseY - mouseY) * 0.01 * timeScale;
     schwarzschildRadius += (targetRadius - schwarzschildRadius) * 0.02 * timeScale;
+    if (isPressed) {
+      const holdDuration = (now - holdStartTime) * 0.001;
+      targetAberration = Math.min(maxAberration, holdDuration * 3);
+    } else {
+      targetAberration = 0;
+    }
+    aberrationOffset += (targetAberration - aberrationOffset) * 0.12 * timeScale;
 
     const renderWidth = Math.max(1, (displayWidth * RENDER_SCALE) | 0);
     const renderHeight = Math.max(1, (displayHeight * RENDER_SCALE) | 0);
@@ -417,7 +443,7 @@ function init() {
 
     gl.readPixels(0, 0, renderWidth, renderHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixelBuffer);
 
-    const dithered = applyDitheringAndAberration(pixelBuffer, renderWidth, renderHeight, 4);
+    const dithered = applyDitheringAndAberration(pixelBuffer, renderWidth, renderHeight, Math.round(aberrationOffset));
 
     gl.bindTexture(gl.TEXTURE_2D, displayTexture);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, renderWidth, renderHeight, gl.RGBA, gl.UNSIGNED_BYTE, dithered);
