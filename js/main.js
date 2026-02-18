@@ -166,7 +166,7 @@ const BLIT_FS = `
 
 const DITHER_THRESHOLD = 256;
 const LUM_SCALE = 1 / 3;
-const RENDER_SCALE = 0.2;
+const RENDER_SCALE = 1.;
 
 let ditherLum, ditherWork, ditherOut, ditherOutput;
 
@@ -327,7 +327,7 @@ function init() {
   webglToggleEl.addEventListener("click", toggleWebGL);
 
   const stepSize = isMobile() ? 0.25 : 0.15;
-  const maxAberration = 2;
+  const maxAberration = 0;
   const decayDuration = 1;
   let mouseX = 0, mouseY = 0;
   let nextMouseX = 0, nextMouseY = 0;
