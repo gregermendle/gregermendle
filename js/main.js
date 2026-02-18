@@ -327,8 +327,12 @@ function init() {
   webglToggleEl.addEventListener("click", toggleWebGL);
 
   const stepSize = isMobile() ? 0.25 : 0.15;
+  const maxAberration = 2;
+  const decayDuration = 1;
   let mouseX = 0, mouseY = 0;
   let nextMouseX = 0, nextMouseY = 0;
+  let prevNextMouseX = 0, prevNextMouseY = 0;
+  let aberrationOffset = 0;
   let prevNow = 0, progress = 0;
   const minRadius = 0.25;
   const maxRadius = 1.2;
@@ -373,6 +377,18 @@ function init() {
     mouseY += (nextMouseY - mouseY) * 0.01 * timeScale;
     schwarzschildRadius += (targetRadius - schwarzschildRadius) * 0.02 * timeScale;
 
+    const speed = Math.sqrt(
+      Math.pow(nextMouseX - prevNextMouseX, 2) + Math.pow(nextMouseY - prevNextMouseY, 2)
+    );
+    const targetAberration = Math.min(maxAberration, speed * 200);
+    if (targetAberration > 0) {
+      aberrationOffset += (targetAberration - aberrationOffset) * 0.2 * timeScale;
+    } else {
+      aberrationOffset *= Math.max(0, 1 - dt / 1000 / decayDuration);
+    }
+    prevNextMouseX = nextMouseX;
+    prevNextMouseY = nextMouseY;
+
     const renderWidth = Math.max(1, (displayWidth * RENDER_SCALE) | 0);
     const renderHeight = Math.max(1, (displayHeight * RENDER_SCALE) | 0);
 
@@ -415,7 +431,7 @@ function init() {
 
     gl.readPixels(0, 0, renderWidth, renderHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixelBuffer);
 
-    const dithered = applyDitheringAndAberration(pixelBuffer, renderWidth, renderHeight, 0);
+    const dithered = applyDitheringAndAberration(pixelBuffer, renderWidth, renderHeight, Math.round(aberrationOffset));
 
     gl.bindTexture(gl.TEXTURE_2D, displayTexture);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, renderWidth, renderHeight, gl.RGBA, gl.UNSIGNED_BYTE, dithered);
