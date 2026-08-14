@@ -30,119 +30,35 @@
     font-family: "Source Code Pro", monospace;
   }
 
-  h1 {
-    @apply tracking-wide font-[650] text-[14px] leading-none;
-  }
-
-  p {
-    @apply leading-none opacity-70;
-  }
-
   *:focus {
     @apply ring-0 outline-none border-none;
   }
-
-  }
+}
 
 @layer components {
-  header {
-    @apply bg-gradient-to-b from-[#100900aa] to-transparent p-6 h-96 transition-[height] flex justify-between items-start;
-  }
-
-  main {
-    @apply grid grid-rows-[min-content,1fr,min-content] relative z-20 min-h-dvh overflow-hidden;
-    perspective: 4000px;
-  }
-
-  nav {
-    @apply flex self-end w-full;
-  }
-
-  footer {
-    @apply flex items-end p-6;
-  }
-
-  footer ul {
-    @apply flex flex-row gap-4 flex-wrap w-full;
-  }
-
-  footer ul li {
-    @apply relative overflow-visible;
-  }
-
-  footer ul li:not(:has(a)) {
-    @apply flex items-center px-2.5 py-0.5;
-  }
-
-  .footer-btn-group {
-    @apply border border-white rounded-full px-2 py-1;
-  }
-
-  .footer-btn-group .webgl-btn,
-  .footer-btn-group #star {
-    @apply relative w-7 h-7 flex items-center justify-center bg-white rounded-full text-black;
-  }
-
-  .footer-btn-group .webgl-btn::before,
-  .footer-btn-group #star::before {
-    @apply absolute inset-0 border border-white rounded-full content-[''] pointer-events-none;
-  }
-
-  .footer-btn-group .webgl-btn:hover::before,
-  .footer-btn-group #star:hover::before,
-  .footer-btn-group .webgl-btn:has(button:focus)::before,
-  .footer-btn-group #star:has(button:focus)::before {
-    @apply blur-[2px] transition-[filter,border-color] duration-200;
-  }
-
-  footer ul li:not(:has(a)):not(.footer-btn-group)::before {
-    @apply absolute inset-0 border border-white rounded-full content-[''] pointer-events-none;
-  }
-
-  footer ul li:not(:has(a)):not(.footer-btn-group):hover::before,
-  footer ul li:not(:has(a)):not(.footer-btn-group):has(button:focus)::before {
-    @apply blur-[2px] transition-[filter,border-color] duration-200;
-  }
-
-  .cloud ul {
-    @apply flex flex-col gap-1 items-start;
-  }
-
-  .cloud a,
-  footer ul li a {
-    @apply font-normal text-base tracking-tight whitespace-nowrap;
-  }
-
-  .cloud li,
-  footer ul li:has(a) {
-    @apply relative text-left pl-5;
-  }
-
-  .cloud li::before,
-  footer ul li:has(a)::before {
-    content: "";
-    @apply absolute left-0 top-2 w-2 h-2 border border-white bg-transparent;
-  }
-
-  .cloud li:hover a,
-  footer ul li:has(a):hover a {
-    @apply underline underline-offset-2;
-  }
-
-  .cloud li:hover::before,
-  footer ul li:has(a):hover::before {
-    @apply bg-white;
-  }
-
   canvas {
     @apply fixed inset-0 w-screen h-screen z-10 pointer-events-none;
   }
 
-  #webgl-toggle .webgl-off-line {
-    display: none;
+  .bh-label {
+    @apply fixed left-0 top-0 z-[15] pointer-events-none whitespace-nowrap tracking-[0.18em] font-[650] text-[14px] leading-none origin-bottom;
+    will-change: transform, opacity;
+    opacity: 0;
   }
 
-  #webgl-toggle.webgl-off .webgl-off-line {
-    display: block;
+  .bh-orbits {
+    @apply fixed inset-0 z-[15] pointer-events-none;
+    opacity: 0;
+  }
+
+  .bh-orbit {
+    @apply absolute left-0 top-0 whitespace-nowrap font-normal text-base tracking-tight px-3 py-2 cursor-pointer;
+    pointer-events: auto;
+    will-change: transform, opacity;
+    opacity: 0;
+  }
+
+  .bh-orbit:hover {
+    @apply underline underline-offset-2;
   }
 }

@@ -22,75 +22,17 @@
     <link href="https://fonts.googleapis.com/css2?family=Source+Code+Pro:wght@200..900&display=swap" rel="stylesheet" />
   </head>
   <body>
-    <main>
-      <header>
-        <div class="flex flex-col gap-6">
-          <div class="flex flex-col gap-1">
-            <h1>Gregory Jordan</h1>
-          </div>
-          <hr class="border-white w-16 border-dotted" />
-          <div class="flex flex-col gap-6">
-            <div class="flex flex-col gap-2">
-              <h1>work</h1>
-              <hr class="border-white w-16" />
-              <div class="cloud">
-                <ul>
-                  <li><a target="_blank" href="https://gexx.ai">gexx</a></li>
-                </ul>
-              </div>
-            </div>
-            <div class="flex flex-col gap-2">
-              <h1>prev</h1>
-              <hr class="border-white w-16" />
-              <div class="cloud">
-                <ul>
-                  <li><a target="_blank" href="https://se.ro">se.ro</a></li>
-                </ul>
-              </div>
-            </div>
-            <div class="flex flex-col gap-2">
-              <h1>projects</h1>
-              <hr class="border-white w-16" />
-              <div class="cloud">
-                <ul>
-                  <li><a target="_blank" href="https://cnvrt.run">cnvrt</a></li>
-                  <li><a target="_blank" href="https://riptar.gregermendle.com">riptar</a></li>
-                  <li><a target="_blank" href="https://gregermendle.github.io/inframe/">inframe</a></li>
-                  <li><a target="_blank" href="https://remix-mailer.gregermendle.com">remix-mailer</a></li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        </div>
-      </header>
-      <footer>
-        <nav>
-          <ul>
-            <li><a target="_blank" href="https://github.com/gregermendle">github</a></li>
-            <li><a target="_blank" href="https://twitter.com/_studable_">twitter</a></li>
-            <li class="footer-btn-group flex items-center gap-2 ml-auto">
-              <div id="webgl-toggle" class="webgl-btn">
-                <button type="button" title="Toggle WebGL background">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <ellipse cx="12" cy="12" rx="11" ry="5" stroke="currentColor" stroke-width="1.5" fill="none" />
-                    <ellipse cx="12" cy="12" rx="7" ry="3" stroke="currentColor" stroke-width="1" fill="none" opacity="0.5" />
-                    <circle cx="12" cy="12" r="3.5" fill="currentColor" />
-                    <line x1="4" y1="4" x2="20" y2="20" stroke="currentColor" stroke-width="2" class="webgl-off-line" />
-                  </svg>
-                </button>
-              </div>
-              <div id="star">
-                <button type="button" title="Toggle invert">
-                  <svg width="16" height="16" viewBox="0 0 482 470" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M241 0L281.935 161.998L434.112 92.998L332.98 226.006L481.807 301.963L314.762 305.824L348.169 469.539L241 341.346L133.831 469.539L167.238 305.824L0.19281 301.963L149.02 226.006L47.8876 92.998L200.065 161.998L241 0Z" fill="currentColor" />
-                  </svg>
-                </button>
-              </div>
-            </li>
-          </ul>
-        </nav>
-      </footer>
-    </main>
+    <div id="bh-label" class="bh-label" aria-hidden="true">gregermendle</div>
+    <div id="bh-orbits" class="bh-orbits">
+      <a class="bh-orbit" target="_blank" href="https://gexx.ai">gexx</a>
+      <a class="bh-orbit" target="_blank" href="https://se.ro">se.ro</a>
+      <a class="bh-orbit" target="_blank" href="https://cnvrt.run">cnvrt</a>
+      <a class="bh-orbit" target="_blank" href="https://riptar.gregermendle.com">riptar</a>
+      <a class="bh-orbit" target="_blank" href="https://gregermendle.github.io/inframe/">inframe</a>
+      <a class="bh-orbit" target="_blank" href="https://remix-mailer.gregermendle.com">remix-mailer</a>
+      <a class="bh-orbit" target="_blank" href="https://github.com/gregermendle">github</a>
+      <a class="bh-orbit" target="_blank" href="https://twitter.com/_studable_">twitter</a>
+    </div>
     <canvas id="canvas"></canvas>
     <script src="/js/main.js"></script>
     <script>

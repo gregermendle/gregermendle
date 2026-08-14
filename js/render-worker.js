@@ -32,7 +32,7 @@ self.onmessage = (event) => {
       self.postMessage({ ok: canRender() });
       break;
     case "init":
-      renderer = self.createRenderer(msg.canvas);
+      renderer = self.createRenderer(msg.canvas, (data) => self.postMessage(data));
       break;
     case "size":
       if (renderer) renderer.setSize(msg.w, msg.h);
@@ -48,6 +48,9 @@ self.onmessage = (event) => {
       break;
     case "hidden":
       if (renderer) renderer.setHidden(msg.v);
+      break;
+    case "hover":
+      if (renderer) renderer.setHover(msg.v);
       break;
   }
 };

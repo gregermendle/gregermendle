@@ -35,6 +35,113 @@ function probeWorker() {
   });
 }
 
+const orbitEls = document.getElementById("bh-orbits").children;
+const labelEl = document.getElementById("bh-label");
+const orbitsRoot = document.getElementById("bh-orbits");
+
+let lastHud = null;
+let cursorX = 0;
+let cursorY = 0;
+let hoverActive = false;
+let sendHover = () => {};
+let pinned = null;
+const lastShown = [];
+
+function smoothstep(edge0, edge1, x) {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+function repel(x, y) {
+  const minRes = Math.min(window.innerWidth, window.innerHeight);
+  const dx = x - cursorX;
+  const dy = y - cursorY;
+  const dist = Math.hypot(dx, dy) || 0.001;
+  const warp = 1 - smoothstep(0, 0.25 * minRes, dist);
+  const push = warp * 2 * minRes * 0.12;
+  return { x: x + (dx / dist) * push, y: y + (dy / dist) * push };
+}
+
+function applyHud(data) {
+  lastHud = data;
+  paintHud();
+}
+
+function paintHud() {
+  const data = lastHud;
+  if (!data) return;
+  const a = data.a || 0;
+  if (a <= 0) {
+    labelEl.style.opacity = "0";
+    orbitsRoot.style.opacity = "0";
+    return;
+  }
+  const label = repel(data.x, data.y);
+  labelEl.style.opacity = String(a);
+  labelEl.style.transform =
+    "translate3d(" +
+    label.x +
+    "px," +
+    label.y +
+    "px,0) translate(-50%,-100%) scale(" +
+    data.s +
+    ")";
+  orbitsRoot.style.opacity = "1";
+  const orbits = data.orbits || [];
+  let next = -1;
+  if (pinned) {
+    const hold = Math.hypot(pinned.x - cursorX, pinned.y - cursorY);
+    if (hold < 160) next = pinned.i;
+    else pinned = null;
+  }
+  if (next < 0) {
+    let best = 90;
+    for (let i = 0; i < orbits.length; i++) {
+      const o = orbits[i];
+      if (!o || !o.a) continue;
+      const shown = lastShown[i] || o;
+      const d = Math.min(
+        Math.hypot(shown.x - cursorX, shown.y - cursorY),
+        Math.hypot(o.x - cursorX, o.y - cursorY)
+      );
+      if (d < best) {
+        best = d;
+        next = i;
+      }
+    }
+  }
+  if (next >= 0) {
+    if (!pinned || pinned.i !== next) {
+      const shown = lastShown[next] || orbits[next];
+      pinned = { i: next, x: shown.x, y: shown.y };
+    }
+  }
+  if ((next >= 0) !== hoverActive) {
+    hoverActive = next >= 0;
+    sendHover(hoverActive);
+  }
+  for (let i = 0; i < orbitEls.length; i++) {
+    const item = orbitEls[i];
+    const o = orbits[i];
+    if (!o || !o.a) {
+      item.style.opacity = "0";
+      continue;
+    }
+    const pos = pinned && i === pinned.i ? pinned : repel(o.x, o.y);
+    lastShown[i] = pos;
+    item.style.opacity = String(o.a);
+    item.style.zIndex = String(o.z);
+    item.style.transform =
+      "translate3d(" +
+      pos.x +
+      "px," +
+      pos.y +
+      "px,0) translate(-50%,-50%) scale(" +
+      o.s +
+      ")";
+  }
+}
+
 function init() {
   const canvas = document.getElementById("canvas");
 
@@ -72,6 +179,9 @@ function init() {
     if (worker) {
       const offscreen = canvas.transferControlToOffscreen();
       worker.postMessage({ type: "init", canvas: offscreen }, [offscreen]);
+      worker.addEventListener("message", (event) => {
+        if (event.data && event.data.type === "hud") applyHud(event.data);
+      });
       let pointerX = 0;
       let pointerY = 0;
       let pointerDirty = false;
@@ -109,7 +219,7 @@ function init() {
     let renderer = null;
     try {
       await loadScript("/js/renderer.js");
-      renderer = self.createRenderer(canvas);
+      renderer = self.createRenderer(canvas, applyHud);
     } catch {
       renderer = null;
     }
@@ -134,6 +244,9 @@ function init() {
         case "hidden":
           renderer.setHidden(msg.v);
           break;
+        case "hover":
+          renderer.setHover(msg.v);
+          break;
       }
     });
   }
@@ -142,31 +255,10 @@ function init() {
     document.documentElement.classList.add("inverted");
   }
 
-  document.getElementById("star").addEventListener("click", () => {
-    document.documentElement.classList.toggle("inverted");
-    localStorage.setItem(
-      "invert",
-      document.documentElement.classList.contains("inverted") ? "1" : "0"
-    );
-  });
-
   const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const webglStored = localStorage.getItem("webgl");
-  let webglEnabled = webglStored === null ? true : webglStored !== "0";
-  const webglToggleEl = document.getElementById("webgl-toggle");
-
-  function toggleWebGL() {
-    if (prefersReducedMotion) return;
-    webglEnabled = !webglEnabled;
-    localStorage.setItem("webgl", webglEnabled ? "1" : "0");
-    canvas.style.display = webglEnabled ? "" : "none";
-    webglToggleEl.classList.toggle("webgl-off", !webglEnabled);
-    send({ type: "running", v: webglEnabled });
-  }
-
+  const webglEnabled = !prefersReducedMotion;
   canvas.style.display = webglEnabled ? "" : "none";
-  webglToggleEl.classList.toggle("webgl-off", !webglEnabled);
-  webglToggleEl.addEventListener("click", toggleWebGL);
+  if (!webglEnabled) applyHud({ a: 0 });
 
   let lastTouchY = 0;
 
@@ -209,6 +301,9 @@ function init() {
   document.addEventListener(
     "pointermove",
     (e) => {
+      cursorX = e.clientX;
+      cursorY = e.clientY;
+      paintHud();
       send({
         type: "pointer",
         x: e.clientX / window.innerWidth,
@@ -217,6 +312,8 @@ function init() {
     },
     { passive: true }
   );
+
+  sendHover = (v) => send({ type: "hover", v });
 
   send({ type: "size", w: canvas.clientWidth, h: canvas.clientHeight });
   send({ type: "running", v: webglEnabled });

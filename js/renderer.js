@@ -44,8 +44,12 @@
     return `
         r = length(p);
         adaptiveStepSize = STEP_SIZE * max(1.0, r * 0.1);
-        if (r >= influenceRadius) return col;
-        rd = normalize(rd - p * (radius * adaptiveStepSize / (r * r * r)));
+        if (r >= influenceRadius) {
+          if (dot(rd, p) > 0.0) return col;
+          adaptiveStepSize = max(adaptiveStepSize, (r - influenceRadius) * 0.25);
+        } else {
+          rd = normalize(rd - p * (radius * adaptiveStepSize / (r * r * r)));
+        }
         p += rd * adaptiveStepSize;
         totalDist += adaptiveStepSize;
         if (abs(p.y) < 0.12) {
@@ -291,7 +295,7 @@
     return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
   }
 
-  function createRenderer(canvas) {
+  function createRenderer(canvas, emit) {
     const glAttrs = {
       alpha: false,
       depth: false,
@@ -491,12 +495,95 @@
     let haveTime = false;
     let progress = 0;
     let easedProgress = 0;
-    const minRadius = 0.25;
+    const minRadius = 0.08;
     const maxRadius = 1.2;
-    let schwarzschildRadius = maxRadius;
-    let targetRadius = maxRadius;
+    let schwarzschildRadius = 0.25;
+    let targetRadius = 0.25;
     let displayWidth = 0;
     let displayHeight = 0;
+    let hoverPaused = false;
+    let spin = 0;
+    let prevHudNow = 0;
+
+    function projectWorld(wx, wy, wz, minRes, rox, roy, roz) {
+      const dx = wx - rox;
+      const dy = wy - roy;
+      const dz = wz - roz;
+      const len = Math.hypot(dx, dy, dz);
+      const ndy = dy / len;
+      const ndz = dz / len;
+      const k = (-0.4 * ndy + Math.sqrt(0.16 * ndy * ndy + 3.84)) * 0.5;
+      const sz = k * ndz;
+      if (sz <= 1e-5) return null;
+      return {
+        x: ((k * (dx / len)) / sz) * minRes + 0.5 * displayWidth,
+        y: displayHeight - (((k * ndy + 0.2) / sz) * minRes + 0.5 * displayHeight),
+        len,
+      };
+    }
+
+    const ORBIT_COUNT = 8;
+
+    function occluded(wx, wy, wz, rox, roy, roz, radius) {
+      const dx = wx - rox;
+      const dy = wy - roy;
+      const dz = wz - roz;
+      const denom = dx * dx + dy * dy + dz * dz;
+      if (denom < 1e-8) return false;
+      const t = -(rox * dx + roy * dy + roz * dz) / denom;
+      if (t <= 0.04 || t >= 0.96) return false;
+      const cx = rox + t * dx;
+      const cy = roy + t * dy;
+      const cz = roz + t * dz;
+      return cx * cx + cy * cy + cz * cz < radius * radius;
+    }
+
+    function emitHud(now) {
+      if (!emit || displayWidth <= 0 || displayHeight <= 0) return;
+      const minRes = Math.min(displayWidth, displayHeight);
+      const rox = -1 + (mouseX - 0.5) * (displayWidth / minRes) * 2;
+      const roy = 2 + (mouseY - 0.5) * (displayHeight / minRes) * 2;
+      const roz = -10;
+      const center = projectWorld(0, 0, 0, minRes, rox, roy, roz);
+      const top = projectWorld(0, schwarzschildRadius, 0, minRes, rox, roy, roz);
+      if (!center || !top) {
+        emit({ type: "hud", a: 0 });
+        return;
+      }
+      const holeR = Math.hypot(top.x - center.x, top.y - center.y);
+      if (!prevHudNow) prevHudNow = now;
+      if (!hoverPaused) spin += (now - prevHudNow) * 0.001 * 0.3;
+      prevHudNow = now;
+      const orbits = [];
+      for (let i = 0; i < ORBIT_COUNT; i++) {
+        const angle = spin + (i / ORBIT_COUNT) * Math.PI * 2;
+        const rad = schwarzschildRadius * easedProgress * 10.5;
+        const wx = Math.cos(angle) * rad;
+        const wz = Math.sin(angle) * rad;
+        const pt = projectWorld(wx, 0, wz, minRes, rox, roy, roz);
+        if (!pt) {
+          orbits.push({ a: 0 });
+          continue;
+        }
+        const behind = occluded(wx, 0, wz, rox, roy, roz, schwarzschildRadius);
+        const depth = Math.min(1.2, Math.max(0.55, 10 / pt.len));
+        orbits.push({
+          x: pt.x,
+          y: pt.y,
+          s: easedProgress * depth,
+          a: easedProgress * (behind ? 0.12 : Math.min(1, 12 / pt.len)),
+          z: Math.round(2000 - pt.len * 40),
+        });
+      }
+      emit({
+        type: "hud",
+        x: top.x,
+        y: top.y - holeR * 0.55 - 28,
+        s: easedProgress * (10 / top.len),
+        a: easedProgress,
+        orbits,
+      });
+    }
 
     function renderScene(renderWidth, renderHeight, now) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
@@ -604,6 +691,7 @@
 
       refreshViews();
       renderScene(renderWidth, renderHeight, now);
+      emitHud(now);
       if (readback(renderWidth, renderHeight)) {
         dither(renderWidth, renderHeight);
         present(renderWidth, renderHeight, true);
@@ -630,11 +718,16 @@
       },
       setHidden(value) {
         hidden = value;
+        if (hidden && emit) emit({ type: "hud", a: 0 });
         start();
       },
       setRunning(value) {
         running = value;
+        if (!running && emit) emit({ type: "hud", a: 0 });
         start();
+      },
+      setHover(value) {
+        hoverPaused = value;
       },
     };
   }
