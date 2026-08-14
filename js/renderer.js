@@ -56,7 +56,6 @@
   const LENS_FAR_START = 80;
   const LENS_FAR_END = 320;
   const DISK_OCCLUDE_LUMA = 0.42;
-  const DISK_RENDER_MIN = 0.07;
 
   function marchStepSource() {
     return `
@@ -84,7 +83,7 @@
             diskRgb *= 1.0 + 0.08 * sin((atan(hit.z, hit.x) + tRot) * 8.0);
             diskRgb *= 0.75 + 0.08 * sin((atan(rd.x, rd.y) + tRot) * 8.0);
             float hitLum = dot(diskRgb, vec3(0.333));
-            if (hitLum > ${DISK_RENDER_MIN.toFixed(2)}) col.rgb += diskRgb;
+            col.rgb += diskRgb;
             if (hitLum > ${DISK_OCCLUDE_LUMA.toFixed(2)}) col.a = max(col.a, 0.5);
           }
         }
