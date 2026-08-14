@@ -620,10 +620,6 @@ body {
   text-shadow: 0 0 4px #000, 0 1px 0 #000;
 }
 
-.visible {
-  visibility: visible;
-}
-
 .\!hidden {
   display: none !important;
 }

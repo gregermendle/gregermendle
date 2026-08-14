@@ -3,11 +3,19 @@ import { writeFileSync } from "node:fs";
 const COUNT = 500;
 const NEAR_COUNT = 450;
 const SEED = 0x6d656e646c65;
+const RS = 0.25;
 const OUT = "js/clusters.json";
 const NEAR_MIN = 55;
 const NEAR_MAX = 240;
 const FAR_MIN = 320;
 const FAR_MAX = 3600;
+
+function stellarRadiusRs(rng) {
+  const t = rng();
+  if (t < 0.72) return 0.12 + rng() * 0.23;
+  if (t < 0.94) return 0.35 + rng() * 0.3;
+  return 0.65 + rng() * 0.3;
+}
 
 function mulberry32(seed) {
   return () => {
@@ -47,9 +55,14 @@ function randomShell(rng, minR, maxR) {
   return [dir[0] * r, dir[1] * r * 0.18, dir[2] * r];
 }
 
+function starPoint(rng, x, y, z) {
+  const color = starColor(rng);
+  return [round1(x), round1(y), round1(z), round3(stellarRadiusRs(rng) * RS), color[0], color[1], color[2]];
+}
+
 function buildPoints(rng) {
   const n = 3 + ((rng() * 6) | 0);
-  const points = [[0, 0, 0]];
+  const points = [starPoint(rng, 0, 0, 0)];
   let x = 0;
   let y = 0;
   let z = 0;
@@ -68,18 +81,27 @@ function buildPoints(rng) {
       const bx = x + (rng() - 0.5) * 2.4;
       const by = y + (rng() - 0.5) * 0.8;
       const bz = z + (rng() - 0.5) * 2.4;
-      points.push([round1(bx), round1(by), round1(bz)]);
+      points.push(starPoint(rng, bx, by, bz));
     }
 
-    points.push([round1(x), round1(y), round1(z)]);
-  }
-
-  if (rng() < 0.08) {
-    const idx = 1 + ((rng() * (points.length - 1)) | 0);
-    points[idx] = [...points[idx].slice(0, 3), round3(0.028 + rng() * 0.022)];
+    points.push(starPoint(rng, x, y, z));
   }
 
   return points;
+}
+
+function starColor(rng) {
+  const t = rng();
+  if (t < 0.32) {
+    const u = t / 0.32;
+    return [round3(0.82 + u * 0.18), round3(0.04 + u * 0.22), round3(0.02 + u * 0.08)];
+  }
+  if (t < 0.68) {
+    const u = (t - 0.32) / 0.36;
+    return [round3(1), round3(0.26 + u * 0.52), round3(0.1 + u * 0.28)];
+  }
+  const u = (t - 0.68) / 0.32;
+  return [round3(1), round3(0.78 + u * 0.22), round3(0.38 + u * 0.62)];
 }
 
 function dustColor(rng) {
@@ -115,7 +137,7 @@ function buildDust(rng) {
 }
 
 function buildCluster(rng, origin) {
-  const radius = round3(0.01 + rng() * 0.014 + (rng() < 0.06 ? 0.012 : 0));
+  const radius = round3((0.18 + rng() * 0.14) * RS);
   const ampScale = 4 + rng() * 14;
   const dir = randomDir(rng);
   const glide = {

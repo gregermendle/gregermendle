@@ -40,9 +40,10 @@
     return { position: buffer };
   }
 
+  const RS_REF = 0.25;
   const DISK_SIZE = 23;
   const MAX_DEFLECT = 8;
-  const STAR_RADIUS = 0.145;
+  const STAR_RADIUS = 0.32 * RS_REF;
   const VIEW_FRUSTUM_PAD = 0.32;
   const STAR_ANGULAR_PAD = 12;
   const STAR_BASE_PAD = 0.32;
@@ -288,6 +289,7 @@
     }`;
     const starVs = `${ver}${attr} vec2 aCorner;
     ${attr} vec4 aStar;
+    ${attr} vec3 aColor;
     ${attr} float aKind;
     uniform vec2 resolution;
     uniform float progress;
@@ -298,6 +300,7 @@
     uniform vec3 camUp;
     uniform float uUseLens;
     ${varyOut} vec4 vStar;
+    ${varyOut} vec3 vColor;
     ${varyOut} float vKind;
     ${lensLib}
     void main() {
@@ -321,6 +324,7 @@
       vec2 uv = center + aCorner * pad;
       gl_Position = vec4(uv.x * (2.0 * minRes / resolution.x), uv.y * (2.0 * minRes / resolution.y), 0.0, 1.0);
       vStar = aStar;
+      vColor = aColor;
       vKind = aKind;
     }`;
 
@@ -336,6 +340,7 @@
     uniform float uUseLens;
     uniform float uUseMask;
     ${varyIn} vec4 vStar;
+    ${varyIn} vec3 vColor;
     ${varyIn} float vKind;
     ${fragOut}
     ${lensLib}
@@ -378,7 +383,7 @@
         float halo = exp(-d / max(glowR, 1e-5)) * mix(0.16, 0.52, near);
         glow = (core + halo) * progress;
       }
-      ${writeColor} = vec4(vec3(glow), 1.0);
+      ${writeColor} = vec4(vColor * glow, 1.0);
     }`;
 
     const lineVs = `${ver}${attr} vec2 aPos;
@@ -742,8 +747,8 @@
     let starVertCount = 0;
     let starFrontCount = 0;
     let lineVertCount = 0;
-    let starGeom = new Float32Array(7 * 6 * 256);
-    let starGeomFront = new Float32Array(7 * 6 * 64);
+    let starGeom = new Float32Array(10 * 6 * 256);
+    let starGeomFront = new Float32Array(10 * 6 * 64);
     let lineGeom = new Float32Array(4 * 6 * 256);
     let dustGeom = new Float32Array(9 * 6 * 128);
     let dustGeomFront = new Float32Array(9 * 6 * 32);
@@ -768,6 +773,9 @@
     let pointY = new Float32Array(0);
     let pointZ = new Float32Array(0);
     let pointR = new Float32Array(0);
+    let pointCr = new Float32Array(0);
+    let pointCg = new Float32Array(0);
+    let pointCb = new Float32Array(0);
     let dustCount = new Int32Array(0);
     let dustRadius = new Float32Array(0);
     let dustSize = new Float32Array(0);
@@ -807,6 +815,9 @@
       pointY = new Float32Array(totalPts);
       pointZ = new Float32Array(totalPts);
       pointR = new Float32Array(totalPts);
+      pointCr = new Float32Array(totalPts);
+      pointCg = new Float32Array(totalPts);
+      pointCb = new Float32Array(totalPts);
       let p = 0;
       for (let c = 0; c < clusterCount; c++) {
         const cluster = src[c] || {};
@@ -838,6 +849,9 @@
           pointY[p] = y;
           pointZ[p] = z;
           pointR[p] = r;
+          pointCr[p] = pt[4] == null ? 1 : pt[4];
+          pointCg[p] = pt[5] == null ? 1 : pt[5];
+          pointCb[p] = pt[6] == null ? 1 : pt[6];
           const ext = Math.hypot(x, y, z) + r;
           if (ext > maxExt) maxExt = ext;
           p++;
@@ -938,29 +952,32 @@
       return new Float32Array(n);
     }
 
-    function emitStarTo(bufName, countName, spx, spy, z, ang, kind) {
+    function emitStarTo(bufName, countName, spx, spy, z, ang, kind, cr, cg, cb) {
       const count = countName === "front" ? starFrontCount : starVertCount;
-      const need = count * 7 + 42;
+      const need = count * 10 + 60;
       if (countName === "front") starGeomFront = growFloat(starGeomFront, need);
       else starGeom = growFloat(starGeom, need);
       const geom = countName === "front" ? starGeomFront : starGeom;
       const corners = [-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1];
       for (let i = 0; i < 6; i++) {
-        const o = count * 7 + i * 7;
+        const o = count * 10 + i * 10;
         geom[o] = corners[i * 2];
         geom[o + 1] = corners[i * 2 + 1];
         geom[o + 2] = spx;
         geom[o + 3] = spy;
         geom[o + 4] = z;
         geom[o + 5] = ang;
-        geom[o + 6] = kind;
+        geom[o + 6] = cr;
+        geom[o + 7] = cg;
+        geom[o + 8] = cb;
+        geom[o + 9] = kind;
       }
       if (countName === "front") starFrontCount += 6;
       else starVertCount += 6;
     }
 
-    function emitStarQuad(spx, spy, z, ang, kind) {
-      emitStarTo("starGeom", "back", spx, spy, z, ang, kind);
+    function emitStarQuad(spx, spy, z, ang, kind, cr, cg, cb) {
+      emitStarTo("starGeom", "back", spx, spy, z, ang, kind, cr, cg, cb);
     }
 
     function dustHash(c, i, k) {
@@ -1138,7 +1155,11 @@
           const wy = oy + pointY[pi];
           const wz = oz + pointZ[pi];
           const sr = pointR[pi];
-          if (!starInView(b, wx, wy, wz, sr, minRes, renderW, renderH)) {
+          const displaySr = sr * (schwarzschildRadius / RS_REF);
+          const scr = pointCr[pi];
+          const scg = pointCg[pi];
+          const scb = pointCb[pi];
+          if (!starInView(b, wx, wy, wz, displaySr, minRes, renderW, renderH)) {
             prevOn = false;
             continue;
           }
@@ -1148,10 +1169,10 @@
           const z = dx * b.fx + dy * b.fy + dz * b.fz;
           const spx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
           const spy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
-          const ang = sr / Math.max(z, sr * 0.35);
+          const ang = displaySr / Math.max(z, displaySr * 0.35);
           const behind = z > Math.max(holeZ, LENS_Z_MIN);
-          if (!behind) emitStarTo("starGeomFront", "front", spx, spy, z, ang, 0);
-          else emitStarQuad(spx, spy, z, ang, 0);
+          if (!behind) emitStarTo("starGeomFront", "front", spx, spy, z, ang, 0, scr, scg, scb);
+          else emitStarQuad(spx, spy, z, ang, 0, scr, scg, scb);
           considerDeflect(wx, wy, wz, sr, z, px);
           if (prevOn) {
             emitLineQuad(prevAx, prevAy, spx, spy, Math.min(prevZ, z), minRes);
@@ -1197,6 +1218,7 @@
     const starAttribs = {
       corner: gl.getAttribLocation(starProgram, "aCorner"),
       star: gl.getAttribLocation(starProgram, "aStar"),
+      color: gl.getAttribLocation(starProgram, "aColor"),
       kind: gl.getAttribLocation(starProgram, "aKind"),
     };
     const starUniforms = {
@@ -1527,6 +1549,7 @@
     function bindFullscreen() {
       disableAttrib(starAttribs.corner);
       disableAttrib(starAttribs.star);
+      disableAttrib(starAttribs.color);
       disableAttrib(starAttribs.kind);
       disableAttrib(lineAttribs.pos);
       disableAttrib(lineAttribs.meta);
@@ -1559,13 +1582,15 @@
       gl.uniform1f(starUniforms.useLens, useLens ? 1 : 0);
       gl.uniform1f(starUniforms.useMask, useMask ? 1 : 0);
       gl.bindBuffer(gl.ARRAY_BUFFER, starBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, geom.subarray(0, count * 7), gl.STREAM_DRAW);
-      const stride = 28;
+      gl.bufferData(gl.ARRAY_BUFFER, geom.subarray(0, count * 10), gl.STREAM_DRAW);
+      const stride = 40;
       gl.vertexAttribPointer(starAttribs.corner, 2, gl.FLOAT, false, stride, 0);
       gl.enableVertexAttribArray(starAttribs.corner);
       gl.vertexAttribPointer(starAttribs.star, 4, gl.FLOAT, false, stride, 8);
       gl.enableVertexAttribArray(starAttribs.star);
-      gl.vertexAttribPointer(starAttribs.kind, 1, gl.FLOAT, false, stride, 24);
+      gl.vertexAttribPointer(starAttribs.color, 3, gl.FLOAT, false, stride, 24);
+      gl.enableVertexAttribArray(starAttribs.color);
+      gl.vertexAttribPointer(starAttribs.kind, 1, gl.FLOAT, false, stride, 36);
       gl.enableVertexAttribArray(starAttribs.kind);
       gl.drawArrays(gl.TRIANGLES, 0, count);
     }
@@ -1574,6 +1599,7 @@
       if (!lineVertCount) return;
       disableAttrib(starAttribs.corner);
       disableAttrib(starAttribs.star);
+      disableAttrib(starAttribs.color);
       disableAttrib(starAttribs.kind);
       gl.useProgram(lineProgram);
       gl.uniform2f(lineUniforms.resolution, renderWidth, renderHeight);
@@ -1653,6 +1679,7 @@
       if (!count) return;
       disableAttrib(starAttribs.corner);
       disableAttrib(starAttribs.star);
+      disableAttrib(starAttribs.color);
       disableAttrib(starAttribs.kind);
       disableAttrib(lineAttribs.pos);
       disableAttrib(lineAttribs.meta);
