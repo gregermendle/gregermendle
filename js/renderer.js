@@ -86,6 +86,7 @@
             if (dot(diskCol.rgb, vec3(0.333)) > ${DISK_MASK_LUMA}) col.a = 1.0;
           }
         }
+        if (r > influenceRadius && dot(p, rd) > 0.0) return col;
         if (r < radius || dot(col, col) > 100.0) return vec4(col.rgb, 1.0);
 `;
   }
@@ -292,6 +293,7 @@
     uniform vec3 camFwd;
     uniform vec3 camRight;
     uniform vec3 camUp;
+    uniform float uUseLens;
     ${varyOut} vec4 vStar;
     ${lensLib}
     void main() {
@@ -303,12 +305,13 @@
       vec2 holeP = holePos(ro);
       float z = aStar.z;
       float ang = aStar.w;
-      float holeTe2 = holeTe2Of(radius, holeZ, z);
+      float holeTe2 = uUseLens > 0.5 ? holeTe2Of(radius, holeZ, z) : 0.0;
       if (holeTe2 < px * px) holeTe2 = 0.0;
       float ring = sqrt(holeTe2);
       float glowR = max(ang * 5.5, px * 3.4);
-      float pad = max(max(max(ang * ${STAR_GLOW_PAD.toFixed(1)}, px * ${STAR_PX_PAD.toFixed(1)}), ring * 2.4), glowR * 6.0);
-      vec2 center = aKind > 0.5 ? holeP : aStar.xy;
+      float pad = max(max(ang * ${STAR_GLOW_PAD.toFixed(1)}, px * ${STAR_PX_PAD.toFixed(1)}), glowR * 6.0);
+      if (uUseLens > 0.5) pad = max(pad, ring * 2.4);
+      vec2 center = (uUseLens > 0.5 && aKind > 0.5) ? holeP : aStar.xy;
       vec2 uv = center + aCorner * pad;
       gl_Position = vec4(uv.x * (2.0 * minRes / resolution.x), uv.y * (2.0 * minRes / resolution.y), 0.0, 1.0);
       vStar = aStar;
@@ -323,6 +326,8 @@
     uniform vec3 camRight;
     uniform vec3 camUp;
     uniform sampler2D uMask;
+    uniform float uUseLens;
+    uniform float uUseMask;
     ${varyIn} vec4 vStar;
     ${fragOut}
     ${lensLib}
@@ -340,15 +345,15 @@
       float radius = schwarzschildRadius * progress;
       float holeZ = dot(-ro, camFwd);
       vec2 holeP = holePos(ro);
-      float holeMask = ${tex}(uMask, gl_FragCoord.xy / resolution).${maskCh};
+      float holeMask = uUseMask > 0.5 ? ${tex}(uMask, gl_FragCoord.xy / resolution).${maskCh} : 0.0;
       float z = vStar.z;
-      if (z <= 1e-4 || (holeZ > 1e-4 && z > holeZ && holeMask > 0.5)) {
+      if (z <= 1e-4 || (uUseMask > 0.5 && holeZ > 1e-4 && z > holeZ && holeMask > 0.5)) {
         ${writeColor} = vec4(0.0);
         return;
       }
       vec2 sp = vStar.xy;
       float ang = vStar.w;
-      float holeTe2 = holeTe2Of(radius, holeZ, z);
+      float holeTe2 = uUseLens > 0.5 ? holeTe2Of(radius, holeZ, z) : 0.0;
       if (holeTe2 < px * px) holeTe2 = 0.0;
       vec2 src = uv;
       if (holeTe2 > 0.0) src -= lensPull(uv, holeP, holeTe2);
@@ -378,12 +383,13 @@
     uniform vec3 camPos;
     uniform vec3 camFwd;
     uniform sampler2D uMask;
+    uniform float uUseMask;
     ${varyIn} vec2 vMeta;
     ${fragOut}
     void main() {
       float holeZ = dot(-camPos, camFwd);
-      float holeMask = ${tex}(uMask, gl_FragCoord.xy / resolution).${maskCh};
-      if (vMeta.x < 0.0 || (holeZ > 1e-4 && vMeta.x > holeZ && holeMask > 0.5)) {
+      float holeMask = uUseMask > 0.5 ? ${tex}(uMask, gl_FragCoord.xy / resolution).${maskCh} : 0.0;
+      if (vMeta.x < 0.0 || (uUseMask > 0.5 && holeZ > 1e-4 && vMeta.x > holeZ && holeMask > 0.5)) {
         ${writeColor} = vec4(0.0);
         return;
       }
@@ -391,7 +397,48 @@
       ${writeColor} = vec4(vec3(glow), 1.0);
     }`;
 
-    return { vs, fs, blitVs, blitFs, starVs, starFs, lineVs, lineFs };
+    const lensFs = `${ver}precision highp float;
+    uniform sampler2D uField;
+    uniform sampler2D uMask;
+    uniform vec2 resolution;
+    uniform float progress;
+    uniform float schwarzschildRadius;
+    uniform vec3 camPos;
+    uniform vec3 camFwd;
+    uniform vec3 camRight;
+    uniform vec3 camUp;
+    ${varyIn} vec2 vTexCoord;
+    ${fragOut}
+    ${lensLib}
+    vec2 lensPull(vec2 uv, vec2 lp, float te2) {
+      if (te2 <= 0.0) return vec2(0.0);
+      vec2 d = uv - lp;
+      float b2 = dot(d, d);
+      return d * (te2 / max(b2, te2 * 0.08));
+    }
+    void main() {
+      float minRes = min(resolution.x, resolution.y);
+      vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
+      vec3 ro = camPos;
+      float holeZ = dot(-ro, camFwd);
+      float holeMask = ${tex}(uMask, vTexCoord).${maskCh};
+      if (holeMask > 0.5) {
+        ${writeColor} = vec4(0.0);
+        return;
+      }
+      float te2 = holeTe2Of(schwarzschildRadius * progress, holeZ, 1.0e6);
+      vec2 src = uv;
+      if (te2 > 0.0) src -= lensPull(uv, holePos(ro), te2);
+      vec2 srcTex = src * minRes / resolution + 0.5;
+      if (srcTex.x < 0.0 || srcTex.y < 0.0 || srcTex.x > 1.0 || srcTex.y > 1.0) {
+        ${writeColor} = vec4(0.0);
+        return;
+      }
+      float glow = ${tex}(uField, srcTex).r;
+      ${writeColor} = vec4(vec3(glow), 1.0);
+    }`;
+
+    return { vs, fs, blitVs, blitFs, starVs, starFs, lineVs, lineFs, lensFs };
   }
 
   const E7 = 7 / 16;
@@ -566,6 +613,7 @@
     const blitProgram = initShaderProgram(gl, shaders.blitVs, shaders.blitFs);
     const starProgram = initShaderProgram(gl, shaders.starVs, shaders.starFs);
     const lineProgram = initShaderProgram(gl, shaders.lineVs, shaders.lineFs);
+    const lensProgram = initShaderProgram(gl, shaders.blitVs, shaders.lensFs);
     const buffers = initBuffers(gl);
     loadWasmDither();
 
@@ -573,8 +621,11 @@
     const starData = new Float32Array(MAX_DEFLECT * 4);
     let deflectCount = 0;
     let starVertCount = 0;
+    let starFrontCount = 0;
     let lineVertCount = 0;
+    let closeLens = false;
     let starGeom = new Float32Array(7 * 6 * 256);
+    let starGeomFront = new Float32Array(7 * 6 * 64);
     let lineGeom = new Float32Array(4 * 6 * 256);
 
     let clusterCount = 0;
@@ -738,21 +789,29 @@
       return new Float32Array(n);
     }
 
-    function emitStarQuad(spx, spy, z, ang, kind) {
-      const need = starVertCount * 7 + 42;
-      starGeom = growFloat(starGeom, need);
+    function emitStarTo(bufName, countName, spx, spy, z, ang, kind) {
+      const count = countName === "front" ? starFrontCount : starVertCount;
+      const need = count * 7 + 42;
+      if (countName === "front") starGeomFront = growFloat(starGeomFront, need);
+      else starGeom = growFloat(starGeom, need);
+      const geom = countName === "front" ? starGeomFront : starGeom;
       const corners = [-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1];
       for (let i = 0; i < 6; i++) {
-        const o = starVertCount * 7;
-        starGeom[o] = corners[i * 2];
-        starGeom[o + 1] = corners[i * 2 + 1];
-        starGeom[o + 2] = spx;
-        starGeom[o + 3] = spy;
-        starGeom[o + 4] = z;
-        starGeom[o + 5] = ang;
-        starGeom[o + 6] = kind;
-        starVertCount++;
+        const o = count * 7 + i * 7;
+        geom[o] = corners[i * 2];
+        geom[o + 1] = corners[i * 2 + 1];
+        geom[o + 2] = spx;
+        geom[o + 3] = spy;
+        geom[o + 4] = z;
+        geom[o + 5] = ang;
+        geom[o + 6] = kind;
       }
+      if (countName === "front") starFrontCount += 6;
+      else starVertCount += 6;
+    }
+
+    function emitStarQuad(spx, spy, z, ang, kind) {
+      emitStarTo("starGeom", "back", spx, spy, z, ang, kind);
     }
 
     function emitLineQuad(ax, ay, bx, by, z, minRes) {
@@ -828,8 +887,10 @@
       const holePx = (-camX * b.rx - camY * b.ry - camZ * b.rz) / zProj;
       const holePy = (-camX * b.ux - camY * b.uy - camZ * b.uz) / zProj;
       starVertCount = 0;
+      starFrontCount = 0;
       lineVertCount = 0;
       deflectCount = 0;
+      closeLens = lensFadeJS(holeZ) > 0.01 && Math.max(holeZ, LENS_Z_MIN) < 22;
       for (let c = 0; c < clusterCount; c++) {
         const npts = pointCount[c];
         if (!npts) continue;
@@ -875,9 +936,11 @@
           const spx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
           const spy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
           const ang = sr / Math.max(z, sr * 0.35);
-          emitStarQuad(spx, spy, z, ang, 0);
+          const behind = z > Math.max(holeZ, LENS_Z_MIN);
+          if (closeLens && !behind) emitStarTo("starGeomFront", "front", spx, spy, z, ang, 0);
+          else emitStarQuad(spx, spy, z, ang, 0);
           const holeTe2 = einstein2JS(radius, holeZ, z);
-          if (holeTe2 >= px2) emitStarQuad(spx, spy, z, ang, 1);
+          if (!closeLens && holeTe2 >= px2) emitStarQuad(spx, spy, z, ang, 1);
           considerDeflect(wx, wy, wz, sr, z, px);
           if (prevOn) {
             let ax = prevAx;
@@ -885,7 +948,7 @@
             let lx = spx;
             let ly = spy;
             const zLine = Math.min(prevZ, z);
-            if (lensFadeJS(holeZ) > 0 && zLine > LENS_Z_MIN) {
+            if (!closeLens && lensFadeJS(holeZ) > 0 && zLine > LENS_Z_MIN) {
               const te2 = einstein2JS(radius, holeZ, zLine);
               if (te2 >= px2) {
                 const pa = lensPullJS(ax, ay, holePx, holePy, te2);
@@ -950,6 +1013,8 @@
       camRight: gl.getUniformLocation(starProgram, "camRight"),
       camUp: gl.getUniformLocation(starProgram, "camUp"),
       mask: gl.getUniformLocation(starProgram, "uMask"),
+      useLens: gl.getUniformLocation(starProgram, "uUseLens"),
+      useMask: gl.getUniformLocation(starProgram, "uUseMask"),
     };
     const lineAttribs = {
       pos: gl.getAttribLocation(lineProgram, "aPos"),
@@ -961,11 +1026,24 @@
       camPos: gl.getUniformLocation(lineProgram, "camPos"),
       camFwd: gl.getUniformLocation(lineProgram, "camFwd"),
       mask: gl.getUniformLocation(lineProgram, "uMask"),
+      useMask: gl.getUniformLocation(lineProgram, "uUseMask"),
+    };
+    const lensUniforms = {
+      field: gl.getUniformLocation(lensProgram, "uField"),
+      mask: gl.getUniformLocation(lensProgram, "uMask"),
+      resolution: gl.getUniformLocation(lensProgram, "resolution"),
+      progress: gl.getUniformLocation(lensProgram, "progress"),
+      schwarzschildRadius: gl.getUniformLocation(lensProgram, "schwarzschildRadius"),
+      camPos: gl.getUniformLocation(lensProgram, "camPos"),
+      camFwd: gl.getUniformLocation(lensProgram, "camFwd"),
+      camRight: gl.getUniformLocation(lensProgram, "camRight"),
+      camUp: gl.getUniformLocation(lensProgram, "camUp"),
     };
     const starBuffer = gl.createBuffer();
     const lineBuffer = gl.createBuffer();
 
     const blitAttrib = gl.getAttribLocation(blitProgram, "aVertexPosition");
+    const lensAttrib = gl.getAttribLocation(lensProgram, "aVertexPosition");
     gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
     gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 2, gl.FLOAT, false, 0, 0);
     gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
@@ -985,8 +1063,10 @@
 
     let framebuffer = null;
     let compositeFb = null;
+    let fieldFb = null;
     let sceneTexture = null;
     let compositeTexture = null;
+    let fieldTexture = null;
     let displayTexture = null;
     let pbos = null;
     let pboIndex = 0;
@@ -1060,8 +1140,10 @@
       if (framebuffer) {
         gl.deleteFramebuffer(framebuffer);
         gl.deleteFramebuffer(compositeFb);
+        gl.deleteFramebuffer(fieldFb);
         gl.deleteTexture(sceneTexture);
         gl.deleteTexture(compositeTexture);
+        gl.deleteTexture(fieldTexture);
         gl.deleteTexture(displayTexture);
       }
       destroyPbos();
@@ -1076,10 +1158,14 @@
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneTexture, 0);
       }
       compositeTexture = createTexture(width, height, displayInternal, displayFormat);
+      fieldTexture = createTexture(width, height, displayInternal, displayFormat);
       displayTexture = createTexture(width, height, displayInternal, displayFormat);
       compositeFb = gl.createFramebuffer();
       gl.bindFramebuffer(gl.FRAMEBUFFER, compositeFb);
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, compositeTexture, 0);
+      fieldFb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fieldFb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fieldTexture, 0);
       fboWidth = width;
       fboHeight = height;
       hasPresented = false;
@@ -1206,59 +1292,113 @@
       }
     }
 
-    function renderStars(renderWidth, renderHeight, b) {
+    function drawStarGeom(geom, count, renderWidth, renderHeight, b, useLens, useMask) {
+      if (!count) return;
+      gl.useProgram(starProgram);
+      gl.uniform2f(starUniforms.resolution, renderWidth, renderHeight);
+      gl.uniform1f(starUniforms.progress, easedProgress);
+      gl.uniform1f(starUniforms.schwarzschildRadius, schwarzschildRadius);
+      gl.uniform3f(starUniforms.camPos, camX, camY, camZ);
+      gl.uniform3f(starUniforms.camFwd, b.fx, b.fy, b.fz);
+      gl.uniform3f(starUniforms.camRight, b.rx, b.ry, b.rz);
+      gl.uniform3f(starUniforms.camUp, b.ux, b.uy, b.uz);
+      gl.uniform1i(starUniforms.mask, 0);
+      gl.uniform1f(starUniforms.useLens, useLens ? 1 : 0);
+      gl.uniform1f(starUniforms.useMask, useMask ? 1 : 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, starBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, geom.subarray(0, count * 7), gl.STREAM_DRAW);
+      const stride = 28;
+      gl.vertexAttribPointer(starAttribs.corner, 2, gl.FLOAT, false, stride, 0);
+      gl.enableVertexAttribArray(starAttribs.corner);
+      gl.vertexAttribPointer(starAttribs.star, 4, gl.FLOAT, false, stride, 8);
+      gl.enableVertexAttribArray(starAttribs.star);
+      gl.vertexAttribPointer(starAttribs.kind, 1, gl.FLOAT, false, stride, 24);
+      gl.enableVertexAttribArray(starAttribs.kind);
+      gl.drawArrays(gl.TRIANGLES, 0, count);
+    }
+
+    function drawLineGeom(renderWidth, renderHeight, b, useMask) {
+      if (!lineVertCount) return;
+      disableAttrib(starAttribs.corner);
+      disableAttrib(starAttribs.star);
+      disableAttrib(starAttribs.kind);
+      gl.useProgram(lineProgram);
+      gl.uniform2f(lineUniforms.resolution, renderWidth, renderHeight);
+      gl.uniform1f(lineUniforms.progress, easedProgress);
+      gl.uniform3f(lineUniforms.camPos, camX, camY, camZ);
+      gl.uniform3f(lineUniforms.camFwd, b.fx, b.fy, b.fz);
+      gl.uniform1i(lineUniforms.mask, 0);
+      gl.uniform1f(lineUniforms.useMask, useMask ? 1 : 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, lineGeom.subarray(0, lineVertCount * 4), gl.STREAM_DRAW);
+      const stride = 16;
+      gl.vertexAttribPointer(lineAttribs.pos, 2, gl.FLOAT, false, stride, 0);
+      gl.enableVertexAttribArray(lineAttribs.pos);
+      gl.vertexAttribPointer(lineAttribs.meta, 2, gl.FLOAT, false, stride, 8);
+      gl.enableVertexAttribArray(lineAttribs.meta);
+      gl.drawArrays(gl.TRIANGLES, 0, lineVertCount);
+    }
+
+    function blitScene(renderWidth, renderHeight) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, compositeFb);
       gl.viewport(0, 0, renderWidth, renderHeight);
       gl.disable(gl.BLEND);
+      gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, sceneTexture);
       gl.useProgram(blitProgram);
       bindFullscreen();
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
 
+    function renderStars(renderWidth, renderHeight, b) {
+      if (closeLens && (starVertCount || lineVertCount)) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fieldFb);
+        gl.viewport(0, 0, renderWidth, renderHeight);
+        gl.disable(gl.BLEND);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE);
+        drawStarGeom(starGeom, starVertCount, renderWidth, renderHeight, b, false, false);
+        drawLineGeom(renderWidth, renderHeight, b, false);
+        blitScene(renderWidth, renderHeight);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE);
+        gl.useProgram(lensProgram);
+        bindFullscreen();
+        if (lensAttrib !== blitAttrib && lensAttrib >= 0) {
+          gl.vertexAttribPointer(lensAttrib, 2, gl.FLOAT, false, 0, 0);
+          gl.enableVertexAttribArray(lensAttrib);
+        }
+        gl.uniform2f(lensUniforms.resolution, renderWidth, renderHeight);
+        gl.uniform1f(lensUniforms.progress, easedProgress);
+        gl.uniform1f(lensUniforms.schwarzschildRadius, schwarzschildRadius);
+        gl.uniform3f(lensUniforms.camPos, camX, camY, camZ);
+        gl.uniform3f(lensUniforms.camFwd, b.fx, b.fy, b.fz);
+        gl.uniform3f(lensUniforms.camRight, b.rx, b.ry, b.rz);
+        gl.uniform3f(lensUniforms.camUp, b.ux, b.uy, b.uz);
+        gl.uniform1i(lensUniforms.mask, 0);
+        gl.uniform1i(lensUniforms.field, 1);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, sceneTexture);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, fieldTexture);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, sceneTexture);
+        drawStarGeom(starGeomFront, starFrontCount, renderWidth, renderHeight, b, false, true);
+        gl.disable(gl.BLEND);
+        return;
+      }
+
+      blitScene(renderWidth, renderHeight);
       if (!starVertCount && !lineVertCount) return;
-
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE);
-      if (starVertCount) {
-        gl.useProgram(starProgram);
-        gl.uniform2f(starUniforms.resolution, renderWidth, renderHeight);
-        gl.uniform1f(starUniforms.progress, easedProgress);
-        gl.uniform1f(starUniforms.schwarzschildRadius, schwarzschildRadius);
-        gl.uniform3f(starUniforms.camPos, camX, camY, camZ);
-        gl.uniform3f(starUniforms.camFwd, b.fx, b.fy, b.fz);
-        gl.uniform3f(starUniforms.camRight, b.rx, b.ry, b.rz);
-        gl.uniform3f(starUniforms.camUp, b.ux, b.uy, b.uz);
-        gl.uniform1i(starUniforms.mask, 0);
-        gl.bindBuffer(gl.ARRAY_BUFFER, starBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, starGeom.subarray(0, starVertCount * 7), gl.STREAM_DRAW);
-        const stride = 28;
-        gl.vertexAttribPointer(starAttribs.corner, 2, gl.FLOAT, false, stride, 0);
-        gl.enableVertexAttribArray(starAttribs.corner);
-        gl.vertexAttribPointer(starAttribs.star, 4, gl.FLOAT, false, stride, 8);
-        gl.enableVertexAttribArray(starAttribs.star);
-        gl.vertexAttribPointer(starAttribs.kind, 1, gl.FLOAT, false, stride, 24);
-        gl.enableVertexAttribArray(starAttribs.kind);
-        gl.drawArrays(gl.TRIANGLES, 0, starVertCount);
-      }
-      if (lineVertCount) {
-        disableAttrib(starAttribs.corner);
-        disableAttrib(starAttribs.star);
-        disableAttrib(starAttribs.kind);
-        gl.useProgram(lineProgram);
-        gl.uniform2f(lineUniforms.resolution, renderWidth, renderHeight);
-        gl.uniform1f(lineUniforms.progress, easedProgress);
-        gl.uniform3f(lineUniforms.camPos, camX, camY, camZ);
-        gl.uniform3f(lineUniforms.camFwd, b.fx, b.fy, b.fz);
-        gl.uniform1i(lineUniforms.mask, 0);
-        gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, lineGeom.subarray(0, lineVertCount * 4), gl.STREAM_DRAW);
-        const stride = 16;
-        gl.vertexAttribPointer(lineAttribs.pos, 2, gl.FLOAT, false, stride, 0);
-        gl.enableVertexAttribArray(lineAttribs.pos);
-        gl.vertexAttribPointer(lineAttribs.meta, 2, gl.FLOAT, false, stride, 8);
-        gl.enableVertexAttribArray(lineAttribs.meta);
-        gl.drawArrays(gl.TRIANGLES, 0, lineVertCount);
-      }
+      drawStarGeom(starGeom, starVertCount, renderWidth, renderHeight, b, true, true);
+      drawLineGeom(renderWidth, renderHeight, b, true);
       gl.disable(gl.BLEND);
     }
 
