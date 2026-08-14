@@ -82,6 +82,26 @@ function buildPoints(rng) {
   return points;
 }
 
+function dustColor(rng) {
+  const palettes = [
+    [1, 0.84, 0.58],
+    [1, 0.7, 0.48],
+    [1, 0.78, 0.86],
+    [0.7, 0.82, 1],
+    [0.78, 0.92, 1],
+    [0.72, 1, 0.8],
+    [1, 0.92, 0.72],
+    [0.88, 0.76, 1],
+  ];
+  const base = palettes[(rng() * palettes.length) | 0];
+  const lift = 0.12 + rng() * 0.18;
+  return [
+    round3(Math.min(1, base[0] + lift * (rng() - 0.2))),
+    round3(Math.min(1, base[1] + lift * (rng() - 0.2))),
+    round3(Math.min(1, base[2] + lift * (rng() - 0.2))),
+  ];
+}
+
 function buildDust(rng) {
   if (rng() < 0.22) return null;
   return {
@@ -89,7 +109,7 @@ function buildDust(rng) {
     radius: round1(2.2 + rng() * 5.5),
     size: round3(0.55 + rng() * 1.1),
     opacity: round3(0.028 + rng() * 0.03),
-    color: [1, 1, 1],
+    color: dustColor(rng),
   };
 }
 

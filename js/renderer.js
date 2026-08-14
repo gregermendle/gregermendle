@@ -408,6 +408,94 @@
       ${writeColor} = vec4(vec3(glow), 1.0);
     }`;
 
+    const dustVs = `${ver}${attr} vec2 aCorner;
+    ${attr} vec4 aDust;
+    ${attr} vec3 aColor;
+    uniform vec2 resolution;
+    ${varyOut} vec4 vDust;
+    ${varyOut} vec3 vColor;
+    void main() {
+      float minRes = min(resolution.x, resolution.y);
+      float px = 1.0 / minRes;
+      float ang = aDust.w;
+      float pad = max(ang * 2.2, px * 3.0);
+      vec2 uv = aDust.xy + aCorner * pad;
+      gl_Position = vec4(uv.x * (2.0 * minRes / resolution.x), uv.y * (2.0 * minRes / resolution.y), 0.0, 1.0);
+      vDust = aDust;
+      vColor = aColor;
+    }`;
+
+    const dustFs = `${ver}precision highp float;
+    uniform vec2 resolution;
+    uniform float progress;
+    uniform vec3 camPos;
+    uniform vec3 camFwd;
+    uniform sampler2D uMask;
+    uniform float uUseMask;
+    ${varyIn} vec4 vDust;
+    ${varyIn} vec3 vColor;
+    ${fragOut}
+    void main() {
+      float minRes = min(resolution.x, resolution.y);
+      vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
+      float holeZ = dot(-camPos, camFwd);
+      float holeMask = uUseMask > 0.5 ? ${tex}(uMask, gl_FragCoord.xy / resolution).${maskCh} : 0.0;
+      float z = vDust.z;
+      if (z <= 1e-4 || (uUseMask > 0.5 && holeZ > 1e-4 && z > holeZ && holeMask > 0.5)) {
+        ${writeColor} = vec4(0.0);
+        return;
+      }
+      vec2 d = uv - vDust.xy;
+      float fall = exp(-dot(d, d) / max(vDust.w * vDust.w, 1e-8));
+      ${writeColor} = vec4(vColor * (fall * progress), 1.0);
+    }`;
+
+    const colorBlitFs = `${ver}precision highp float;
+    uniform sampler2D uTex;
+    ${varyIn} vec2 vTexCoord;
+    ${fragOut}
+    void main() { ${writeColor} = ${tex}(uTex, vTexCoord); }`;
+
+    const colorLensFs = `${ver}precision highp float;
+    uniform sampler2D uField;
+    uniform sampler2D uMask;
+    uniform vec2 resolution;
+    uniform float progress;
+    uniform float schwarzschildRadius;
+    uniform vec3 camPos;
+    uniform vec3 camFwd;
+    uniform vec3 camRight;
+    uniform vec3 camUp;
+    ${varyIn} vec2 vTexCoord;
+    ${fragOut}
+    ${lensLib}
+    vec2 lensPull(vec2 uv, vec2 lp, float te2) {
+      if (te2 <= 0.0) return vec2(0.0);
+      vec2 d = uv - lp;
+      float b2 = dot(d, d);
+      return d * (te2 / max(b2, te2 * 0.08));
+    }
+    void main() {
+      float minRes = min(resolution.x, resolution.y);
+      vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
+      vec3 ro = camPos;
+      float holeZ = dot(-ro, camFwd);
+      float holeMask = ${tex}(uMask, vTexCoord).${maskCh};
+      if (holeMask > 0.5) {
+        ${writeColor} = vec4(0.0);
+        return;
+      }
+      float te2 = holeTe2Of(schwarzschildRadius * progress, holeZ, 1.0e6);
+      vec2 src = uv;
+      if (te2 > 0.0) src -= lensPull(uv, holePos(ro), te2);
+      vec2 srcTex = src * minRes / resolution + 0.5;
+      if (srcTex.x < 0.0 || srcTex.y < 0.0 || srcTex.x > 1.0 || srcTex.y > 1.0) {
+        ${writeColor} = vec4(0.0);
+        return;
+      }
+      ${writeColor} = ${tex}(uField, srcTex);
+    }`;
+
     const lensFs = `${ver}precision highp float;
     uniform sampler2D uField;
     uniform sampler2D uMask;
@@ -449,7 +537,21 @@
       ${writeColor} = vec4(vec3(glow), 1.0);
     }`;
 
-    return { vs, fs, blitVs, blitFs, starVs, starFs, lineVs, lineFs, lensFs };
+    return {
+      vs,
+      fs,
+      blitVs,
+      blitFs,
+      starVs,
+      starFs,
+      lineVs,
+      lineFs,
+      lensFs,
+      dustVs,
+      dustFs,
+      colorBlitFs,
+      colorLensFs,
+    };
   }
 
   const E7 = 7 / 16;
@@ -625,6 +727,9 @@
     const starProgram = initShaderProgram(gl, shaders.starVs, shaders.starFs);
     const lineProgram = initShaderProgram(gl, shaders.lineVs, shaders.lineFs);
     const lensProgram = initShaderProgram(gl, shaders.blitVs, shaders.lensFs);
+    const dustProgram = initShaderProgram(gl, shaders.dustVs, shaders.dustFs);
+    const colorBlitProgram = initShaderProgram(gl, shaders.blitVs, shaders.colorBlitFs);
+    const colorLensProgram = initShaderProgram(gl, shaders.blitVs, shaders.colorLensFs);
     const buffers = initBuffers(gl);
     loadWasmDither();
 
@@ -637,6 +742,10 @@
     let starGeom = new Float32Array(7 * 6 * 256);
     let starGeomFront = new Float32Array(7 * 6 * 64);
     let lineGeom = new Float32Array(4 * 6 * 256);
+    let dustGeom = new Float32Array(9 * 6 * 128);
+    let dustGeomFront = new Float32Array(9 * 6 * 32);
+    let dustVertCount = 0;
+    let dustFrontCount = 0;
 
     let clusterCount = 0;
     let clusterOx = new Float32Array(0);
@@ -660,6 +769,9 @@
     let dustRadius = new Float32Array(0);
     let dustSize = new Float32Array(0);
     let dustGain = new Float32Array(0);
+    let dustR = new Float32Array(0);
+    let dustG = new Float32Array(0);
+    let dustB = new Float32Array(0);
     function setClusters(next) {
       const src = Array.isArray(next) ? next : [];
       clusterCount = src.length;
@@ -680,6 +792,9 @@
       dustRadius = new Float32Array(clusterCount);
       dustSize = new Float32Array(clusterCount);
       dustGain = new Float32Array(clusterCount);
+      dustR = new Float32Array(clusterCount);
+      dustG = new Float32Array(clusterCount);
+      dustB = new Float32Array(clusterCount);
       let totalPts = 0;
       for (let i = 0; i < clusterCount; i++) {
         const pts = src[i] && src[i].points;
@@ -727,11 +842,13 @@
         const dust = Array.isArray(cluster.dust) ? cluster.dust[0] : cluster.dust;
         if (dust && (dust.count | 0) > 0) {
           const col = dust.color || [1, 1, 1];
-          const luma = Math.max(0, (col[0] || 0) * 0.333 + (col[1] || 0) * 0.333 + (col[2] || 0) * 0.333);
           dustCount[c] = dust.count | 0;
           dustRadius[c] = dust.radius || 3;
           dustSize[c] = dust.size || 0.7;
-          dustGain[c] = Math.max(0, luma * (dust.opacity == null ? 0.04 : dust.opacity));
+          dustGain[c] = Math.max(0, dust.opacity == null ? 0.04 : dust.opacity);
+          dustR[c] = col[0] == null ? 1 : col[0];
+          dustG[c] = col[1] == null ? 1 : col[1];
+          dustB[c] = col[2] == null ? 1 : col[2];
           const dustExt = dustRadius[c] + dustSize[c];
           if (dustExt > maxExt) maxExt = dustExt;
         }
@@ -850,12 +967,35 @@
       return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
     }
 
+    function emitDustTo(front, spx, spy, z, ang, cr, cg, cb) {
+      const count = front ? dustFrontCount : dustVertCount;
+      const need = count * 9 + 54;
+      if (front) dustGeomFront = growFloat(dustGeomFront, need);
+      else dustGeom = growFloat(dustGeom, need);
+      const geom = front ? dustGeomFront : dustGeom;
+      const corners = [-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1];
+      for (let i = 0; i < 6; i++) {
+        const o = count * 9 + i * 9;
+        geom[o] = corners[i * 2];
+        geom[o + 1] = corners[i * 2 + 1];
+        geom[o + 2] = spx;
+        geom[o + 3] = spy;
+        geom[o + 4] = z;
+        geom[o + 5] = ang;
+        geom[o + 6] = cr;
+        geom[o + 7] = cg;
+        geom[o + 8] = cb;
+      }
+      if (front) dustFrontCount += 6;
+      else dustVertCount += 6;
+    }
+
     function emitClusterDust(c, ox, oy, oz, b, minRes, renderW, renderH, holeZ) {
       const n = dustCount[c];
       if (!n) return;
       const rad = dustRadius[c];
       const size = dustSize[c];
-      const kind = 2 + dustGain[c];
+      const gain = dustGain[c];
       const zCut = Math.max(holeZ, LENS_Z_MIN);
       for (let i = 0; i < n; i++) {
         const u = dustHash(c, i, 0);
@@ -876,8 +1016,11 @@
         const spx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
         const spy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
         const ang = size / Math.max(z, size * 0.35);
-        if (z > zCut) emitStarQuad(spx, spy, z, ang, kind);
-        else emitStarTo("starGeomFront", "front", spx, spy, z, ang, kind);
+        const j = dustHash(c, i, 3) * 0.28 - 0.1;
+        const cr = Math.min(1, Math.max(0, dustR[c] + j)) * gain;
+        const cg = Math.min(1, Math.max(0, dustG[c] + j * 0.7)) * gain;
+        const cb = Math.min(1, Math.max(0, dustB[c] + j * 0.45)) * gain;
+        emitDustTo(z <= zCut, spx, spy, z, ang, cr, cg, cb);
       }
     }
 
@@ -952,10 +1095,12 @@
       starVertCount = 0;
       starFrontCount = 0;
       lineVertCount = 0;
+      dustVertCount = 0;
+      dustFrontCount = 0;
       deflectCount = 0;
       for (let c = 0; c < clusterCount; c++) {
         const npts = pointCount[c];
-        if (!npts) continue;
+        if (!npts && !dustCount[c]) continue;
         if (
           !clusterInView(
             b,
@@ -1084,8 +1229,35 @@
       camRight: gl.getUniformLocation(lensProgram, "camRight"),
       camUp: gl.getUniformLocation(lensProgram, "camUp"),
     };
+    const dustAttribs = {
+      corner: gl.getAttribLocation(dustProgram, "aCorner"),
+      dust: gl.getAttribLocation(dustProgram, "aDust"),
+      color: gl.getAttribLocation(dustProgram, "aColor"),
+    };
+    const dustUniforms = {
+      resolution: gl.getUniformLocation(dustProgram, "resolution"),
+      progress: gl.getUniformLocation(dustProgram, "progress"),
+      camPos: gl.getUniformLocation(dustProgram, "camPos"),
+      camFwd: gl.getUniformLocation(dustProgram, "camFwd"),
+      mask: gl.getUniformLocation(dustProgram, "uMask"),
+      useMask: gl.getUniformLocation(dustProgram, "uUseMask"),
+    };
+    const colorLensUniforms = {
+      field: gl.getUniformLocation(colorLensProgram, "uField"),
+      mask: gl.getUniformLocation(colorLensProgram, "uMask"),
+      resolution: gl.getUniformLocation(colorLensProgram, "resolution"),
+      progress: gl.getUniformLocation(colorLensProgram, "progress"),
+      schwarzschildRadius: gl.getUniformLocation(colorLensProgram, "schwarzschildRadius"),
+      camPos: gl.getUniformLocation(colorLensProgram, "camPos"),
+      camFwd: gl.getUniformLocation(colorLensProgram, "camFwd"),
+      camRight: gl.getUniformLocation(colorLensProgram, "camRight"),
+      camUp: gl.getUniformLocation(colorLensProgram, "camUp"),
+    };
+    const colorBlitAttrib = gl.getAttribLocation(colorBlitProgram, "aVertexPosition");
+    const colorLensAttrib = gl.getAttribLocation(colorLensProgram, "aVertexPosition");
     const starBuffer = gl.createBuffer();
     const lineBuffer = gl.createBuffer();
+    const dustBuffer = gl.createBuffer();
 
     const blitAttrib = gl.getAttribLocation(blitProgram, "aVertexPosition");
     const lensAttrib = gl.getAttribLocation(lensProgram, "aVertexPosition");
@@ -1104,15 +1276,22 @@
     gl.pixelStorei(gl.PACK_ALIGNMENT, 4);
     gl.useProgram(blitProgram);
     gl.uniform1i(gl.getUniformLocation(blitProgram, "uTex"), 0);
+    gl.useProgram(colorBlitProgram);
+    gl.uniform1i(gl.getUniformLocation(colorBlitProgram, "uTex"), 0);
     gl.activeTexture(gl.TEXTURE0);
 
     let framebuffer = null;
     let compositeFb = null;
     let fieldFb = null;
+    let dustFieldFb = null;
+    let dustCompFb = null;
     let sceneTexture = null;
     let compositeTexture = null;
     let fieldTexture = null;
+    let dustFieldTexture = null;
+    let dustCompTexture = null;
     let displayTexture = null;
+    let hasDust = false;
     let pbos = null;
     let pboIndex = 0;
     let pboHasPrev = false;
@@ -1132,12 +1311,16 @@
     let srcPtr = 0;
     let dstPtr = 0;
 
-    function createTexture(width, height, internal, format) {
+    const colorInternal = webgl2 ? gl.RGBA8 : gl.RGBA;
+    const colorFormat = gl.RGBA;
+
+    function createTexture(width, height, internal, format, filter) {
       const tex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, internal, width, height, 0, format, gl.UNSIGNED_BYTE, null);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      const mag = filter || gl.NEAREST;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mag);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mag);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       return tex;
@@ -1190,6 +1373,12 @@
         gl.deleteTexture(compositeTexture);
         gl.deleteTexture(fieldTexture);
         gl.deleteTexture(displayTexture);
+        if (dustFieldFb) {
+          gl.deleteFramebuffer(dustFieldFb);
+          gl.deleteFramebuffer(dustCompFb);
+          gl.deleteTexture(dustFieldTexture);
+          gl.deleteTexture(dustCompTexture);
+        }
       }
       destroyPbos();
 
@@ -1211,6 +1400,14 @@
       fieldFb = gl.createFramebuffer();
       gl.bindFramebuffer(gl.FRAMEBUFFER, fieldFb);
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fieldTexture, 0);
+      dustFieldTexture = createTexture(width, height, colorInternal, colorFormat, gl.LINEAR);
+      dustCompTexture = createTexture(width, height, colorInternal, colorFormat, gl.LINEAR);
+      dustFieldFb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dustFieldFb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dustFieldTexture, 0);
+      dustCompFb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dustCompFb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dustCompTexture, 0);
       fboWidth = width;
       fboHeight = height;
       hasPresented = false;
@@ -1328,6 +1525,9 @@
       disableAttrib(starAttribs.kind);
       disableAttrib(lineAttribs.pos);
       disableAttrib(lineAttribs.meta);
+      disableAttrib(dustAttribs.corner);
+      disableAttrib(dustAttribs.dust);
+      disableAttrib(dustAttribs.color);
       gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
       gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 2, gl.FLOAT, false, 0, 0);
       gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
@@ -1339,6 +1539,9 @@
 
     function drawStarGeom(geom, count, renderWidth, renderHeight, b, useLens, useMask) {
       if (!count) return;
+      disableAttrib(dustAttribs.corner);
+      disableAttrib(dustAttribs.dust);
+      disableAttrib(dustAttribs.color);
       gl.useProgram(starProgram);
       gl.uniform2f(starUniforms.resolution, renderWidth, renderHeight);
       gl.uniform1f(starUniforms.progress, easedProgress);
@@ -1441,6 +1644,86 @@
       gl.disable(gl.BLEND);
     }
 
+    function drawDustGeom(geom, count, renderWidth, renderHeight, b, useMask) {
+      if (!count) return;
+      disableAttrib(starAttribs.corner);
+      disableAttrib(starAttribs.star);
+      disableAttrib(starAttribs.kind);
+      disableAttrib(lineAttribs.pos);
+      disableAttrib(lineAttribs.meta);
+      gl.useProgram(dustProgram);
+      gl.uniform2f(dustUniforms.resolution, renderWidth, renderHeight);
+      gl.uniform1f(dustUniforms.progress, easedProgress);
+      gl.uniform3f(dustUniforms.camPos, camX, camY, camZ);
+      gl.uniform3f(dustUniforms.camFwd, b.fx, b.fy, b.fz);
+      gl.uniform1i(dustUniforms.mask, 0);
+      gl.uniform1f(dustUniforms.useMask, useMask ? 1 : 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, dustBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, geom.subarray(0, count * 9), gl.STREAM_DRAW);
+      const stride = 36;
+      gl.vertexAttribPointer(dustAttribs.corner, 2, gl.FLOAT, false, stride, 0);
+      gl.enableVertexAttribArray(dustAttribs.corner);
+      gl.vertexAttribPointer(dustAttribs.dust, 4, gl.FLOAT, false, stride, 8);
+      gl.enableVertexAttribArray(dustAttribs.dust);
+      gl.vertexAttribPointer(dustAttribs.color, 3, gl.FLOAT, false, stride, 24);
+      gl.enableVertexAttribArray(dustAttribs.color);
+      gl.drawArrays(gl.TRIANGLES, 0, count);
+    }
+
+    function renderDust(renderWidth, renderHeight, b) {
+      hasDust = dustVertCount > 0 || dustFrontCount > 0;
+      if (!hasDust) return;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dustFieldFb);
+      gl.viewport(0, 0, renderWidth, renderHeight);
+      gl.disable(gl.BLEND);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      if (dustVertCount) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE);
+        drawDustGeom(dustGeom, dustVertCount, renderWidth, renderHeight, b, false);
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, dustCompFb);
+      gl.viewport(0, 0, renderWidth, renderHeight);
+      gl.disable(gl.BLEND);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      if (dustVertCount) {
+        gl.useProgram(colorLensProgram);
+        bindFullscreen();
+        if (colorLensAttrib !== blitAttrib && colorLensAttrib >= 0) {
+          gl.vertexAttribPointer(colorLensAttrib, 2, gl.FLOAT, false, 0, 0);
+          gl.enableVertexAttribArray(colorLensAttrib);
+        }
+        gl.uniform2f(colorLensUniforms.resolution, renderWidth, renderHeight);
+        gl.uniform1f(colorLensUniforms.progress, easedProgress);
+        gl.uniform1f(colorLensUniforms.schwarzschildRadius, schwarzschildRadius);
+        gl.uniform3f(colorLensUniforms.camPos, camX, camY, camZ);
+        gl.uniform3f(colorLensUniforms.camFwd, b.fx, b.fy, b.fz);
+        gl.uniform3f(colorLensUniforms.camRight, b.rx, b.ry, b.rz);
+        gl.uniform3f(colorLensUniforms.camUp, b.ux, b.uy, b.uz);
+        gl.uniform1i(colorLensUniforms.mask, 0);
+        gl.uniform1i(colorLensUniforms.field, 1);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, sceneTexture);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, dustFieldTexture);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, sceneTexture);
+      }
+      if (dustFrontCount) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, sceneTexture);
+        drawDustGeom(dustGeomFront, dustFrontCount, renderWidth, renderHeight, b, true);
+      }
+      gl.disable(gl.BLEND);
+    }
+
     function renderScene(renderWidth, renderHeight, now) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
       gl.viewport(0, 0, renderWidth, renderHeight);
@@ -1467,6 +1750,8 @@
       gl.uniform1i(programInfo.uniformLocations.deflectCount, deflectCount);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       renderStars(renderWidth, renderHeight, b);
+      renderDust(renderWidth, renderHeight, b);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, compositeFb);
       gl.flush();
     }
 
@@ -1487,6 +1772,20 @@
       gl.viewport(0, 0, displayWidth, displayHeight);
       gl.useProgram(blitProgram);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (hasDust) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE);
+        gl.useProgram(colorBlitProgram);
+        if (colorBlitAttrib !== blitAttrib && colorBlitAttrib >= 0) {
+          gl.vertexAttribPointer(colorBlitAttrib, 2, gl.FLOAT, false, 0, 0);
+          gl.enableVertexAttribArray(colorBlitAttrib);
+        }
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, dustCompTexture);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.disable(gl.BLEND);
+        gl.bindTexture(gl.TEXTURE_2D, displayTexture);
+      }
       hasPresented = true;
     }
 
