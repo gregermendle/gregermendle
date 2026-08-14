@@ -214,23 +214,75 @@
     return (v + 15) & ~15;
   }
 
-  function probeSingleChannelTarget(gl) {
+  function rowStride(width, bytesPerPixel) {
+    return (width * bytesPerPixel + 3) & ~3;
+  }
+
+  function copyRows(src, dst, width, height, srcStride, dstStride) {
+    if (srcStride === dstStride && src === dst) return;
+    if (srcStride === dstStride) {
+      dst.set(src.subarray(0, dstStride * height));
+      return;
+    }
+    for (let y = 0, s = 0, d = 0; y < height; y++, s += srcStride, d += dstStride) {
+      dst.set(src.subarray(s, s + width), d);
+    }
+  }
+
+  function matchesPattern(buf, stride, expected, width) {
+    for (let i = 0; i < expected.length; i++) {
+      const x = i % width;
+      const y = (i / width) | 0;
+      if (buf[y * stride + x] !== expected[i]) return false;
+    }
+    return true;
+  }
+
+  function probeSingleChannelTarget(gl, webgl2) {
     while (gl.getError() !== gl.NO_ERROR) {}
+    const w = 5;
+    const h = 2;
+    const pattern = new Uint8Array([11, 22, 33, 44, 55, 66, 77, 88, 99, 110]);
+    const stride = rowStride(w, 1);
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 1, 1, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, pattern);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     const fb = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    const ok =
-      gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE &&
+    const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    const formatOk =
+      complete &&
       gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT) === gl.RED &&
-      gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE) === gl.UNSIGNED_BYTE &&
-      gl.getError() === gl.NO_ERROR;
+      gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE) === gl.UNSIGNED_BYTE;
+    let syncOk = false;
+    let pboOk = false;
+    if (formatOk) {
+      gl.pixelStorei(gl.PACK_ALIGNMENT, 4);
+      const packed = new Uint8Array(stride * h);
+      gl.readPixels(0, 0, w, h, gl.RED, gl.UNSIGNED_BYTE, packed);
+      syncOk = gl.getError() === gl.NO_ERROR && matchesPattern(packed, stride, pattern, w);
+      if (syncOk && webgl2) {
+        const pbo = gl.createBuffer();
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
+        gl.bufferData(gl.PIXEL_PACK_BUFFER, stride * h, gl.STREAM_READ);
+        gl.readPixels(0, 0, w, h, gl.RED, gl.UNSIGNED_BYTE, 0);
+        const out = new Uint8Array(stride * h);
+        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, out);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        pboOk = gl.getError() === gl.NO_ERROR && matchesPattern(out, stride, pattern, w);
+        gl.deleteBuffer(pbo);
+      }
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.deleteFramebuffer(fb);
     gl.deleteTexture(tex);
-    return ok;
+    return { single: syncOk, pbo: pboOk };
   }
 
   function easeOutBack(x) {
@@ -248,7 +300,7 @@
       powerPreference: "high-performance",
       premultipliedAlpha: false,
       preserveDrawingBuffer: false,
-      desynchronized: true,
+      desynchronized: false,
       failIfMajorPerformanceCaveat: false,
     };
     const gl =
@@ -264,13 +316,14 @@
     const buffers = initBuffers(gl);
     loadWasmDither();
 
-    // The scene is greyscale, so one byte per pixel survives the round trip
-    // through the CPU dither untouched: a quarter of the readback and upload.
-    const singleTarget = webgl2 && probeSingleChannelTarget(gl);
+    const readbackCaps = webgl2 ? probeSingleChannelTarget(gl, true) : { single: false, pbo: false };
+    const singleTarget = readbackCaps.single;
+    const usePbo = webgl2 && (singleTarget ? readbackCaps.pbo : true);
     const sceneInternal = singleTarget ? gl.R8 : gl.RGBA;
     const sceneFormat = singleTarget ? gl.RED : gl.RGBA;
     const displayInternal = webgl2 ? gl.R8 : gl.LUMINANCE;
     const displayFormat = webgl2 ? gl.RED : gl.LUMINANCE;
+    const sceneBytes = singleTarget ? 1 : 4;
 
     const programInfo = {
       program,
@@ -298,8 +351,8 @@
     gl.disable(gl.BLEND);
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.pixelStorei(gl.PACK_ALIGNMENT, singleTarget ? 1 : 4);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.pixelStorei(gl.PACK_ALIGNMENT, 4);
     gl.useProgram(blitProgram);
     gl.uniform1i(gl.getUniformLocation(blitProgram, "uTex"), 0);
     gl.activeTexture(gl.TEXTURE0);
@@ -312,11 +365,16 @@
     let pboHasPrev = false;
     let fboWidth = 0;
     let fboHeight = 0;
+    let packStride = 0;
+    let uploadStride = 0;
+    let hasPresented = false;
 
     let heap = null;
     let graySrc = null;
     let grayDst = null;
     let rgbaStage = null;
+    let packDest = null;
+    let uploadPack = null;
     let rowsPtr = 0;
     let srcPtr = 0;
     let dstPtr = 0;
@@ -334,24 +392,40 @@
 
     function allocScratch(width, height) {
       const n = width * height;
-      // `dither` reads one row past the source to seed the row below it
+      packStride = rowStride(width, sceneBytes);
+      uploadStride = rowStride(width, 1);
       srcPtr = 0;
       dstPtr = align16(n + width + 16);
       rowsPtr = align16(dstPtr + n);
-      const rgbaPtr = align16(rowsPtr + 2 * (width + 4) * 4);
-      const total = rgbaPtr + (singleTarget ? 0 : n * 4);
+      const packPtr = align16(rowsPtr + 2 * (width + 4) * 4);
+      const packBytes = packStride * height;
+      const uploadPtr = align16(packPtr + packBytes);
+      const uploadBytes = uploadStride === width ? 0 : uploadStride * height;
+      const total = uploadPtr + uploadBytes;
       if (wasmExports) {
         wasmExports.ensure(total);
         heap = wasmExports.memory.buffer;
         graySrc = new Uint8Array(heap, srcPtr, n);
         grayDst = new Uint8Array(heap, dstPtr, n);
-        rgbaStage = singleTarget ? null : new Uint8Array(heap, rgbaPtr, n * 4);
+        packDest = new Uint8Array(heap, packPtr, packBytes);
+        uploadPack = uploadBytes ? new Uint8Array(heap, uploadPtr, uploadBytes) : null;
+        rgbaStage = singleTarget ? null : packDest;
       } else {
         heap = null;
         graySrc = new Uint8Array(n);
         grayDst = new Uint8Array(n);
-        rgbaStage = singleTarget ? null : new Uint8Array(n * 4);
+        packDest = new Uint8Array(packBytes);
+        uploadPack = uploadBytes ? new Uint8Array(uploadBytes) : null;
+        rgbaStage = singleTarget ? null : packDest;
       }
+    }
+
+    function destroyPbos() {
+      if (!pbos) return;
+      gl.deleteBuffer(pbos[0]);
+      gl.deleteBuffer(pbos[1]);
+      pbos = null;
+      pboHasPrev = false;
     }
 
     function initFramebuffer(width, height) {
@@ -360,12 +434,7 @@
         gl.deleteTexture(sceneTexture);
         gl.deleteTexture(displayTexture);
       }
-      if (pbos) {
-        gl.deleteBuffer(pbos[0]);
-        gl.deleteBuffer(pbos[1]);
-        pbos = null;
-        pboHasPrev = false;
-      }
+      destroyPbos();
 
       sceneTexture = createTexture(width, height, sceneInternal, sceneFormat);
       displayTexture = createTexture(width, height, displayInternal, displayFormat);
@@ -374,10 +443,11 @@
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneTexture, 0);
       fboWidth = width;
       fboHeight = height;
+      hasPresented = false;
       allocScratch(width, height);
 
-      if (webgl2) {
-        const bytes = width * height * (singleTarget ? 1 : 4);
+      if (usePbo) {
+        const bytes = packStride * height;
         pbos = [gl.createBuffer(), gl.createBuffer()];
         for (let i = 0; i < 2; i++) {
           gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[i]);
@@ -418,6 +488,7 @@
     let nextMouseX = 0;
     let nextMouseY = 0;
     let prevNow = 0;
+    let haveTime = false;
     let progress = 0;
     let easedProgress = 0;
     const minRadius = 0.25;
@@ -437,24 +508,46 @@
       gl.uniform2f(programInfo.uniformLocations.mouse, mouseX, mouseY);
       gl.uniform1f(programInfo.uniformLocations.schwarzschildRadius, schwarzschildRadius);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.flush();
     }
 
-    function blitDithered(width, height) {
+    function present(width, height, upload) {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      if (gl.PIXEL_UNPACK_BUFFER) gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
       gl.bindTexture(gl.TEXTURE_2D, displayTexture);
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, displayFormat, gl.UNSIGNED_BYTE, grayDst);
+      if (upload) {
+        let pixels = grayDst;
+        if (uploadStride !== width) {
+          copyRows(grayDst, uploadPack, width, height, width, uploadStride);
+          pixels = uploadPack;
+        }
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, displayFormat, gl.UNSIGNED_BYTE, pixels);
+      }
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, displayWidth, displayHeight);
       gl.useProgram(blitProgram);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      hasPresented = true;
+    }
+
+    function readDest(width) {
+      return singleTarget && packStride === width ? graySrc : packDest;
+    }
+
+    function unpackRead(width, height) {
+      if (singleTarget) {
+        if (packStride !== width) copyRows(packDest, graySrc, width, height, packStride, width);
+      } else {
+        toGray(width * height);
+      }
     }
 
     function readback(renderWidth, renderHeight) {
-      const target = singleTarget ? graySrc : rgbaStage;
-
+      const dest = readDest(renderWidth);
       if (pbos) {
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[pboIndex]);
+        const write = pboIndex;
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[write]);
         gl.readPixels(0, 0, renderWidth, renderHeight, sceneFormat, gl.UNSIGNED_BYTE, 0);
-        gl.flush();
         pboIndex ^= 1;
         if (!pboHasPrev) {
           pboHasPrev = true;
@@ -462,13 +555,13 @@
           return false;
         }
         gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[pboIndex]);
-        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, target);
+        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, dest);
         gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
       } else {
-        gl.readPixels(0, 0, renderWidth, renderHeight, sceneFormat, gl.UNSIGNED_BYTE, target);
+        gl.readPixels(0, 0, renderWidth, renderHeight, sceneFormat, gl.UNSIGNED_BYTE, dest);
       }
 
-      if (!singleTarget) toGray(renderWidth * renderHeight);
+      unpackRead(renderWidth, renderHeight);
       return true;
     }
 
@@ -477,9 +570,17 @@
       if (!running || hidden) return;
       raf = requestAnimationFrame(render);
 
-      const dt = now - prevNow;
-      prevNow = now;
-      const timeScale = Math.abs(1 - (dt - 1));
+      let timeScale;
+      if (!haveTime) {
+        haveTime = true;
+        prevNow = now;
+        timeScale = 15;
+      } else {
+        const dt = now - prevNow;
+        prevNow = now;
+        timeScale = Math.abs(1 - (dt - 1));
+        if (timeScale > 32) timeScale = 32;
+      }
 
       if (progress < 1) {
         progress = Math.min(1, progress + 0.0025);
@@ -503,9 +604,12 @@
 
       refreshViews();
       renderScene(renderWidth, renderHeight, now);
-      if (!readback(renderWidth, renderHeight)) return;
-      dither(renderWidth, renderHeight);
-      blitDithered(renderWidth, renderHeight);
+      if (readback(renderWidth, renderHeight)) {
+        dither(renderWidth, renderHeight);
+        present(renderWidth, renderHeight, true);
+      } else if (hasPresented) {
+        present(renderWidth, renderHeight, false);
+      }
     }
 
     function start() {
