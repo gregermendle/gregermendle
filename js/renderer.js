@@ -959,8 +959,8 @@
       mouseX += (nextMouseX - mouseX) * 0.01 * timeScale;
       mouseY += (nextMouseY - mouseY) * 0.01 * timeScale;
       schwarzschildRadius += (targetRadius - schwarzschildRadius) * 0.02 * timeScale;
-      camYaw += (lookYaw - camYaw) * 0.14 * timeScale;
-      camPitch += (lookPitch - camPitch) * 0.14 * timeScale;
+      camYaw = lookYaw;
+      camPitch = lookPitch;
       const b = camBasis();
       let wishX = b.fx * (keyF - keyB) + b.rx * (keyR - keyL) + b.ux * (keyU - keyD);
       let wishY = b.fy * (keyF - keyB) + b.ry * (keyR - keyL) + b.uy * (keyU - keyD);

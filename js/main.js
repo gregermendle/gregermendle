@@ -299,8 +299,8 @@ function init() {
     if (lastLookX !== null) {
       send({
         type: "look",
-        x: (e.clientX - lastLookX) * lookScale,
-        y: (e.clientY - lastLookY) * lookScale,
+        x: e.movementX * lookScale,
+        y: e.movementY * lookScale,
       });
     }
     lastLookX = e.clientX;
