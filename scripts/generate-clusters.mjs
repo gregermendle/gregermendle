@@ -82,6 +82,17 @@ function buildPoints(rng) {
   return points;
 }
 
+function buildDust(rng) {
+  if (rng() < 0.22) return null;
+  return {
+    count: 5 + ((rng() * 9) | 0),
+    radius: round1(2.2 + rng() * 5.5),
+    size: round3(0.55 + rng() * 1.1),
+    opacity: round3(0.028 + rng() * 0.03),
+    color: [1, 1, 1],
+  };
+}
+
 function buildCluster(rng, origin) {
   const radius = round3(0.01 + rng() * 0.014 + (rng() < 0.06 ? 0.012 : 0));
   const ampScale = 4 + rng() * 14;
@@ -95,13 +106,15 @@ function buildCluster(rng, origin) {
     speed: round3(0.006 + rng() * 0.008),
     phase: round1(rng() * Math.PI * 2),
   };
-
-  return {
+  const dust = buildDust(rng);
+  const cluster = {
     origin: origin.map(round1),
     radius,
     glide,
     points: buildPoints(rng),
   };
+  if (dust) cluster.dust = dust;
+  return cluster;
 }
 
 const rng = mulberry32(SEED);

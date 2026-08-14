@@ -295,6 +295,7 @@
     uniform vec3 camUp;
     uniform float uUseLens;
     ${varyOut} vec4 vStar;
+    ${varyOut} float vKind;
     ${lensLib}
     void main() {
       float minRes = min(resolution.x, resolution.y);
@@ -309,12 +310,15 @@
       if (holeTe2 < px * px) holeTe2 = 0.0;
       float ring = sqrt(holeTe2);
       float glowR = max(ang * 5.5, px * 3.4);
-      float pad = max(max(ang * ${STAR_GLOW_PAD.toFixed(1)}, px * ${STAR_PX_PAD.toFixed(1)}), glowR * 6.0);
-      if (uUseLens > 0.5) pad = max(pad, ring * 2.4);
-      vec2 center = (uUseLens > 0.5 && aKind > 0.5) ? holeP : aStar.xy;
+      float pad = aKind > 1.5
+        ? max(ang * 2.2, px * 3.0)
+        : max(max(ang * ${STAR_GLOW_PAD.toFixed(1)}, px * ${STAR_PX_PAD.toFixed(1)}), glowR * 6.0);
+      if (uUseLens > 0.5 && aKind < 1.5) pad = max(pad, ring * 2.4);
+      vec2 center = (uUseLens > 0.5 && aKind > 0.5 && aKind < 1.5) ? holeP : aStar.xy;
       vec2 uv = center + aCorner * pad;
       gl_Position = vec4(uv.x * (2.0 * minRes / resolution.x), uv.y * (2.0 * minRes / resolution.y), 0.0, 1.0);
       vStar = aStar;
+      vKind = aKind;
     }`;
 
     const starFs = `${ver}precision highp float;
@@ -329,6 +333,7 @@
     uniform float uUseLens;
     uniform float uUseMask;
     ${varyIn} vec4 vStar;
+    ${varyIn} float vKind;
     ${fragOut}
     ${lensLib}
     vec2 lensPull(vec2 uv, vec2 lp, float te2) {
@@ -357,13 +362,19 @@
       if (holeTe2 < px * px) holeTe2 = 0.0;
       vec2 src = uv;
       if (holeTe2 > 0.0) src -= lensPull(uv, holeP, holeTe2);
-      float coreR = max(ang, px * 1.15);
-      float glowR = max(ang * 5.5, px * 3.4);
       float d = length(src - sp);
-      float core = smoothstep(coreR, coreR * 0.42, d);
-      float near = clamp(ang / (px * 10.0), 0.0, 1.0);
-      float halo = exp(-d / max(glowR, 1e-5)) * mix(0.16, 0.52, near);
-      float glow = (core + halo) * progress;
+      float glow;
+      if (vKind > 1.5) {
+        float fall = exp(-dot(src - sp, src - sp) / max(ang * ang, 1e-8));
+        glow = fall * (vKind - 2.0) * progress;
+      } else {
+        float coreR = max(ang, px * 1.15);
+        float glowR = max(ang * 5.5, px * 3.4);
+        float core = smoothstep(coreR, coreR * 0.42, d);
+        float near = clamp(ang / (px * 10.0), 0.0, 1.0);
+        float halo = exp(-d / max(glowR, 1e-5)) * mix(0.16, 0.52, near);
+        glow = (core + halo) * progress;
+      }
       ${writeColor} = vec4(vec3(glow), 1.0);
     }`;
 
@@ -645,6 +656,10 @@
     let pointY = new Float32Array(0);
     let pointZ = new Float32Array(0);
     let pointR = new Float32Array(0);
+    let dustCount = new Int32Array(0);
+    let dustRadius = new Float32Array(0);
+    let dustSize = new Float32Array(0);
+    let dustGain = new Float32Array(0);
     function setClusters(next) {
       const src = Array.isArray(next) ? next : [];
       clusterCount = src.length;
@@ -661,6 +676,10 @@
       clusterR = new Float32Array(clusterCount);
       pointStart = new Int32Array(clusterCount);
       pointCount = new Int32Array(clusterCount);
+      dustCount = new Int32Array(clusterCount);
+      dustRadius = new Float32Array(clusterCount);
+      dustSize = new Float32Array(clusterCount);
+      dustGain = new Float32Array(clusterCount);
       let totalPts = 0;
       for (let i = 0; i < clusterCount; i++) {
         const pts = src[i] && src[i].points;
@@ -704,6 +723,17 @@
           const ext = Math.hypot(x, y, z) + r;
           if (ext > maxExt) maxExt = ext;
           p++;
+        }
+        const dust = Array.isArray(cluster.dust) ? cluster.dust[0] : cluster.dust;
+        if (dust && (dust.count | 0) > 0) {
+          const col = dust.color || [1, 1, 1];
+          const luma = Math.max(0, (col[0] || 0) * 0.333 + (col[1] || 0) * 0.333 + (col[2] || 0) * 0.333);
+          dustCount[c] = dust.count | 0;
+          dustRadius[c] = dust.radius || 3;
+          dustSize[c] = dust.size || 0.7;
+          dustGain[c] = Math.max(0, luma * (dust.opacity == null ? 0.04 : dust.opacity));
+          const dustExt = dustRadius[c] + dustSize[c];
+          if (dustExt > maxExt) maxExt = dustExt;
         }
         clusterBound[c] = maxExt;
       }
@@ -813,6 +843,44 @@
       emitStarTo("starGeom", "back", spx, spy, z, ang, kind);
     }
 
+    function dustHash(c, i, k) {
+      let n = Math.imul(c + 1, 374761393) ^ Math.imul(i + 1, 668265263) ^ Math.imul(k + 1, 1442695041);
+      n = Math.imul(n ^ (n >>> 15), 2246822519);
+      n = Math.imul(n ^ (n >>> 13), 3266489917);
+      return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+    }
+
+    function emitClusterDust(c, ox, oy, oz, b, minRes, renderW, renderH, holeZ) {
+      const n = dustCount[c];
+      if (!n) return;
+      const rad = dustRadius[c];
+      const size = dustSize[c];
+      const kind = 2 + dustGain[c];
+      const zCut = Math.max(holeZ, LENS_Z_MIN);
+      for (let i = 0; i < n; i++) {
+        const u = dustHash(c, i, 0);
+        const v = dustHash(c, i, 1);
+        const w = dustHash(c, i, 2);
+        const theta = u * Math.PI * 2;
+        const zN = v * 2 - 1;
+        const rxy = Math.sqrt(Math.max(0, 1 - zN * zN)) * Math.cbrt(w);
+        const r = rad * rxy;
+        const wx = ox + Math.cos(theta) * r;
+        const wy = oy + zN * rad * 0.28;
+        const wz = oz + Math.sin(theta) * r;
+        if (!starInView(b, wx, wy, wz, size, minRes, renderW, renderH)) continue;
+        const dx = wx - camX;
+        const dy = wy - camY;
+        const dz = wz - camZ;
+        const z = dx * b.fx + dy * b.fy + dz * b.fz;
+        const spx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
+        const spy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
+        const ang = size / Math.max(z, size * 0.35);
+        if (z > zCut) emitStarQuad(spx, spy, z, ang, kind);
+        else emitStarTo("starGeomFront", "front", spx, spy, z, ang, kind);
+      }
+    }
+
     function emitLineQuad(ax, ay, bx, by, z, minRes) {
       const dx = bx - ax;
       const dy = by - ay;
@@ -908,6 +976,7 @@
         const oy = clusterOy[c] + clusterAmpY[c] * Math.sin(t * speed * 0.83 + phase + 1.1);
         const oz = clusterOz[c] + clusterAmpZ[c] * Math.cos(t * speed * 0.71 + phase);
         if (!clusterInView(b, ox, oy, oz, clusterBound[c], minRes, renderW, renderH)) continue;
+        emitClusterDust(c, ox, oy, oz, b, minRes, renderW, renderH, holeZ);
         const start = pointStart[c];
         let prevOn = false;
         let prevAx = 0;
