@@ -40,10 +40,17 @@
     return { position: buffer };
   }
 
-  const DISK_SIZE = 43;
-  const MAX_STARS = 48;
+  const DISK_SIZE = 23;
+  const MAX_STARS = 100;
   const MAX_LINES = 36;
-  const STAR_RADIUS = 0.0145;
+  const STAR_RADIUS = 0.145;
+  const VIEW_FRUSTUM_PAD = 0.32;
+  const STAR_ANGULAR_PAD = 12;
+  const STAR_BASE_PAD = 0.32;
+  const STAR_GLOW_PAD = 9;
+  const STAR_PX_PAD = 6;
+  const LINE_FRUSTUM_PAD = 0.55;
+  const MIN_LENS_Z = 2.5;
 
   function marchStepSource() {
     return `
@@ -121,6 +128,7 @@
     #define MAX_STARS ${MAX_STARS}
     #define MAX_LINES ${MAX_LINES}
     #define STAR_COMPACT 0.000004
+    #define MIN_LENS_Z ${MIN_LENS_Z.toFixed(2)}
 
     float hash(vec2 p) {
       return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
@@ -141,6 +149,8 @@
     vec3 deflectRay(vec3 ro, vec3 rd, float maxT) {
       for (int i = 0; i < MAX_STARS; i++) {
         if (float(i) + 0.5 > float(uDeflectCount)) break;
+        float z = uStarProj[i].z;
+        if (z < MIN_LENS_Z || z > 90.0) continue;
         vec4 s = uStars[i];
         rd = pullRay(rd, s.xyz - ro, s.w * STAR_COMPACT, maxT);
       }
@@ -229,25 +239,27 @@
         float holeTe2 = einstein2(radius, holeZ, z);
         if (holeTe2 < px * px) holeTe2 = 0.0;
         float ring = sqrt(holeTe2);
-        float pad = max(max(ang * 6.0, px * 4.0), ring * 2.4);
+        float pad = max(max(ang * ${STAR_GLOW_PAD.toFixed(1)}, px * ${STAR_PX_PAD.toFixed(1)}), ring * 2.4);
         vec2 holeD = uv - holeP;
         bool nearHole = holeTe2 > 0.0 && dot(holeD, holeD) < pad * pad;
         if (!nearHole && (abs(sp.x) > uViewHalf.x + pad || abs(sp.y) > uViewHalf.y + pad)) continue;
+        float coreR = max(ang, px * 1.15);
+        float glowR = max(ang * 5.5, px * 3.4);
+        vec2 rawD = uv - sp;
+        if (holeTe2 <= 0.0 && uMicro < 1 && dot(rawD, rawD) > glowR * glowR * 36.0) continue;
         vec2 src = uv;
         if (holeTe2 > 0.0) src -= lensPull(uv, holeP, holeTe2);
-        if (uMicro > 0) {
+        if (uMicro > 0 && z >= MIN_LENS_Z) {
           for (int j = 0; j < MAX_STARS; j++) {
             if (float(j) + 0.5 > float(uStarCount)) break;
             if (i == j) continue;
             vec4 o = uStarProj[j];
             float zj = o.z;
-            if (zj <= 1e-4 || zj >= z || zj > 90.0) continue;
+            if (zj < MIN_LENS_Z || zj >= z || zj > 90.0) continue;
             float starTe2 = einstein2(uStars[j].w * STAR_COMPACT, zj, z);
             if (starTe2 >= px * px) src -= lensPull(uv, o.xy, starTe2);
           }
         }
-        float coreR = max(ang, px * 1.15);
-        float glowR = max(ang * 5.5, px * 3.4);
         float d = length(src - sp);
         float core = smoothstep(coreR, coreR * 0.42, d);
         float near = clamp(ang / (px * 10.0), 0.0, 1.0);
@@ -263,7 +275,7 @@
         if (holeZ > 1e-4 && zLine > holeZ && holeMask > 0.5) continue;
         vec2 a = la.xy;
         vec2 b = lb.xy;
-        float pad = 0.35;
+        float pad = ${LINE_FRUSTUM_PAD.toFixed(2)};
         float minX = min(a.x, b.x);
         float maxX = max(a.x, b.x);
         float minY = min(a.y, b.y);
@@ -613,6 +625,13 @@
         setClusters([]);
       });
 
+    function viewHalf(renderW, renderH, minRes) {
+      return {
+        x: renderW / (2 * minRes) + VIEW_FRUSTUM_PAD,
+        y: renderH / (2 * minRes) + VIEW_FRUSTUM_PAD,
+      };
+    }
+
     function starInView(b, wx, wy, wz, starR, minRes, renderW, renderH) {
       const dx = wx - camX;
       const dy = wy - camY;
@@ -621,10 +640,9 @@
       if (z <= 0.05) return false;
       const sx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
       const sy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
-      const pad = (starR / z) * 8 + 0.18;
-      const halfX = renderW / (2 * minRes) + pad;
-      const halfY = renderH / (2 * minRes) + pad;
-      return Math.abs(sx) <= halfX && Math.abs(sy) <= halfY;
+      const pad = (starR / z) * STAR_ANGULAR_PAD + STAR_BASE_PAD;
+      const half = viewHalf(renderW, renderH, minRes);
+      return Math.abs(sx) <= half.x + pad && Math.abs(sy) <= half.y + pad;
     }
 
     function clusterInView(b, ox, oy, oz, boundR, minRes, renderW, renderH) {
@@ -636,10 +654,9 @@
       if (z <= boundR * 2 + 0.05) return true;
       const sx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
       const sy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
-      const pad = (boundR / z) * 8 + 0.18;
-      const halfX = renderW / (2 * minRes) + pad;
-      const halfY = renderH / (2 * minRes) + pad;
-      return Math.abs(sx) <= halfX && Math.abs(sy) <= halfY;
+      const pad = (boundR / z) * STAR_ANGULAR_PAD + STAR_BASE_PAD;
+      const half = viewHalf(renderW, renderH, minRes);
+      return Math.abs(sx) <= half.x + pad && Math.abs(sy) <= half.y + pad;
     }
 
     function einstein2JS(mass, zL, zS) {
@@ -780,14 +797,17 @@
         starProjData[o + 2] = z;
         starProjData[o + 3] = ang;
         const mass = sr * STAR_COMPACT;
-        if (z > 1e-4 && (mass * 48) / z > px * 0.5) deflectCount = starCount;
+        if (z >= MIN_LENS_Z && z <= 90 && (mass * 48) / z > px * 0.5) {
+          deflectCount = starCount;
+        }
       }
       for (let i = 0; i < starCount && !micro; i++) {
         const z = starProjData[i * 4 + 2];
+        if (z < MIN_LENS_Z) continue;
         for (let j = 0; j < starCount; j++) {
           if (i === j) continue;
           const zj = starProjData[j * 4 + 2];
-          if (zj <= 1e-4 || zj >= z || zj > 90) continue;
+          if (zj < MIN_LENS_Z || zj >= z || zj > 90) continue;
           if (einstein2JS(starData[j * 4 + 3] * STAR_COMPACT, zj, z) >= px2) {
             micro = 1;
             break;
@@ -1098,11 +1118,8 @@
       gl.uniform3f(programInfo.uniformLocations.camRight, b.rx, b.ry, b.rz);
       gl.uniform3f(programInfo.uniformLocations.camUp, b.ux, b.uy, b.uz);
       const minRes = Math.min(renderWidth, renderHeight);
-      gl.uniform2f(
-        programInfo.uniformLocations.viewHalf,
-        renderWidth / (2 * minRes),
-        renderHeight / (2 * minRes)
-      );
+      const half = viewHalf(renderWidth, renderHeight, minRes);
+      gl.uniform2f(programInfo.uniformLocations.viewHalf, half.x, half.y);
       packScene(now, b, renderWidth, renderHeight, schwarzschildRadius * easedProgress);
       if (starCount) {
         if (deflectCount || micro) {
