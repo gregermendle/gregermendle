@@ -50,6 +50,12 @@
   const STAR_PX_PAD = 6;
   const MIN_LENS_Z = 2.5;
   const STAR_FAR_Z = 2800;
+  const LENS_Z_MIN = 0.8;
+  const LENS_FADE_BEHIND = -12;
+  const LENS_FADE_FRONT = 0.6;
+  const LENS_FAR_START = 180;
+  const LENS_FAR_END = 280;
+  const DISK_MASK_LUMA = 0.07;
 
   function marchStepSource() {
     return `
@@ -77,7 +83,7 @@
             diskCol *= 1.0 + 0.08 * sin((atan(hit.z, hit.x) + tRot) * 8.0);
             diskCol *= 0.75 + 0.08 * sin((atan(rd.x, rd.y) + tRot) * 8.0);
             col += diskCol;
-            col.a = 1.0;
+            if (dot(diskCol.rgb, vec3(0.333)) > ${DISK_MASK_LUMA}) col.a = 1.0;
           }
         }
         if (r < radius || dot(col, col) > 100.0) return vec4(col.rgb, 1.0);
@@ -150,10 +156,27 @@
       return rd;
     }
 
+    float lensFade(float holeZ) {
+      return smoothstep(${LENS_FADE_BEHIND.toFixed(1)}, ${LENS_FADE_FRONT.toFixed(1)}, holeZ)
+        * (1.0 - smoothstep(${LENS_FAR_START.toFixed(1)}, ${LENS_FAR_END.toFixed(1)}, holeZ));
+    }
+
+    float holeTe2Of(float mass, float holeZ, float z) {
+      float fade = lensFade(holeZ);
+      if (fade <= 0.0 || z <= 0.0) return 0.0;
+      float zL = max(holeZ, ${LENS_Z_MIN.toFixed(2)});
+      float dls = z - zL;
+      if (dls <= 0.0) return 0.0;
+      return fade * 2.0 * mass * dls / max(zL * z, 1e-8);
+    }
+
+    vec2 holePos(vec3 ro) {
+      float zProj = max(dot(-ro, camFwd), ${LENS_Z_MIN.toFixed(2)});
+      return vec2(dot(-ro, camRight), dot(-ro, camUp)) / zProj;
+    }
+
     float einstein2(float mass, float zL, float zS) {
-      float dls = zS - zL;
-      if (dls <= 0.0 || zL <= 1e-4 || zL > 220.0) return 0.0;
-      return 2.0 * mass * dls / max(zL * zS, 1e-8);
+      return holeTe2Of(mass, zL, zS);
     }
 
     vec2 lensPull(vec2 uv, vec2 lp, float te2) {
@@ -242,6 +265,23 @@
     void main() { ${writeColor} = vec4(vec3(${tex}(uTex, vTexCoord).r), 1.0); }`;
 
     const maskCh = webgl2 ? "g" : "a";
+    const lensLib = `
+    float lensFade(float holeZ) {
+      return smoothstep(${LENS_FADE_BEHIND.toFixed(1)}, ${LENS_FADE_FRONT.toFixed(1)}, holeZ)
+        * (1.0 - smoothstep(${LENS_FAR_START.toFixed(1)}, ${LENS_FAR_END.toFixed(1)}, holeZ));
+    }
+    float holeTe2Of(float mass, float holeZ, float z) {
+      float fade = lensFade(holeZ);
+      if (fade <= 0.0 || z <= 0.0) return 0.0;
+      float zL = max(holeZ, ${LENS_Z_MIN.toFixed(2)});
+      float dls = z - zL;
+      if (dls <= 0.0) return 0.0;
+      return fade * 2.0 * mass * dls / max(zL * z, 1e-8);
+    }
+    vec2 holePos(vec3 ro) {
+      float zProj = max(dot(-ro, camFwd), ${LENS_Z_MIN.toFixed(2)});
+      return vec2(dot(-ro, camRight), dot(-ro, camUp)) / zProj;
+    }`;
     const starVs = `${ver}${attr} vec2 aCorner;
     ${attr} vec4 aStar;
     ${attr} float aKind;
@@ -253,25 +293,18 @@
     uniform vec3 camRight;
     uniform vec3 camUp;
     ${varyOut} vec4 vStar;
+    ${lensLib}
     void main() {
       float minRes = min(resolution.x, resolution.y);
       float px = 1.0 / minRes;
       vec3 ro = camPos;
       float radius = schwarzschildRadius * progress;
       float holeZ = dot(-ro, camFwd);
-      vec2 holeP = holeZ > 1e-4
-        ? vec2(dot(-ro, camRight), dot(-ro, camUp)) / holeZ
-        : vec2(100.0);
+      vec2 holeP = holePos(ro);
       float z = aStar.z;
       float ang = aStar.w;
-      float holeTe2 = 0.0;
-      if (holeZ > 1e-4 && z > holeZ) {
-        float dls = z - holeZ;
-        if (dls > 0.0 && holeZ <= 220.0) {
-          holeTe2 = 2.0 * radius * dls / max(holeZ * z, 1e-8);
-          if (holeTe2 < px * px) holeTe2 = 0.0;
-        }
-      }
+      float holeTe2 = holeTe2Of(radius, holeZ, z);
+      if (holeTe2 < px * px) holeTe2 = 0.0;
       float ring = sqrt(holeTe2);
       float glowR = max(ang * 5.5, px * 3.4);
       float pad = max(max(max(ang * ${STAR_GLOW_PAD.toFixed(1)}, px * ${STAR_PX_PAD.toFixed(1)}), ring * 2.4), glowR * 6.0);
@@ -292,6 +325,7 @@
     uniform sampler2D uMask;
     ${varyIn} vec4 vStar;
     ${fragOut}
+    ${lensLib}
     vec2 lensPull(vec2 uv, vec2 lp, float te2) {
       if (te2 <= 0.0) return vec2(0.0);
       vec2 d = uv - lp;
@@ -305,9 +339,7 @@
       vec3 ro = camPos;
       float radius = schwarzschildRadius * progress;
       float holeZ = dot(-ro, camFwd);
-      vec2 holeP = holeZ > 1e-4
-        ? vec2(dot(-ro, camRight), dot(-ro, camUp)) / holeZ
-        : vec2(100.0);
+      vec2 holeP = holePos(ro);
       float holeMask = ${tex}(uMask, gl_FragCoord.xy / resolution).${maskCh};
       float z = vStar.z;
       if (z <= 1e-4 || (holeZ > 1e-4 && z > holeZ && holeMask > 0.5)) {
@@ -316,14 +348,8 @@
       }
       vec2 sp = vStar.xy;
       float ang = vStar.w;
-      float holeTe2 = 0.0;
-      if (holeZ > 1e-4 && z > holeZ && holeZ <= 220.0) {
-        float dls = z - holeZ;
-        if (dls > 0.0) {
-          holeTe2 = 2.0 * radius * dls / max(holeZ * z, 1e-8);
-          if (holeTe2 < px * px) holeTe2 = 0.0;
-        }
-      }
+      float holeTe2 = holeTe2Of(radius, holeZ, z);
+      if (holeTe2 < px * px) holeTe2 = 0.0;
       vec2 src = uv;
       if (holeTe2 > 0.0) src -= lensPull(uv, holeP, holeTe2);
       float coreR = max(ang, px * 1.15);
@@ -676,10 +702,25 @@
       return Math.abs(sx) <= half.x + pad && Math.abs(sy) <= half.y + pad;
     }
 
+    function smoothstepJS(edge0, edge1, x) {
+      const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+      return t * t * (3 - 2 * t);
+    }
+
+    function lensFadeJS(holeZ) {
+      return (
+        smoothstepJS(LENS_FADE_BEHIND, LENS_FADE_FRONT, holeZ) *
+        (1 - smoothstepJS(LENS_FAR_START, LENS_FAR_END, holeZ))
+      );
+    }
+
     function einstein2JS(mass, zL, zS) {
-      const dls = zS - zL;
-      if (dls <= 0 || zL <= 1e-4 || zL > 220) return 0;
-      return (2 * mass * dls) / Math.max(zL * zS, 1e-8);
+      const fade = lensFadeJS(zL);
+      if (fade <= 0 || zS <= 0) return 0;
+      const zUse = Math.max(zL, LENS_Z_MIN);
+      const dls = zS - zUse;
+      if (dls <= 0) return 0;
+      return (fade * 2 * mass * dls) / Math.max(zUse * zS, 1e-8);
     }
 
     function lensPullJS(uvx, uvy, lpx, lpy, te2) {
@@ -783,8 +824,9 @@
       const px = 1 / minRes;
       const px2 = px * px;
       const holeZ = -camX * b.fx - camY * b.fy - camZ * b.fz;
-      const holePx = holeZ > 1e-4 ? (-camX * b.rx - camY * b.ry - camZ * b.rz) / holeZ : 100;
-      const holePy = holeZ > 1e-4 ? (-camX * b.ux - camY * b.uy - camZ * b.uz) / holeZ : 100;
+      const zProj = Math.max(holeZ, LENS_Z_MIN);
+      const holePx = (-camX * b.rx - camY * b.ry - camZ * b.rz) / zProj;
+      const holePy = (-camX * b.ux - camY * b.uy - camZ * b.uz) / zProj;
       starVertCount = 0;
       lineVertCount = 0;
       deflectCount = 0;
@@ -834,7 +876,7 @@
           const spy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
           const ang = sr / Math.max(z, sr * 0.35);
           emitStarQuad(spx, spy, z, ang, 0);
-          const holeTe2 = holeZ > 1e-4 && z > holeZ ? einstein2JS(radius, holeZ, z) : 0;
+          const holeTe2 = einstein2JS(radius, holeZ, z);
           if (holeTe2 >= px2) emitStarQuad(spx, spy, z, ang, 1);
           considerDeflect(wx, wy, wz, sr, z, px);
           if (prevOn) {
@@ -843,7 +885,7 @@
             let lx = spx;
             let ly = spy;
             const zLine = Math.min(prevZ, z);
-            if (holeZ > 1e-4 && holeZ < zLine) {
+            if (lensFadeJS(holeZ) > 0 && zLine > LENS_Z_MIN) {
               const te2 = einstein2JS(radius, holeZ, zLine);
               if (te2 >= px2) {
                 const pa = lensPullJS(ax, ay, holePx, holePy, te2);
