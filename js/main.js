@@ -36,6 +36,7 @@ function probeWorker() {
 }
 
 function formatTimeScale(timeScale) {
+  if (timeScale === 1) return "realtime";
   if (timeScale >= 1e9) return `${(timeScale / 1e9).toFixed(timeScale >= 1e10 ? 0 : 1)}G`;
   if (timeScale >= 1e6) return `${(timeScale / 1e6).toFixed(timeScale >= 1e7 ? 0 : 1)}M`;
   if (timeScale >= 1e3) return `${(timeScale / 1e3).toFixed(timeScale >= 1e4 ? 0 : 1)}K`;
@@ -49,6 +50,10 @@ function showFps(n, timeScale) {
   if (!el) return;
   if (timeScale != null && timeScale !== 1) {
     el.textContent = `${n} · ${formatTimeScale(timeScale)}×`;
+    return;
+  }
+  if (timeScale === 1) {
+    el.textContent = `${n} · realtime`;
     return;
   }
   el.textContent = String(n);
@@ -293,7 +298,7 @@ function init() {
   document.addEventListener("keydown", (e) => {
     if (e.repeat) return;
     if (e.key === "1") {
-      send({ type: "timeScale", factor: 0.1 });
+      send({ type: "timeScale", factor: 0.5 });
       return;
     }
     if (e.key === "2") {
@@ -301,7 +306,7 @@ function init() {
       return;
     }
     if (e.key === "3") {
-      send({ type: "timeScale", factor: 10 });
+      send({ type: "timeScale", factor: 2 });
       return;
     }
     if (!controlsActive()) return;

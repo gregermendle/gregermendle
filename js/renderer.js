@@ -59,7 +59,7 @@
   const DISK_OCCLUDE_LUMA = 0.42;
   const GRAV_G = 0.0011;
   const GRAV_SOFT2 = 2.25;
-  const GRAV_STEP = 28;
+  const GRAV_STEP = 8.5;
   const GRAV_SUBSTEP_H = 0.045;
   const GRAV_MAX_SUBSTEPS = 56;
   const GRAV_FAST_MUL = 36;
