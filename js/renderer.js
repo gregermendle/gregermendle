@@ -560,7 +560,7 @@
       const orbits = [];
       for (let i = 0; i < ORBIT_COUNT; i++) {
         const angle = spin + (i / ORBIT_COUNT) * Math.PI * 2;
-        const rad = schwarzschildRadius * easedProgress * (DISK_SIZE + 2.5);
+        const rad = schwarzschildRadius * easedProgress * (DISK_SIZE * 0.88);
         const wx = Math.cos(angle) * rad;
         const wz = Math.sin(angle) * rad;
         const pt = projectWorld(wx, 0, wz, minRes, rox, roy, roz);
