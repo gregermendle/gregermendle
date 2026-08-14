@@ -85,6 +85,11 @@ function init() {
   }
 
   async function startRenderer() {
+    const clustersPromise = fetch("/js/clusters.json")
+      .then((res) => (res.ok ? res.json() : { clusters: [] }))
+      .then((data) => data.clusters || [])
+      .catch(() => []);
+
     const offscreenReady =
       typeof Worker === "function" &&
       typeof OffscreenCanvas !== "undefined" &&
@@ -94,6 +99,9 @@ function init() {
     if (worker) {
       const offscreen = canvas.transferControlToOffscreen();
       worker.postMessage({ type: "init", canvas: offscreen }, [offscreen]);
+      clustersPromise.then((clusters) => {
+        worker.postMessage({ type: "clusters", clusters });
+      });
       worker.onmessage = (event) => {
         if (event.data && event.data.type === "fps") showFps(event.data.v);
       };
@@ -159,6 +167,9 @@ function init() {
       await loadScript("/js/renderer.js");
       renderer = self.createRenderer(canvas, (data) => {
         if (data && data.type === "fps") showFps(data.v);
+      });
+      clustersPromise.then((clusters) => {
+        if (renderer) renderer.setClusters(clusters);
       });
     } catch {
       renderer = null;

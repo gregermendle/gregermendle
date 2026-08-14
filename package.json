@@ -4,6 +4,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "node scripts/build.mjs",
+    "generate:clusters": "node scripts/generate-clusters.mjs",
     "build:wasm": "wat2wasm js/dither.wat -o js/dither.wasm",
     "dev": "run-p dev:*",
     "dev:web": "python3 -m http.server 5173",

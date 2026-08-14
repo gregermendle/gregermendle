@@ -58,5 +58,8 @@ self.onmessage = (event) => {
     case "hidden":
       if (renderer) renderer.setHidden(msg.v);
       break;
+    case "clusters":
+      if (renderer) renderer.setClusters(msg.clusters);
+      break;
   }
 };

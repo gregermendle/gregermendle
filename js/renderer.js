@@ -510,13 +510,17 @@
     let starCount = 0;
     let lineCount = 0;
 
+    function setClusters(next) {
+      clusters = Array.isArray(next) ? next : [];
+    }
+
     fetch("/js/clusters.json")
       .then((res) => res.json())
       .then((data) => {
-        clusters = data.clusters || [];
+        setClusters(data.clusters || []);
       })
       .catch(() => {
-        clusters = [];
+        setClusters([]);
       });
 
     function starInView(b, wx, wy, wz, starR, minRes, renderW, renderH) {
@@ -1070,6 +1074,7 @@
         running = value;
         start();
       },
+      setClusters,
     };
   }
 

@@ -1,0 +1,119 @@
+import { writeFileSync } from "node:fs";
+
+const COUNT = 500;
+const NEAR_COUNT = 450;
+const SEED = 0x6d656e646c65;
+const OUT = "js/clusters.json";
+const NEAR_MIN = 55;
+const NEAR_MAX = 240;
+const FAR_MIN = 320;
+const FAR_MAX = 3600;
+
+function mulberry32(seed) {
+  return () => {
+    seed |= 0;
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function pick(rng, arr) {
+  return arr[(rng() * arr.length) | 0];
+}
+
+function round1(n) {
+  return Math.round(n * 10) / 10;
+}
+
+function round3(n) {
+  return Math.round(n * 1000) / 1000;
+}
+
+function randomDir(rng) {
+  const u = rng();
+  const v = rng();
+  const theta = 2 * Math.PI * u;
+  const z = 2 * v - 1;
+  const r = Math.sqrt(1 - z * z);
+  return [r * Math.cos(theta), z * 0.35 + (rng() - 0.5) * 0.12, r * Math.sin(theta)];
+}
+
+function randomShell(rng, minR, maxR) {
+  const u = rng();
+  const r = minR + (maxR - minR) * Math.cbrt(u);
+  const dir = randomDir(rng);
+  return [dir[0] * r, dir[1] * r * 0.18, dir[2] * r];
+}
+
+function buildPoints(rng) {
+  const n = 3 + ((rng() * 6) | 0);
+  const points = [[0, 0, 0]];
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  let yaw = rng() * Math.PI * 2;
+  let pitch = (rng() - 0.5) * 0.35;
+
+  for (let i = 1; i < n; i++) {
+    yaw += (rng() - 0.5) * 1.4;
+    pitch = pitch * 0.65 + (rng() - 0.5) * 0.25;
+    const step = 1.8 + rng() * 3.8;
+    x += Math.cos(yaw) * Math.cos(pitch) * step;
+    y += Math.sin(pitch) * step * 0.35 + (rng() - 0.5) * 0.4;
+    z += Math.sin(yaw) * Math.cos(pitch) * step;
+
+    if (rng() < 0.14 && i > 1) {
+      const bx = x + (rng() - 0.5) * 2.4;
+      const by = y + (rng() - 0.5) * 0.8;
+      const bz = z + (rng() - 0.5) * 2.4;
+      points.push([round1(bx), round1(by), round1(bz)]);
+    }
+
+    points.push([round1(x), round1(y), round1(z)]);
+  }
+
+  if (rng() < 0.08) {
+    const idx = 1 + ((rng() * (points.length - 1)) | 0);
+    points[idx] = [...points[idx].slice(0, 3), round3(0.028 + rng() * 0.022)];
+  }
+
+  return points;
+}
+
+function buildCluster(rng, origin) {
+  const radius = round3(0.01 + rng() * 0.014 + (rng() < 0.06 ? 0.012 : 0));
+  const ampScale = 4 + rng() * 14;
+  const dir = randomDir(rng);
+  const glide = {
+    amp: [
+      round1(dir[0] * ampScale),
+      round1((rng() - 0.5) * 2.4),
+      round1(dir[2] * ampScale),
+    ],
+    speed: round3(0.006 + rng() * 0.008),
+    phase: round1(rng() * Math.PI * 2),
+  };
+
+  return {
+    origin: origin.map(round1),
+    radius,
+    glide,
+    points: buildPoints(rng),
+  };
+}
+
+const rng = mulberry32(SEED);
+const clusters = [];
+
+for (let i = 0; i < NEAR_COUNT; i++) {
+  clusters.push(buildCluster(rng, randomShell(rng, NEAR_MIN, NEAR_MAX)));
+}
+for (let i = NEAR_COUNT; i < COUNT; i++) {
+  clusters.push(buildCluster(rng, randomShell(rng, FAR_MIN, FAR_MAX)));
+}
+
+const payload = { clusters };
+writeFileSync(OUT, `${JSON.stringify(payload, null, 2)}\n`);
+console.log(`Wrote ${clusters.length} clusters to ${OUT}`);
