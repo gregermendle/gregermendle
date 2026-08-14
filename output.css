@@ -605,6 +605,21 @@ body {
   width: 100vw;
 }
 
+.fps {
+  pointer-events: none;
+  position: fixed;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 50;
+  font-size: 11px;
+  --tw-numeric-spacing: tabular-nums;
+  font-variant-numeric: var(--tw-ordinal) var(--tw-slashed-zero) var(--tw-numeric-figure) var(--tw-numeric-spacing) var(--tw-numeric-fraction);
+  line-height: 1;
+  --tw-text-opacity: 1;
+  color: rgb(255 255 255 / var(--tw-text-opacity));
+  text-shadow: 0 0 4px #000, 0 1px 0 #000;
+}
+
 .visible {
   visibility: visible;
 }

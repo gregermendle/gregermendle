@@ -35,6 +35,11 @@ function probeWorker() {
   });
 }
 
+function showFps(n) {
+  const el = document.getElementById("fps");
+  if (el) el.textContent = String(n);
+}
+
 function init() {
   const canvas = document.getElementById("canvas");
 
@@ -89,6 +94,9 @@ function init() {
     if (worker) {
       const offscreen = canvas.transferControlToOffscreen();
       worker.postMessage({ type: "init", canvas: offscreen }, [offscreen]);
+      worker.onmessage = (event) => {
+        if (event.data && event.data.type === "fps") showFps(event.data.v);
+      };
       let pointerX = 0;
       let pointerY = 0;
       let pointerDirty = false;
@@ -149,7 +157,9 @@ function init() {
     let renderer = null;
     try {
       await loadScript("/js/renderer.js");
-      renderer = self.createRenderer(canvas);
+      renderer = self.createRenderer(canvas, (data) => {
+        if (data && data.type === "fps") showFps(data.v);
+      });
     } catch {
       renderer = null;
     }

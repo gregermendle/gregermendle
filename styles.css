@@ -39,4 +39,9 @@
   #canvas {
     @apply fixed inset-0 w-screen h-screen z-10 pointer-events-none;
   }
+
+  .fps {
+    @apply fixed top-3 right-3 z-50 text-[11px] leading-none text-white pointer-events-none tabular-nums;
+    text-shadow: 0 0 4px #000, 0 1px 0 #000;
+  }
 }

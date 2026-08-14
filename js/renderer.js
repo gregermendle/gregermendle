@@ -109,8 +109,6 @@
     uniform vec3 uLineB[${MAX_LINES}];
     uniform int uStarCount;
     uniform int uLineCount;
-    uniform float uWarp;
-    uniform vec2 uWarpCenter;
     uniform vec2 uViewHalf;
     ${fragOut}
     #define MAX_STEPS ${maxSteps}
@@ -127,7 +125,7 @@
 
     vec3 pullRay(vec3 rd, vec3 rel, float mass, float maxT) {
       float t = dot(rel, rd);
-      if (t <= 0.0 || t >= maxT) return rd;
+      if (t <= 0.0 || t >= maxT || t > 90.0) return rd;
       vec3 closest = rd * t - rel;
       float b2 = dot(closest, closest);
       float reach = mass * 48.0;
@@ -148,7 +146,7 @@
 
     float einstein2(float mass, float zL, float zS) {
       float dls = zS - zL;
-      if (dls <= 0.0 || zL <= 1e-4) return 0.0;
+      if (dls <= 0.0 || zL <= 1e-4 || zL > 220.0) return 0.0;
       return 2.0 * mass * dls / max(zL * zS, 1e-8);
     }
 
@@ -162,18 +160,19 @@
     vec4 rayMarch(vec3 ro, vec3 rd, vec2 uv, float radius) {
       float influenceRadius = max(radius * 50.0, radius * DISK_SIZE + 4.0);
       float stepCap = max(radius * 0.2, STEP_SIZE * 1.8);
-      float b = dot(ro, rd);
-      float c = dot(ro, ro) - influenceRadius * influenceRadius;
-      float h = b * b - c;
-      if (h < 0.0) return vec4(0.0);
-      float tExit = -b + sqrt(h);
-      if (tExit < 0.0) return vec4(0.0);
-      float tEnter = max(-b - sqrt(h), 0.0);
+      float R2 = influenceRadius * influenceRadius;
+      vec3 closest = cross(rd, cross(ro, rd));
+      float d2 = dot(closest, closest);
+      if (d2 > R2) return vec4(0.0);
+      float halfChord = sqrt(R2 - d2);
+      float tClosest = -dot(ro, rd);
+      if (tClosest + halfChord < 0.0) return vec4(0.0);
       float jitter = hash(uv) * STEP_SIZE;
-      vec3 p = ro + rd * (tEnter + jitter);
+      vec3 p = closest - rd * (halfChord - jitter);
+      if (dot(ro, ro) < R2) p = ro + rd * jitter;
       float r = length(p);
       vec4 col = vec4(0.0);
-      float totalDist = tEnter + jitter;
+      float totalDist = max(tClosest - halfChord, 0.0) + jitter;
       float tRot = time * 0.3;
       float adaptiveStepSize;
       vec3 prevP;
@@ -223,12 +222,13 @@
         vec2 sp = vec2(dot(toS, camRight), dot(toS, camUp)) / z;
         float ang = s.w / max(z, s.w * 0.35);
         float holeTe2 = einstein2(radius, holeZ, z);
-        float ring = sqrt(max(holeTe2, 0.0));
+        if (holeTe2 < px * px) holeTe2 = 0.0;
+        float ring = sqrt(holeTe2);
         float pad = max(max(ang * 6.0, px * 4.0), ring * 2.4);
-        bool nearHole = holeZ > 1e-4 && holeZ < z && length(uv - holeP) < pad;
+        bool nearHole = holeTe2 > 0.0 && length(uv - holeP) < pad;
         if (!nearHole && (abs(sp.x) > uViewHalf.x + pad || abs(sp.y) > uViewHalf.y + pad)) continue;
         vec2 src = uv;
-        src -= lensPull(uv, holeP, holeTe2);
+        if (holeTe2 > 0.0) src -= lensPull(uv, holeP, holeTe2);
         float blocked = 0.0;
         for (int j = 0; j < MAX_STARS; j++) {
           if (float(j) + 0.5 > float(uStarCount)) break;
@@ -240,7 +240,9 @@
           vec2 lp = vec2(dot(toO, camRight), dot(toO, camUp)) / zj;
           float angj = o.w / max(zj, o.w * 0.35);
           if (length(uv - lp) < max(angj, px * 1.15)) blocked = 1.0;
-          src -= lensPull(uv, lp, einstein2(o.w * STAR_COMPACT, zj, z));
+          if (zj > 90.0) continue;
+          float starTe2 = einstein2(o.w * STAR_COMPACT, zj, z);
+          if (starTe2 >= px * px) src -= lensPull(uv, lp, starTe2);
         }
         if (blocked > 0.5) continue;
         float coreR = max(ang, px * 1.15);
@@ -266,8 +268,10 @@
         vec2 b = vec2(dot(db, camRight), dot(db, camUp)) / max(zb, 1e-4);
         if (holeZ > 1e-4 && holeZ < zLine) {
           float te2 = einstein2(radius, holeZ, zLine);
-          a -= lensPull(a, holeP, te2);
-          b -= lensPull(b, holeP, te2);
+          if (te2 >= px * px) {
+            a -= lensPull(a, holeP, te2);
+            b -= lensPull(b, holeP, te2);
+          }
         }
         float pad = 0.35;
         float minX = min(a.x, b.x);
@@ -289,29 +293,20 @@
       float minRes = min(resolution.x, resolution.y);
       vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
       vec2 aspect = resolution.xy / minRes;
-      float w = uWarp;
-      vec2 from = uv - uWarpCenter;
-      float r = length(from);
-      vec2 dir = r > 1e-5 ? from / r : vec2(0.0);
-      float coneR = mix(0.14, 0.82, w);
-      float t = r / max(coneR, 1e-4);
-      float cone = max(1.0 - t, 0.0);
-      float rim = smoothstep(0.72, 0.96, t) * (1.0 - smoothstep(0.96, 1.12, t));
-      vec2 wuv = uv + dir * w * coneR * (0.48 * cone + 0.2 * rim);
       vec3 ro = camPos;
       float radius = schwarzschildRadius * progress;
-      vec3 rd0 = normalize(wuv.x * camRight + wuv.y * camUp + camFwd);
+      vec3 rd0 = normalize(uv.x * camRight + uv.y * camUp + camFwd);
       float holeT = max(-dot(ro, rd0), 0.0);
       if (holeT < 1e-4) holeT = 1.0e20;
-      vec3 rd = deflectRay(ro, rd0, holeT);
-      vec4 marched = rayMarch(ro, rd, wuv * aspect * 5.0, radius);
+      vec3 rd = holeT > 220.0 ? rd0 : deflectRay(ro, rd0, holeT);
+      vec4 marched = rayMarch(ro, rd, uv * aspect * 5.0, radius);
       vec4 col = vec4(marched.rgb * progress, marched.a);
-      col.rgb += vec3(starField(wuv, ro, radius, minRes, marched.a) * progress);
+      col.rgb += vec3(starField(uv, ro, radius, minRes, marched.a) * progress);
       float dist = length(ro);
       float beaconMix = smoothstep(50.0, 160.0, dist);
       float marchLum = dot(col.rgb, vec3(0.333));
       float fill = beaconMix * (1.0 - smoothstep(0.0, 0.12, marchLum));
-      float beacon = holeBeacon(wuv, ro, radius, minRes) * progress * fill;
+      float beacon = holeBeacon(uv, ro, radius, minRes) * progress * fill;
       col.rgb = max(col.rgb, vec3(beacon));
       ${writeColor} = col;
     }`;
@@ -483,7 +478,7 @@
     return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
   }
 
-  function createRenderer(canvas) {
+  function createRenderer(canvas, emit) {
     const glAttrs = {
       alpha: false,
       depth: false,
@@ -632,8 +627,6 @@
         lineB: gl.getUniformLocation(program, "uLineB[0]"),
         starCount: gl.getUniformLocation(program, "uStarCount"),
         lineCount: gl.getUniformLocation(program, "uLineCount"),
-        warp: gl.getUniformLocation(program, "uWarp"),
-        warpCenter: gl.getUniformLocation(program, "uWarpCenter"),
         viewHalf: gl.getUniformLocation(program, "uViewHalf"),
       },
     };
@@ -788,6 +781,8 @@
     let nextMouseY = 0;
     let prevNow = 0;
     let haveTime = false;
+    let fpsFrames = 0;
+    let fpsLast = 0;
     let progress = 0;
     let easedProgress = 0;
     const minRadius = 0.08;
@@ -812,9 +807,6 @@
     let keyD = 0;
     let keyBoost = 0;
     let engine = 0;
-    let screenWarp = 0;
-    let warpCenterX = 0;
-    let warpCenterY = 0;
     let displayWidth = 0;
     let displayHeight = 0;
 
@@ -874,8 +866,6 @@
       gl.uniform3fv(programInfo.uniformLocations.lineB, lineBData);
       gl.uniform1i(programInfo.uniformLocations.starCount, starCount);
       gl.uniform1i(programInfo.uniformLocations.lineCount, lineCount);
-      gl.uniform1f(programInfo.uniformLocations.warp, screenWarp);
-      gl.uniform2f(programInfo.uniformLocations.warpCenter, warpCenterX, warpCenterY);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.flush();
     }
@@ -938,6 +928,15 @@
       raf = 0;
       if (!running || hidden) return;
       raf = requestAnimationFrame(render);
+      const t = typeof now === "number" && now > 0 ? now : performance.now();
+      fpsFrames += 1;
+      if (!fpsLast) fpsLast = t;
+      const elapsed = t - fpsLast;
+      if (elapsed >= 500) {
+        if (emit) emit({ type: "fps", v: Math.round((fpsFrames * 1000) / elapsed) });
+        fpsFrames = 0;
+        fpsLast = t;
+      }
 
       let timeScale;
       if (!haveTime) {
@@ -1006,32 +1005,6 @@
       camY += velY * timeScale;
       camZ += velZ * timeScale;
       keepOut();
-      const flySpeed = Math.hypot(velX, velY, velZ);
-      const targetWarp = Math.min(1, flySpeed / warpSpeed);
-      screenWarp += (targetWarp - screenWarp) * 0.028 * timeScale;
-      if (screenWarp < 1e-4) screenWarp = 0;
-      if (flySpeed > 1e-8) {
-        const inv = 1 / flySpeed;
-        const dx = velX * inv;
-        const dy = velY * inv;
-        const dz = velZ * inv;
-        const vz = dx * b.fx + dy * b.fy + dz * b.fz;
-        const vx = dx * b.rx + dy * b.ry + dz * b.rz;
-        const vy = dx * b.ux + dy * b.uy + dz * b.uz;
-        let nextX;
-        let nextY;
-        if (vz > 0.04) {
-          nextX = vx / vz;
-          nextY = vy / vz;
-        } else {
-          const sl = Math.hypot(vx, vy) || 1;
-          nextX = (vx / sl) * 4;
-          nextY = (vy / sl) * 4;
-        }
-        const follow = Math.min(1, 0.012 * timeScale);
-        warpCenterX += (nextX - warpCenterX) * follow;
-        warpCenterY += (nextY - warpCenterY) * follow;
-      }
 
       if (displayWidth <= 0 || displayHeight <= 0) return;
 
