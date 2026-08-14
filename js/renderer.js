@@ -40,6 +40,8 @@
     return { position: buffer };
   }
 
+  const DISK_SIZE = 43;
+
   function marchStepSource() {
     return `
         r = length(p);
@@ -56,10 +58,10 @@
           float diskRadius = length(p.xz);
           if (diskRadius > radius) {
             float d = (diskRadius - radius) / radius;
-            float innerTemp = smoothstep(2.0, 4.0, d);
-            float outerTemp = smoothstep(4.0, 8.0, d);
+            float innerTemp = smoothstep(DISK_SIZE * 0.25, DISK_SIZE * 0.5, d);
+            float outerTemp = smoothstep(DISK_SIZE * 0.5, DISK_SIZE, d);
             float gray = mix(1.0, mix(0.4, 0.1, outerTemp), innerTemp);
-            vec4 diskCol = vec4(vec3(gray * exp(-d * 0.25)), 1.0) * exp(-totalDist * 0.12);
+            vec4 diskCol = vec4(vec3(gray * exp(-d * (1.7 / DISK_SIZE))), 1.0) * exp(-totalDist * 0.12);
             diskCol *= 1.0 + 0.08 * sin((atan(p.z, p.x) + tRot) * 8.0);
             diskCol *= 0.75 + 0.08 * sin((atan(rd.x, rd.y) + tRot) * 8.0);
             col += diskCol;
@@ -95,6 +97,7 @@
     #define MAX_STEPS ${maxSteps}
     #define WARP_SIZE 0.25
     #define STEP_SIZE ${stepSize.toFixed(2)}
+    #define DISK_SIZE ${DISK_SIZE.toFixed(1)}
 
     float hash(vec2 p) {
       return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
@@ -557,7 +560,7 @@
       const orbits = [];
       for (let i = 0; i < ORBIT_COUNT; i++) {
         const angle = spin + (i / ORBIT_COUNT) * Math.PI * 2;
-        const rad = schwarzschildRadius * easedProgress * 10.5;
+        const rad = schwarzschildRadius * easedProgress * (DISK_SIZE + 2.5);
         const wx = Math.cos(angle) * rad;
         const wz = Math.sin(angle) * rad;
         const pt = projectWorld(wx, 0, wz, minRes, rox, roy, roz);
