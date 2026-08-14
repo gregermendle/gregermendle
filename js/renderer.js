@@ -55,7 +55,8 @@
   const LENS_FADE_FRONT = 0.6;
   const LENS_FAR_START = 80;
   const LENS_FAR_END = 320;
-  const DISK_OCCLUDE_LUMA = 0.2;
+  const DISK_OCCLUDE_LUMA = 0.42;
+  const DISK_RENDER_MIN = 0.07;
 
   function marchStepSource() {
     return `
@@ -79,14 +80,17 @@
             float innerTemp = smoothstep(DISK_SIZE * 0.25, DISK_SIZE * 0.5, d);
             float outerTemp = smoothstep(DISK_SIZE * 0.5, DISK_SIZE, d);
             float gray = mix(1.0, mix(0.4, 0.1, outerTemp), innerTemp);
-            vec4 diskCol = vec4(vec3(gray * exp(-d * (1.7 / DISK_SIZE))), 1.0);
-            diskCol *= 1.0 + 0.08 * sin((atan(hit.z, hit.x) + tRot) * 8.0);
-            diskCol *= 0.75 + 0.08 * sin((atan(rd.x, rd.y) + tRot) * 8.0);
-            col += diskCol;
+            vec3 diskRgb = vec3(gray * exp(-d * (1.7 / DISK_SIZE)));
+            diskRgb *= 1.0 + 0.08 * sin((atan(hit.z, hit.x) + tRot) * 8.0);
+            diskRgb *= 0.75 + 0.08 * sin((atan(rd.x, rd.y) + tRot) * 8.0);
+            float hitLum = dot(diskRgb, vec3(0.333));
+            if (hitLum > ${DISK_RENDER_MIN.toFixed(2)}) col.rgb += diskRgb;
+            if (hitLum > ${DISK_OCCLUDE_LUMA.toFixed(2)}) col.a = max(col.a, 0.5);
           }
         }
         if (r > influenceRadius && dot(p, rd) > 0.0) return col;
-        if (r < radius || dot(col, col) > 100.0) return vec4(col.rgb, 1.0);
+        if (r < radius) return vec4(col.rgb, 1.0);
+        if (dot(col, col) > 100.0) return col;
 `;
   }
 
@@ -245,7 +249,7 @@
       float fill = beaconMix * (1.0 - smoothstep(0.0, 0.12, marchLum));
       float beacon = holeBeacon(uv, ro, radius, minRes) * progress * fill;
       col.rgb = max(col.rgb, vec3(beacon));
-      float mask = max(marched.a, step(${DISK_OCCLUDE_LUMA.toFixed(2)}, marched.r * progress));
+      float mask = marched.a;
       ${webgl2 ? `${writeColor} = vec4(col.r, mask, 0.0, 1.0);` : `${writeColor} = vec4(col.rgb, mask);`}
     }`;
 
@@ -352,7 +356,7 @@
       vec2 holeP = holePos(ro);
       float holeMask = uUseMask > 0.5 ? ${tex}(uMask, gl_FragCoord.xy / resolution).${maskCh} : 0.0;
       float z = vStar.z;
-      if (z <= 1e-4 || (uUseMask > 0.5 && holeZ > 1e-4 && z > holeZ && holeMask > 0.5)) {
+      if (z <= 1e-4 || (uUseMask > 0.5 && holeZ > 1e-4 && z > holeZ && holeMask > 0.4)) {
         ${writeColor} = vec4(0.0);
         return;
       }
@@ -400,7 +404,7 @@
     void main() {
       float holeZ = dot(-camPos, camFwd);
       float holeMask = uUseMask > 0.5 ? ${tex}(uMask, gl_FragCoord.xy / resolution).${maskCh} : 0.0;
-      if (vMeta.x < 0.0 || (uUseMask > 0.5 && holeZ > 1e-4 && vMeta.x > holeZ && holeMask > 0.5)) {
+      if (vMeta.x < 0.0 || (uUseMask > 0.5 && holeZ > 1e-4 && vMeta.x > holeZ && holeMask > 0.4)) {
         ${writeColor} = vec4(0.0);
         return;
       }
@@ -441,7 +445,7 @@
       float holeZ = dot(-camPos, camFwd);
       float holeMask = uUseMask > 0.5 ? ${tex}(uMask, gl_FragCoord.xy / resolution).${maskCh} : 0.0;
       float z = vDust.z;
-      if (z <= 1e-4 || (uUseMask > 0.5 && holeZ > 1e-4 && z > holeZ && holeMask > 0.5)) {
+      if (z <= 1e-4 || (uUseMask > 0.5 && holeZ > 1e-4 && z > holeZ && holeMask > 0.75)) {
         ${writeColor} = vec4(0.0);
         return;
       }
@@ -481,7 +485,7 @@
       vec3 ro = camPos;
       float holeZ = dot(-ro, camFwd);
       float holeMask = ${tex}(uMask, vTexCoord).${maskCh};
-      if (holeMask > 0.5) {
+      if (holeMask > 0.75) {
         ${writeColor} = vec4(0.0);
         return;
       }
@@ -521,7 +525,7 @@
       vec3 ro = camPos;
       float holeZ = dot(-ro, camFwd);
       float holeMask = ${tex}(uMask, vTexCoord).${maskCh};
-      if (holeMask > 0.5) {
+      if (holeMask > 0.4) {
         ${writeColor} = vec4(0.0);
         return;
       }
