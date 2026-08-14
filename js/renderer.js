@@ -53,8 +53,8 @@
   const LENS_Z_MIN = 0.8;
   const LENS_FADE_BEHIND = -12;
   const LENS_FADE_FRONT = 0.6;
-  const LENS_FAR_START = 180;
-  const LENS_FAR_END = 280;
+  const LENS_FAR_START = 80;
+  const LENS_FAR_END = 320;
   const DISK_OCCLUDE_LUMA = 0.2;
 
   function marchStepSource() {
@@ -236,7 +236,7 @@
       vec3 rd0 = normalize(uv.x * camRight + uv.y * camUp + camFwd);
       float holeT = max(-dot(ro, rd0), 0.0);
       if (holeT < 1e-4) holeT = 1.0e20;
-      vec3 rd = (holeT > 220.0 || uDeflectCount < 1) ? rd0 : deflectRay(ro, rd0, holeT);
+      vec3 rd = uDeflectCount < 1 ? rd0 : deflectRay(ro, rd0, holeT);
       vec4 marched = rayMarch(ro, rd, uv * aspect * 5.0, radius);
       vec4 col = vec4(marched.rgb * progress, marched.a);
       float dist = length(ro);
@@ -623,7 +623,6 @@
     let starVertCount = 0;
     let starFrontCount = 0;
     let lineVertCount = 0;
-    let closeLens = false;
     let starGeom = new Float32Array(7 * 6 * 256);
     let starGeomFront = new Float32Array(7 * 6 * 64);
     let lineGeom = new Float32Array(4 * 6 * 256);
@@ -881,16 +880,11 @@
       const t = now * 0.001;
       const minRes = Math.min(renderW, renderH);
       const px = 1 / minRes;
-      const px2 = px * px;
       const holeZ = -camX * b.fx - camY * b.fy - camZ * b.fz;
-      const zProj = Math.max(holeZ, LENS_Z_MIN);
-      const holePx = (-camX * b.rx - camY * b.ry - camZ * b.rz) / zProj;
-      const holePy = (-camX * b.ux - camY * b.uy - camZ * b.uz) / zProj;
       starVertCount = 0;
       starFrontCount = 0;
       lineVertCount = 0;
       deflectCount = 0;
-      closeLens = lensFadeJS(holeZ) > 0.01 && Math.max(holeZ, LENS_Z_MIN) < 22;
       for (let c = 0; c < clusterCount; c++) {
         const npts = pointCount[c];
         if (!npts) continue;
@@ -937,29 +931,11 @@
           const spy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
           const ang = sr / Math.max(z, sr * 0.35);
           const behind = z > Math.max(holeZ, LENS_Z_MIN);
-          if (closeLens && !behind) emitStarTo("starGeomFront", "front", spx, spy, z, ang, 0);
+          if (!behind) emitStarTo("starGeomFront", "front", spx, spy, z, ang, 0);
           else emitStarQuad(spx, spy, z, ang, 0);
-          const holeTe2 = einstein2JS(radius, holeZ, z);
-          if (!closeLens && holeTe2 >= px2) emitStarQuad(spx, spy, z, ang, 1);
           considerDeflect(wx, wy, wz, sr, z, px);
           if (prevOn) {
-            let ax = prevAx;
-            let ay = prevAy;
-            let lx = spx;
-            let ly = spy;
-            const zLine = Math.min(prevZ, z);
-            if (!closeLens && lensFadeJS(holeZ) > 0 && zLine > LENS_Z_MIN) {
-              const te2 = einstein2JS(radius, holeZ, zLine);
-              if (te2 >= px2) {
-                const pa = lensPullJS(ax, ay, holePx, holePy, te2);
-                const pb = lensPullJS(lx, ly, holePx, holePy, te2);
-                ax -= pa[0];
-                ay -= pa[1];
-                lx -= pb[0];
-                ly -= pb[1];
-              }
-            }
-            emitLineQuad(ax, ay, lx, ly, zLine, minRes);
+            emitLineQuad(prevAx, prevAy, spx, spy, Math.min(prevZ, z), minRes);
           }
           prevOn = true;
           prevAx = spx;
@@ -1351,7 +1327,7 @@
     }
 
     function renderStars(renderWidth, renderHeight, b) {
-      if (closeLens && (starVertCount || lineVertCount)) {
+      if (starVertCount || lineVertCount) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, fieldFb);
         gl.viewport(0, 0, renderWidth, renderHeight);
         gl.disable(gl.BLEND);
@@ -1361,9 +1337,12 @@
         gl.blendFunc(gl.ONE, gl.ONE);
         drawStarGeom(starGeom, starVertCount, renderWidth, renderHeight, b, false, false);
         drawLineGeom(renderWidth, renderHeight, b, false);
-        blitScene(renderWidth, renderHeight);
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.ONE, gl.ONE);
+      }
+      blitScene(renderWidth, renderHeight);
+      if (!starVertCount && !lineVertCount && !starFrontCount) return;
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      if (starVertCount || lineVertCount) {
         gl.useProgram(lensProgram);
         bindFullscreen();
         if (lensAttrib !== blitAttrib && lensAttrib >= 0) {
@@ -1388,17 +1367,8 @@
         gl.bindTexture(gl.TEXTURE_2D, null);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, sceneTexture);
-        drawStarGeom(starGeomFront, starFrontCount, renderWidth, renderHeight, b, false, true);
-        gl.disable(gl.BLEND);
-        return;
       }
-
-      blitScene(renderWidth, renderHeight);
-      if (!starVertCount && !lineVertCount) return;
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.ONE, gl.ONE);
-      drawStarGeom(starGeom, starVertCount, renderWidth, renderHeight, b, true, true);
-      drawLineGeom(renderWidth, renderHeight, b, true);
+      drawStarGeom(starGeomFront, starFrontCount, renderWidth, renderHeight, b, false, true);
       gl.disable(gl.BLEND);
     }
 
