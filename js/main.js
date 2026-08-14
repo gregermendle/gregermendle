@@ -72,7 +72,37 @@ function init() {
     if (worker) {
       const offscreen = canvas.transferControlToOffscreen();
       worker.postMessage({ type: "init", canvas: offscreen }, [offscreen]);
-      attach((msg) => worker.postMessage(msg));
+      let pointerX = 0;
+      let pointerY = 0;
+      let pointerDirty = false;
+      let radiusDelta = 0;
+      let inputRaf = 0;
+      function flushInput() {
+        inputRaf = 0;
+        if (pointerDirty) {
+          worker.postMessage({ type: "pointer", x: pointerX, y: pointerY });
+          pointerDirty = false;
+        }
+        if (radiusDelta !== 0) {
+          worker.postMessage({ type: "radius", d: radiusDelta });
+          radiusDelta = 0;
+        }
+      }
+      attach((msg) => {
+        if (msg.type === "pointer") {
+          pointerX = msg.x;
+          pointerY = msg.y;
+          pointerDirty = true;
+          if (!inputRaf) inputRaf = requestAnimationFrame(flushInput);
+          return;
+        }
+        if (msg.type === "radius") {
+          radiusDelta += msg.d;
+          if (!inputRaf) inputRaf = requestAnimationFrame(flushInput);
+          return;
+        }
+        worker.postMessage(msg);
+      });
       return;
     }
 
