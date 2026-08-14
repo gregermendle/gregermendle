@@ -71,9 +71,10 @@
             diskCol *= 1.0 + 0.08 * sin((atan(hit.z, hit.x) + tRot) * 8.0);
             diskCol *= 0.75 + 0.08 * sin((atan(rd.x, rd.y) + tRot) * 8.0);
             col += diskCol;
+            col.a = 1.0;
           }
         }
-        if (r < radius || dot(col, col) > 100.0) return col;
+        if (r < radius || dot(col, col) > 100.0) return vec4(col.rgb, 1.0);
 `;
   }
 
@@ -118,9 +119,44 @@
     #define DISK_SIZE ${DISK_SIZE.toFixed(1)}
     #define MAX_STARS ${MAX_STARS}
     #define MAX_LINES ${MAX_LINES}
+    #define STAR_COMPACT 0.000004
 
     float hash(vec2 p) {
       return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+    }
+
+    vec3 pullRay(vec3 rd, vec3 rel, float mass, float maxT) {
+      float t = dot(rel, rd);
+      if (t <= 0.0 || t >= maxT) return rd;
+      vec3 closest = rd * t - rel;
+      float b2 = dot(closest, closest);
+      float reach = mass * 48.0;
+      if (b2 > reach * reach) return rd;
+      float minB = mass * 1.15;
+      float invB = inversesqrt(max(b2, minB * minB));
+      return normalize(rd - closest * (mass * invB * invB * invB));
+    }
+
+    vec3 deflectRay(vec3 ro, vec3 rd, float maxT) {
+      for (int i = 0; i < MAX_STARS; i++) {
+        if (float(i) + 0.5 > float(uStarCount)) break;
+        vec4 s = uStars[i];
+        rd = pullRay(rd, s.xyz - ro, s.w * STAR_COMPACT, maxT);
+      }
+      return rd;
+    }
+
+    float einstein2(float mass, float zL, float zS) {
+      float dls = zS - zL;
+      if (dls <= 0.0 || zL <= 1e-4) return 0.0;
+      return 2.0 * mass * dls / max(zL * zS, 1e-8);
+    }
+
+    vec2 lensPull(vec2 uv, vec2 lp, float te2) {
+      if (te2 <= 0.0) return vec2(0.0);
+      vec2 d = uv - lp;
+      float b2 = dot(d, d);
+      return d * (te2 / max(b2, te2 * 0.08));
     }
 
     vec4 rayMarch(vec3 ro, vec3 rd, vec2 uv, float radius) {
@@ -170,27 +206,46 @@
       return vec2(dot(d, camRight) / z, dot(d, camUp) / z);
     }
 
-    float starField(vec2 uv, vec3 ro, float radius, float minRes) {
+    float starField(vec2 uv, vec3 ro, float radius, float minRes, float holeMask) {
       float glow = 0.0;
       float px = 1.0 / minRes;
+      float holeZ = dot(-ro, camFwd);
+      vec2 holeP = holeZ > 1e-4
+        ? vec2(dot(-ro, camRight), dot(-ro, camUp)) / holeZ
+        : vec2(100.0);
       for (int i = 0; i < MAX_STARS; i++) {
         if (float(i) + 0.5 > float(uStarCount)) break;
         vec4 s = uStars[i];
-        vec3 w = s.xyz;
-        vec3 toS = w - ro;
+        vec3 toS = s.xyz - ro;
         float z = dot(toS, camFwd);
         if (z <= 1e-4) continue;
+        if (holeZ > 1e-4 && z > holeZ && holeMask > 0.5) continue;
         vec2 sp = vec2(dot(toS, camRight), dot(toS, camUp)) / z;
         float ang = s.w / max(z, s.w * 0.35);
-        float pad = max(ang * 6.0, px * 4.0);
-        if (abs(sp.x) > uViewHalf.x + pad || abs(sp.y) > uViewHalf.y + pad) continue;
-        float denom = dot(toS, toS);
-        float tHit = -dot(ro, toS) / max(denom, 1e-5);
-        vec3 closest = ro + clamp(tHit, 0.0, 1.0) * toS;
-        if (dot(closest, closest) < radius * radius) continue;
+        float holeTe2 = einstein2(radius, holeZ, z);
+        float ring = sqrt(max(holeTe2, 0.0));
+        float pad = max(max(ang * 6.0, px * 4.0), ring * 2.4);
+        bool nearHole = holeZ > 1e-4 && holeZ < z && length(uv - holeP) < pad;
+        if (!nearHole && (abs(sp.x) > uViewHalf.x + pad || abs(sp.y) > uViewHalf.y + pad)) continue;
+        vec2 src = uv;
+        src -= lensPull(uv, holeP, holeTe2);
+        float blocked = 0.0;
+        for (int j = 0; j < MAX_STARS; j++) {
+          if (float(j) + 0.5 > float(uStarCount)) break;
+          if (i == j) continue;
+          vec4 o = uStars[j];
+          vec3 toO = o.xyz - ro;
+          float zj = dot(toO, camFwd);
+          if (zj <= 1e-4 || zj >= z) continue;
+          vec2 lp = vec2(dot(toO, camRight), dot(toO, camUp)) / zj;
+          float angj = o.w / max(zj, o.w * 0.35);
+          if (length(uv - lp) < max(angj, px * 1.15)) blocked = 1.0;
+          src -= lensPull(uv, lp, einstein2(o.w * STAR_COMPACT, zj, z));
+        }
+        if (blocked > 0.5) continue;
         float coreR = max(ang, px * 1.15);
         float glowR = max(ang * 5.5, px * 3.4);
-        float d = length(uv - sp);
+        float d = length(src - sp);
         float core = smoothstep(coreR, coreR * 0.42, d);
         float near = clamp(ang / (px * 10.0), 0.0, 1.0);
         float halo = exp(-d / max(glowR, 1e-5)) * mix(0.16, 0.52, near);
@@ -205,8 +260,15 @@
         float za = dot(da, camFwd);
         float zb = dot(db, camFwd);
         if (za <= 1e-4 && zb <= 1e-4) continue;
+        float zLine = min(za > 1e-4 ? za : zb, zb > 1e-4 ? zb : za);
+        if (holeZ > 1e-4 && zLine > holeZ && holeMask > 0.5) continue;
         vec2 a = vec2(dot(da, camRight), dot(da, camUp)) / max(za, 1e-4);
         vec2 b = vec2(dot(db, camRight), dot(db, camUp)) / max(zb, 1e-4);
+        if (holeZ > 1e-4 && holeZ < zLine) {
+          float te2 = einstein2(radius, holeZ, zLine);
+          a -= lensPull(a, holeP, te2);
+          b -= lensPull(b, holeP, te2);
+        }
         float pad = 0.35;
         float minX = min(a.x, b.x);
         float maxX = max(a.x, b.x);
@@ -237,10 +299,14 @@
       float rim = smoothstep(0.72, 0.96, t) * (1.0 - smoothstep(0.96, 1.12, t));
       vec2 wuv = uv + dir * w * coneR * (0.48 * cone + 0.2 * rim);
       vec3 ro = camPos;
-      vec3 rd = normalize(wuv.x * camRight + wuv.y * camUp + camFwd);
       float radius = schwarzschildRadius * progress;
-      vec4 col = rayMarch(ro, rd, wuv * aspect * 5.0, radius) * progress;
-      col += vec4(vec3(starField(wuv, ro, radius, minRes) * progress), 0.0);
+      vec3 rd0 = normalize(wuv.x * camRight + wuv.y * camUp + camFwd);
+      float holeT = max(-dot(ro, rd0), 0.0);
+      if (holeT < 1e-4) holeT = 1.0e20;
+      vec3 rd = deflectRay(ro, rd0, holeT);
+      vec4 marched = rayMarch(ro, rd, wuv * aspect * 5.0, radius);
+      vec4 col = vec4(marched.rgb * progress, marched.a);
+      col.rgb += vec3(starField(wuv, ro, radius, minRes, marched.a) * progress);
       float dist = length(ro);
       float beaconMix = smoothstep(50.0, 160.0, dist);
       float marchLum = dot(col.rgb, vec3(0.333));
