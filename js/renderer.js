@@ -112,6 +112,7 @@
     uniform int uLineCount;
     uniform float uWarp;
     uniform vec2 uWarpCenter;
+    uniform vec2 uViewHalf;
     ${fragOut}
     #define MAX_STEPS ${maxSteps}
     #define WARP_SIZE 0.25
@@ -162,35 +163,51 @@
       float glow = 0.0;
       float px = 1.0 / minRes;
       for (int i = 0; i < MAX_STARS; i++) {
-        float on = step(float(i) + 0.5, float(uStarCount));
+        if (float(i) + 0.5 > float(uStarCount)) break;
         vec4 s = uStars[i];
         vec3 w = s.xyz;
         vec3 toS = w - ro;
         float z = dot(toS, camFwd);
-        on *= step(1e-4, z);
+        if (z <= 1e-4) continue;
+        vec2 sp = vec2(dot(toS, camRight), dot(toS, camUp)) / z;
+        float ang = s.w / max(z, s.w * 0.35);
+        float pad = max(ang * 6.0, px * 4.0);
+        if (abs(sp.x) > uViewHalf.x + pad || abs(sp.y) > uViewHalf.y + pad) continue;
         float denom = dot(toS, toS);
         float tHit = -dot(ro, toS) / max(denom, 1e-5);
         vec3 closest = ro + clamp(tHit, 0.0, 1.0) * toS;
-        on *= step(radius * radius, dot(closest, closest));
-        vec2 sp = vec2(dot(toS, camRight), dot(toS, camUp)) / max(z, 1e-4);
-        float ang = s.w / max(z, s.w * 0.35);
+        if (dot(closest, closest) < radius * radius) continue;
         float coreR = max(ang, px * 1.15);
         float glowR = max(ang * 5.5, px * 3.4);
         float d = length(uv - sp);
         float core = smoothstep(coreR, coreR * 0.42, d);
         float near = clamp(ang / (px * 10.0), 0.0, 1.0);
         float halo = exp(-d / max(glowR, 1e-5)) * mix(0.16, 0.52, near);
-        glow += on * (core + halo);
+        glow += core + halo;
       }
       for (int i = 0; i < MAX_LINES; i++) {
-        float on = step(float(i) + 0.5, float(uLineCount));
-        vec2 a = projectStar(uLineA[i], ro);
-        vec2 b = projectStar(uLineB[i], ro);
+        if (float(i) + 0.5 > float(uLineCount)) break;
+        vec3 wa = uLineA[i];
+        vec3 wb = uLineB[i];
+        vec3 da = wa - ro;
+        vec3 db = wb - ro;
+        float za = dot(da, camFwd);
+        float zb = dot(db, camFwd);
+        if (za <= 1e-4 && zb <= 1e-4) continue;
+        vec2 a = vec2(dot(da, camRight), dot(da, camUp)) / max(za, 1e-4);
+        vec2 b = vec2(dot(db, camRight), dot(db, camUp)) / max(zb, 1e-4);
+        float pad = 0.35;
+        float minX = min(a.x, b.x);
+        float maxX = max(a.x, b.x);
+        float minY = min(a.y, b.y);
+        float maxY = max(a.y, b.y);
+        if (maxX < -uViewHalf.x - pad || minX > uViewHalf.x + pad) continue;
+        if (maxY < -uViewHalf.y - pad || minY > uViewHalf.y + pad) continue;
         vec2 pa = uv - a;
         vec2 ba = b - a;
         float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-5), 0.0, 1.0);
         float d = length(pa - ba * h) * minRes;
-        glow += on * (1.0 - smoothstep(0.35, 0.85, d)) * 0.16;
+        glow += (1.0 - smoothstep(0.35, 0.85, d)) * 0.16;
       }
       return glow;
     }
@@ -383,7 +400,7 @@
     return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
   }
 
-  function createRenderer(canvas, emit) {
+  function createRenderer(canvas) {
     const glAttrs = {
       alpha: false,
       depth: false,
@@ -424,9 +441,24 @@
         clusters = [];
       });
 
-    function packClusters(now) {
+    function starInView(b, wx, wy, wz, starR, minRes, renderW, renderH) {
+      const dx = wx - camX;
+      const dy = wy - camY;
+      const dz = wz - camZ;
+      const z = dx * b.fx + dy * b.fy + dz * b.fz;
+      if (z <= 0.05) return false;
+      const sx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
+      const sy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
+      const pad = (starR / z) * 8 + 0.18;
+      const halfX = renderW / (2 * minRes) + pad;
+      const halfY = renderH / (2 * minRes) + pad;
+      return Math.abs(sx) <= halfX && Math.abs(sy) <= halfY;
+    }
+
+    function packClusters(now, b, renderW, renderH) {
       const t = now * 0.001;
-      const placed = [];
+      const minRes = Math.min(renderW, renderH);
+      const candidates = [];
       for (let c = 0; c < clusters.length; c++) {
         const cluster = clusters[c];
         const pts = cluster.points || [];
@@ -439,43 +471,50 @@
         const ox = origin[0] + amp[0] * Math.sin(t * speed + phase);
         const oy = origin[1] + amp[1] * Math.sin(t * speed * 0.83 + phase + 1.1);
         const oz = origin[2] + amp[2] * Math.cos(t * speed * 0.71 + phase);
-        const dx = ox - camX;
-        const dy = oy - camY;
-        const dz = oz - camZ;
-        placed.push({
-          dist2: dx * dx + dy * dy + dz * dz,
-          ox,
-          oy,
-          oz,
-          pts,
-          radius: cluster.radius || STAR_RADIUS,
-        });
+        const clusterR = cluster.radius || STAR_RADIUS;
+        const visible = [];
+        let minDist2 = Infinity;
+        for (let i = 0; i < pts.length; i++) {
+          const p = pts[i];
+          const wx = ox + (p[0] || 0);
+          const wy = oy + (p[1] || 0);
+          const wz = oz + (p[2] || 0);
+          const sr = p[3] || clusterR;
+          if (!starInView(b, wx, wy, wz, sr, minRes, renderW, renderH)) continue;
+          const dx = wx - camX;
+          const dy = wy - camY;
+          const dz = wz - camZ;
+          const dist2 = dx * dx + dy * dy + dz * dz;
+          if (dist2 < minDist2) minDist2 = dist2;
+          visible.push({ wx, wy, wz, sr });
+        }
+        if (visible.length) candidates.push({ minDist2, visible });
       }
-      placed.sort((a, b) => a.dist2 - b.dist2);
+      candidates.sort((a, b) => a.minDist2 - b.minDist2);
       starCount = 0;
       lineCount = 0;
-      for (let c = 0; c < placed.length && starCount < MAX_STARS; c++) {
-        const cluster = placed[c];
+      for (let c = 0; c < candidates.length && starCount < MAX_STARS; c++) {
+        const cluster = candidates[c];
         const first = starCount;
-        for (let i = 0; i < cluster.pts.length && starCount < MAX_STARS; i++) {
-          const p = cluster.pts[i];
+        for (let i = 0; i < cluster.visible.length && starCount < MAX_STARS; i++) {
+          const star = cluster.visible[i];
           const o = starCount * 4;
-          starData[o] = cluster.ox + (p[0] || 0);
-          starData[o + 1] = cluster.oy + (p[1] || 0);
-          starData[o + 2] = cluster.oz + (p[2] || 0);
-          starData[o + 3] = p[3] || cluster.radius;
+          starData[o] = star.wx;
+          starData[o + 1] = star.wy;
+          starData[o + 2] = star.wz;
+          starData[o + 3] = star.sr;
           starCount++;
         }
         for (let i = first + 1; i < starCount && lineCount < MAX_LINES; i++) {
           const a = (i - 1) * 4;
-          const b = i * 4;
+          const bi = i * 4;
           const lo = lineCount * 3;
           lineAData[lo] = starData[a];
           lineAData[lo + 1] = starData[a + 1];
           lineAData[lo + 2] = starData[a + 2];
-          lineBData[lo] = starData[b];
-          lineBData[lo + 1] = starData[b + 1];
-          lineBData[lo + 2] = starData[b + 2];
+          lineBData[lo] = starData[bi];
+          lineBData[lo + 1] = starData[bi + 1];
+          lineBData[lo + 2] = starData[bi + 2];
           lineCount++;
         }
       }
@@ -512,6 +551,7 @@
         lineCount: gl.getUniformLocation(program, "uLineCount"),
         warp: gl.getUniformLocation(program, "uWarp"),
         warpCenter: gl.getUniformLocation(program, "uWarpCenter"),
+        viewHalf: gl.getUniformLocation(program, "uViewHalf"),
       },
     };
 
@@ -692,7 +732,6 @@
     let screenWarp = 0;
     let warpCenterX = 0;
     let warpCenterY = 0;
-    const mapPad = 48;
     let displayWidth = 0;
     let displayHeight = 0;
 
@@ -737,34 +776,6 @@
       }
     }
 
-    function mapReach() {
-      let reach = mapPad;
-      const cr = Math.hypot(camX, camZ);
-      if (cr * 1.2 > reach) reach = cr * 1.2;
-      for (let i = 0; i < starCount; i++) {
-        const sr = Math.hypot(starData[i * 4], starData[i * 4 + 2]);
-        if (sr * 1.05 > reach) reach = sr * 1.05;
-      }
-      return reach;
-    }
-
-    function emitHud() {
-      if (!emit || displayWidth <= 0 || displayHeight <= 0) return;
-      emit({
-        type: "hud",
-        map: {
-          camX,
-          camZ,
-          yaw: camYaw,
-          bounds: mapReach(),
-          stars: Array.from({ length: starCount }, (_, i) => [
-            starData[i * 4],
-            starData[i * 4 + 2],
-          ]),
-        },
-      });
-    }
-
     function renderScene(renderWidth, renderHeight, now) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
       gl.viewport(0, 0, renderWidth, renderHeight);
@@ -779,7 +790,13 @@
       gl.uniform3f(programInfo.uniformLocations.camFwd, b.fx, b.fy, b.fz);
       gl.uniform3f(programInfo.uniformLocations.camRight, b.rx, b.ry, b.rz);
       gl.uniform3f(programInfo.uniformLocations.camUp, b.ux, b.uy, b.uz);
-      packClusters(now);
+      const minRes = Math.min(renderWidth, renderHeight);
+      gl.uniform2f(
+        programInfo.uniformLocations.viewHalf,
+        renderWidth / (2 * minRes),
+        renderHeight / (2 * minRes)
+      );
+      packClusters(now, b, renderWidth, renderHeight);
       gl.uniform4fv(programInfo.uniformLocations.stars, starData);
       gl.uniform3fv(programInfo.uniformLocations.lineA, lineAData);
       gl.uniform3fv(programInfo.uniformLocations.lineB, lineBData);
@@ -957,7 +974,6 @@
 
       refreshViews();
       renderScene(renderWidth, renderHeight, now);
-      emitHud();
       if (readback(renderWidth, renderHeight)) {
         dither(renderWidth, renderHeight);
         present(renderWidth, renderHeight, true);
@@ -1000,13 +1016,6 @@
         keyU = keys.u ? 1 : 0;
         keyD = keys.d ? 1 : 0;
         keyBoost = keys.boost ? 1 : 0;
-      },
-      setNav(x, z) {
-        camX = x;
-        camZ = z;
-        lookYaw = Math.atan2(-camX, -camZ);
-        camYaw = lookYaw;
-        keepOut();
       },
       setHidden(value) {
         hidden = value;

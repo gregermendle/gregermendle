@@ -39,12 +39,4 @@
   #canvas {
     @apply fixed inset-0 w-screen h-screen z-10 pointer-events-none;
   }
-
-  .minimap {
-    @apply fixed top-5 right-5 z-20 w-[132px] h-[132px] border border-white bg-black cursor-crosshair;
-  }
-
-  .minimap canvas {
-    @apply block w-full h-full pointer-events-none;
-  }
 }

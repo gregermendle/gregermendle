@@ -35,49 +35,6 @@ function probeWorker() {
   });
 }
 
-const minimapEl = document.getElementById("minimap");
-const minimapCtx = document.getElementById("minimap-canvas").getContext("2d");
-let lastHud = null;
-
-function paintMinimap(map) {
-  if (!map || !minimapCtx) return;
-  const ctx = minimapCtx;
-  const size = 132;
-  const bounds = map.bounds || 40;
-  const to = (x, z) => [
-    ((x + bounds) / (bounds * 2)) * size,
-    ((z + bounds) / (bounds * 2)) * size,
-  ];
-  ctx.clearRect(0, 0, size, size);
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, size, size);
-  const hole = to(0, 0);
-  ctx.fillStyle = "#fff";
-  ctx.beginPath();
-  ctx.arc(hole[0], hole[1], 3, 0, Math.PI * 2);
-  ctx.fill();
-  const stars = map.stars || [];
-  for (let i = 0; i < stars.length; i++) {
-    const p = to(stars[i][0], stars[i][1]);
-    ctx.fillRect(p[0] - 0.5, p[1] - 0.5, 1.5, 1.5);
-  }
-  const c = to(map.camX || 0, map.camZ || 0);
-  const yaw = map.yaw || 0;
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(c[0] + Math.sin(yaw) * 8, c[1] + Math.cos(yaw) * 8);
-  ctx.lineTo(c[0] + Math.sin(yaw + 2.5) * 5, c[1] + Math.cos(yaw + 2.5) * 5);
-  ctx.lineTo(c[0] + Math.sin(yaw - 2.5) * 5, c[1] + Math.cos(yaw - 2.5) * 5);
-  ctx.closePath();
-  ctx.stroke();
-}
-
-function applyHud(data) {
-  lastHud = data;
-  if (data.map) paintMinimap(data.map);
-}
-
 function init() {
   const canvas = document.getElementById("canvas");
 
@@ -132,9 +89,6 @@ function init() {
     if (worker) {
       const offscreen = canvas.transferControlToOffscreen();
       worker.postMessage({ type: "init", canvas: offscreen }, [offscreen]);
-      worker.addEventListener("message", (event) => {
-        if (event.data && event.data.type === "hud") applyHud(event.data);
-      });
       let pointerX = 0;
       let pointerY = 0;
       let pointerDirty = false;
@@ -195,7 +149,7 @@ function init() {
     let renderer = null;
     try {
       await loadScript("/js/renderer.js");
-      renderer = self.createRenderer(canvas, applyHud);
+      renderer = self.createRenderer(canvas);
     } catch {
       renderer = null;
     }
@@ -222,9 +176,6 @@ function init() {
           break;
         case "keys":
           renderer.setKeys(msg);
-          break;
-        case "nav":
-          renderer.setNav(msg.x, msg.z);
           break;
         case "running":
           renderer.setRunning(msg.v);
@@ -326,35 +277,13 @@ function init() {
     }
   }
 
-  document.addEventListener("click", (e) => {
-    if (e.target.closest(".minimap")) return;
+  document.addEventListener("click", () => {
     lockPointer();
   });
 
   document.addEventListener("pointerlockchange", () => {
     lastLookX = null;
     lastLookY = null;
-  });
-
-  function mapToWorld(clientX, clientY) {
-    const rect = minimapEl.getBoundingClientRect();
-    const bounds = (lastHud && lastHud.map && lastHud.map.bounds) || 40;
-    const x = ((clientX - rect.left) / rect.width) * bounds * 2 - bounds;
-    const z = ((clientY - rect.top) / rect.height) * bounds * 2 - bounds;
-    return { x, z };
-  }
-
-  minimapEl.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    minimapEl.setPointerCapture(e.pointerId);
-    const w = mapToWorld(e.clientX, e.clientY);
-    send({ type: "nav", x: w.x, z: w.z });
-  });
-
-  minimapEl.addEventListener("pointermove", (e) => {
-    if ((e.buttons & 1) === 0) return;
-    const w = mapToWorld(e.clientX, e.clientY);
-    send({ type: "nav", x: w.x, z: w.z });
   });
 
   document.addEventListener("mousemove", (e) => {
@@ -367,7 +296,7 @@ function init() {
       send({ type: "pointer", x: 0.5, y: 0.5 });
       return;
     }
-    if (!e.target.closest(".minimap") && lastLookX !== null) {
+    if (lastLookX !== null) {
       send({
         type: "look",
         x: (e.clientX - lastLookX) * lookScale,

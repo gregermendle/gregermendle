@@ -605,26 +605,8 @@ body {
   width: 100vw;
 }
 
-.minimap {
-  position: fixed;
-  top: 1.25rem;
-  right: 1.25rem;
-  z-index: 20;
-  height: 132px;
-  width: 132px;
-  cursor: crosshair;
-  border-width: 1px;
-  --tw-border-opacity: 1;
-  border-color: rgb(255 255 255 / var(--tw-border-opacity));
-  --tw-bg-opacity: 1;
-  background-color: rgb(0 0 0 / var(--tw-bg-opacity));
-}
-
-.minimap canvas {
-  pointer-events: none;
-  display: block;
-  height: 100%;
-  width: 100%;
+.visible {
+  visibility: visible;
 }
 
 .\!hidden {

@@ -32,7 +32,7 @@ self.onmessage = (event) => {
       self.postMessage({ ok: canRender() });
       break;
     case "init":
-      renderer = self.createRenderer(msg.canvas, (data) => self.postMessage(data));
+      renderer = self.createRenderer(msg.canvas);
       break;
     case "size":
       if (renderer) renderer.setSize(msg.w, msg.h);
@@ -51,9 +51,6 @@ self.onmessage = (event) => {
       break;
     case "keys":
       if (renderer) renderer.setKeys(msg);
-      break;
-    case "nav":
-      if (renderer) renderer.setNav(msg.x, msg.z);
       break;
     case "running":
       if (renderer) renderer.setRunning(msg.v);
