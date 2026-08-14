@@ -39,19 +39,54 @@ function initBuffers(gl) {
   return { position: buffer };
 }
 
-function getFragmentShaderSource() {
+function marchStepSource() {
+  return `
+        r = length(p);
+        adaptiveStepSize = STEP_SIZE * max(1.0, r * 0.1);
+        if (r >= influenceRadius) return col;
+        rd = normalize(rd - p * (radius * adaptiveStepSize / (r * r * r)));
+        p += rd * adaptiveStepSize;
+        totalDist += adaptiveStepSize;
+        if (abs(p.y) < 0.12) {
+          float diskRadius = length(p.xz);
+          if (diskRadius > radius) {
+            float d = (diskRadius - radius) / radius;
+            float innerTemp = smoothstep(2.0, 4.0, d);
+            float outerTemp = smoothstep(4.0, 8.0, d);
+            float gray = mix(1.0, mix(0.4, 0.1, outerTemp), innerTemp);
+            vec4 diskCol = vec4(vec3(gray * exp(-d * 0.25)), 1.0) * exp(-totalDist * 0.12);
+            diskCol *= 1.0 + 0.08 * sin((atan(p.z, p.x) + tRot) * 8.0);
+            diskCol *= 0.75 + 0.08 * sin((atan(rd.x, rd.y) + tRot) * 8.0);
+            col += diskCol;
+          }
+        }
+        if (r < radius || totalDist > 100.0 || dot(col, col) > 100.0) return col;
+`;
+}
+
+function getShaders(webgl2) {
   const mobile = isMobile();
   const maxSteps = mobile ? 84 : 128;
   const stepSize = mobile ? 0.25 : 0.15;
+  const step = marchStepSource();
+  const loop = webgl2
+    ? `for (int i = 0; i < MAX_STEPS; i += 4) {${step}${step}${step}${step}      }`
+    : `for (int i = 0; i < MAX_STEPS; i++) {${step}      }`;
+  const ver = webgl2 ? "#version 300 es\n" : "";
+  const fragOut = webgl2 ? "out vec4 fragColor;\n" : "";
+  const writeColor = webgl2 ? "fragColor" : "gl_FragColor";
+  const attr = webgl2 ? "in" : "attribute";
+  const varyOut = webgl2 ? "out" : "varying";
+  const varyIn = webgl2 ? "in" : "varying";
+  const tex = webgl2 ? "texture" : "texture2D";
 
-  return `
-    precision highp float;
+  const fs = `${ver}precision highp float;
     uniform vec2 resolution;
     uniform float time;
     uniform vec2 mouse;
     uniform float progress;
     uniform float schwarzschildRadius;
-
+    ${fragOut}
     #define MAX_STEPS ${maxSteps}
     #define WARP_SIZE 0.25
     #define STEP_SIZE ${stepSize.toFixed(2)}
@@ -68,34 +103,11 @@ function getFragmentShaderSource() {
       float totalDist = jitter;
       float influenceRadius = radius * 50.0;
       float tRot = time * 0.3;
+      float adaptiveStepSize;
 
       if (r > influenceRadius && dot(rd, p) > 0.0) return col;
 
-      for (int i = 0; i < MAX_STEPS; i++) {
-        r = length(p);
-        float adaptiveStepSize = STEP_SIZE * max(1.0, r * 0.1);
-        if (r >= influenceRadius) return col;
-
-        rd = normalize(rd - p * (radius * adaptiveStepSize / (r * r * r)));
-        p += rd * adaptiveStepSize;
-        totalDist += adaptiveStepSize;
-
-        if (abs(p.y) < 0.12) {
-          float diskRadius = length(p.xz);
-          if (diskRadius > radius) {
-            float d = (diskRadius - radius) / radius;
-            float innerTemp = smoothstep(2.0, 4.0, d);
-            float outerTemp = smoothstep(4.0, 8.0, d);
-            float gray = mix(1.0, mix(0.4, 0.1, outerTemp), innerTemp);
-            vec4 diskCol = vec4(vec3(gray * exp(-d * 0.25)), 1.0) * exp(-totalDist * 0.12);
-            diskCol *= 1.0 + 0.08 * sin((atan(p.z, p.x) + tRot) * 8.0);
-            diskCol *= 0.75 + 0.08 * sin((atan(rd.x, rd.y) + tRot) * 8.0);
-            col += diskCol;
-          }
-        }
-
-        if (r < radius || totalDist > 100.0 || dot(col, col) > 100.0) return col;
-      }
+      ${loop}
       return col;
     }
 
@@ -108,31 +120,27 @@ function getFragmentShaderSource() {
       vec2 outward = normalize(muv - uv + 0.001) * warp * 2.0;
       vec3 ro = vec3(-1.0, 2.0, -10.0) + vec3(muv * 2.0, 0.0) + vec3(outward, 0.0);
       vec3 rd = normalize(vec3(uv, 1.0)) - vec3(0.0, 0.2, 0.0);
-      gl_FragColor = rayMarch(ro, rd, uv * aspect * 5.0, schwarzschildRadius * progress) * progress;
-    }
-  `;
+      ${writeColor} = rayMarch(ro, rd, uv * aspect * 5.0, schwarzschildRadius * progress) * progress;
+    }`;
+
+  const vs = `${ver}${attr} vec4 aVertexPosition;
+    void main() { gl_Position = aVertexPosition; }`;
+
+  const blitVs = `${ver}${attr} vec4 aVertexPosition;
+    ${varyOut} vec2 vTexCoord;
+    void main() {
+      gl_Position = aVertexPosition;
+      vTexCoord = aVertexPosition.xy * 0.5 + 0.5;
+    }`;
+
+  const blitFs = `${ver}precision highp float;
+    uniform sampler2D uTex;
+    ${varyIn} vec2 vTexCoord;
+    ${fragOut}
+    void main() { ${writeColor} = ${tex}(uTex, vTexCoord); }`;
+
+  return { vs, fs, blitVs, blitFs };
 }
-
-const VS_SOURCE = `
-  attribute vec4 aVertexPosition;
-  void main() { gl_Position = aVertexPosition; }
-`;
-
-const BLIT_VS = `
-  attribute vec4 aVertexPosition;
-  varying vec2 vTexCoord;
-  void main() {
-    gl_Position = aVertexPosition;
-    vTexCoord = aVertexPosition.xy * 0.5 + 0.5;
-  }
-`;
-
-const BLIT_FS = `
-  precision highp float;
-  uniform sampler2D uTex;
-  varying vec2 vTexCoord;
-  void main() { gl_FragColor = texture2D(uTex, vTexCoord); }
-`;
 
 const LUM_SCALE = 1 / 3;
 const E7 = 7 / 16;
@@ -142,8 +150,9 @@ const E1 = 1 / 16;
 const RENDER_SCALE = 1;
 
 let ditherWork, ditherOutput, ditherOut32, ditherSrc32;
+let wasmExports = null;
 
-function applyDithering(pixels, width, height) {
+function applyDitheringJS(pixels, width, height) {
   const n = width * height;
 
   if (!ditherWork || ditherWork.length < n) {
@@ -159,7 +168,6 @@ function applyDithering(pixels, width, height) {
   const out32 = ditherOut32;
   const src32 = ditherSrc32;
   const src = pixels;
-  const w = width;
   const lastX = width - 1;
   const lastY = height - 1;
 
@@ -177,9 +185,9 @@ function applyDithering(pixels, width, height) {
         if (oldVal !== 0) {
           if (x < lastX) work[i + 1] += oldVal * E7;
           if (notLastY) {
-            if (x > 0) work[i + w - 1] += oldVal * E3;
-            work[i + w] += oldVal * E5;
-            if (x < lastX) work[i + w + 1] += oldVal * E1;
+            if (x > 0) work[i + width - 1] += oldVal * E3;
+            work[i + width] += oldVal * E5;
+            if (x < lastX) work[i + width + 1] += oldVal * E1;
           }
         }
       } else {
@@ -187,9 +195,9 @@ function applyDithering(pixels, width, height) {
         out32[i] = src32[i] | 0xff000000;
         if (x < lastX) work[i + 1] += err * E7;
         if (notLastY) {
-          if (x > 0) work[i + w - 1] += err * E3;
-          work[i + w] += err * E5;
-          if (x < lastX) work[i + w + 1] += err * E1;
+          if (x > 0) work[i + width - 1] += err * E3;
+          work[i + width] += err * E5;
+          if (x < lastX) work[i + width + 1] += err * E1;
         }
       }
     }
@@ -198,36 +206,92 @@ function applyDithering(pixels, width, height) {
   return ditherOutput;
 }
 
-let framebuffer, sceneTexture, displayTexture, pixelBuffer;
+function wasmDitherViews(n) {
+  wasmExports.ensure(n * 12);
+  const buf = wasmExports.memory.buffer;
+  return {
+    src: new Uint8Array(buf, 0, n * 4),
+    dst: new Uint8Array(buf, n * 8, n * 4),
+  };
+}
 
-function initFramebuffer(gl, width, height) {
+function applyDithering(pixels, width, height) {
+  const n = width * height;
+  if (wasmExports) {
+    const views = wasmDitherViews(n);
+    if (pixels.buffer !== views.src.buffer || pixels.byteOffset !== 0) {
+      views.src.set(pixels);
+    }
+    wasmExports.dither(0, n * 4, n * 8, width, height);
+    return views.dst;
+  }
+  return applyDitheringJS(pixels, width, height);
+}
+
+async function loadWasmDither() {
+  try {
+    const res = await fetch("/js/dither.wasm");
+    const compiled = WebAssembly.instantiateStreaming
+      ? await WebAssembly.instantiateStreaming(res)
+      : await WebAssembly.instantiate(await res.arrayBuffer());
+    wasmExports = compiled.instance.exports;
+  } catch {
+    wasmExports = null;
+  }
+}
+
+let framebuffer, sceneTexture, displayTexture, pixelBuffer;
+let pbos = null;
+let pboIndex = 0;
+let pboHasPrev = false;
+
+function createTexture(gl, width, height) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return tex;
+}
+
+function destroyPbos(gl) {
+  if (!pbos) return;
+  gl.deleteBuffer(pbos[0]);
+  gl.deleteBuffer(pbos[1]);
+  pbos = null;
+  pboHasPrev = false;
+}
+
+function initFramebuffer(gl, width, height, webgl2) {
   if (framebuffer) {
     gl.deleteFramebuffer(framebuffer);
     gl.deleteTexture(sceneTexture);
     gl.deleteTexture(displayTexture);
   }
+  destroyPbos(gl);
 
-  sceneTexture = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, sceneTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-  displayTexture = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, displayTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
+  sceneTexture = createTexture(gl, width, height);
+  displayTexture = createTexture(gl, width, height);
   framebuffer = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneTexture, 0);
   pixelBuffer = new Uint8Array(width * height * 4);
   ditherSrc32 = null;
+  fboWidth = width;
+  fboHeight = height;
+
+  if (webgl2) {
+    const bytes = width * height * 4;
+    pbos = [gl.createBuffer(), gl.createBuffer()];
+    for (let i = 0; i < 2; i++) {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[i]);
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, bytes, gl.STREAM_READ);
+    }
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    pboIndex = 0;
+  }
 }
 
 function easeOutBack(x) {
@@ -239,6 +303,15 @@ function easeOutBack(x) {
 function bindQuad(gl, loc) {
   gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
   gl.enableVertexAttribArray(loc);
+}
+
+function blitDithered(gl, blitProgram, dithered, width, height, displayWidth, displayHeight) {
+  gl.bindTexture(gl.TEXTURE_2D, displayTexture);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, dithered);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, displayWidth, displayHeight);
+  gl.useProgram(blitProgram);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 }
 
 function init() {
@@ -257,9 +330,12 @@ function init() {
   const gl = canvas.getContext("webgl2", glAttrs) || canvas.getContext("webgl", glAttrs);
   if (!gl) return;
 
-  const program = initShaderProgram(gl, VS_SOURCE, getFragmentShaderSource());
-  const blitProgram = initShaderProgram(gl, BLIT_VS, BLIT_FS);
+  const webgl2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
+  const shaders = getShaders(webgl2);
+  const program = initShaderProgram(gl, shaders.vs, shaders.fs);
+  const blitProgram = initShaderProgram(gl, shaders.blitVs, shaders.blitFs);
   const buffers = initBuffers(gl);
+  loadWasmDither();
 
   const programInfo = {
     program,
@@ -274,13 +350,17 @@ function init() {
   };
 
   const blitAttrib = gl.getAttribLocation(blitProgram, "aVertexPosition");
-
   gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
   bindQuad(gl, programInfo.attribLocations.vertexPosition);
   if (blitAttrib !== programInfo.attribLocations.vertexPosition) {
     bindQuad(gl, blitAttrib);
   }
 
+  gl.disable(gl.BLEND);
+  gl.disable(gl.DEPTH_TEST);
+  gl.disable(gl.CULL_FACE);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.pixelStorei(gl.PACK_ALIGNMENT, 4);
   gl.useProgram(blitProgram);
   gl.uniform1i(gl.getUniformLocation(blitProgram, "uTex"), 0);
   gl.activeTexture(gl.TEXTURE0);
@@ -362,6 +442,24 @@ function init() {
     nextMouseY = 1 - e.clientY / window.innerHeight;
   }, { passive: true });
 
+  function renderScene(renderWidth, renderHeight, now) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.viewport(0, 0, renderWidth, renderHeight);
+    gl.useProgram(programInfo.program);
+    gl.uniform2f(programInfo.uniformLocations.resolution, renderWidth, renderHeight);
+    gl.uniform1f(programInfo.uniformLocations.time, now * 0.001);
+    gl.uniform1f(programInfo.uniformLocations.progress, easedProgress);
+    gl.uniform2f(programInfo.uniformLocations.mouse, mouseX, mouseY);
+    gl.uniform1f(programInfo.uniformLocations.schwarzschildRadius, schwarzschildRadius);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.flush();
+  }
+
+  function ditherAndBlit(src, renderWidth, renderHeight) {
+    const dithered = applyDithering(src, renderWidth, renderHeight);
+    blitDithered(gl, blitProgram, dithered, renderWidth, renderHeight, displayWidth, displayHeight);
+  }
+
   function render(now) {
     raf = 0;
     if (!webglEnabled || document.hidden) return;
@@ -386,38 +484,47 @@ function init() {
     if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
       canvas.width = displayWidth;
       canvas.height = displayHeight;
-      initFramebuffer(gl, renderWidth, renderHeight);
+      initFramebuffer(gl, renderWidth, renderHeight, webgl2);
     }
 
     if (!framebuffer && displayWidth > 0 && displayHeight > 0) {
       canvas.width = displayWidth;
       canvas.height = displayHeight;
-      initFramebuffer(gl, renderWidth, renderHeight);
+      initFramebuffer(gl, renderWidth, renderHeight, webgl2);
     }
 
     if (!framebuffer || canvas.width === 0 || canvas.height === 0) return;
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-    gl.viewport(0, 0, renderWidth, renderHeight);
-    gl.useProgram(programInfo.program);
-    gl.uniform2f(programInfo.uniformLocations.resolution, renderWidth, renderHeight);
-    gl.uniform1f(programInfo.uniformLocations.time, now * 0.001);
-    gl.uniform1f(programInfo.uniformLocations.progress, easedProgress);
-    gl.uniform2f(programInfo.uniformLocations.mouse, mouseX, mouseY);
-    gl.uniform1f(programInfo.uniformLocations.schwarzschildRadius, schwarzschildRadius);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    renderScene(renderWidth, renderHeight, now);
+
+    if (webgl2 && pbos) {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[pboIndex]);
+      gl.readPixels(0, 0, renderWidth, renderHeight, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+
+      if (pboHasPrev) {
+        const n = renderWidth * renderHeight;
+        const dest = wasmExports ? wasmDitherViews(n).src : pixelBuffer;
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[pboIndex ^ 1]);
+        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, dest);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        ditherAndBlit(dest, renderWidth, renderHeight);
+      } else {
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        pboHasPrev = true;
+      }
+      pboIndex ^= 1;
+      return;
+    }
+
+    if (wasmExports) {
+      const dest = wasmDitherViews(renderWidth * renderHeight).src;
+      gl.readPixels(0, 0, renderWidth, renderHeight, gl.RGBA, gl.UNSIGNED_BYTE, dest);
+      ditherAndBlit(dest, renderWidth, renderHeight);
+      return;
+    }
 
     gl.readPixels(0, 0, renderWidth, renderHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixelBuffer);
-
-    const dithered = applyDithering(pixelBuffer, renderWidth, renderHeight);
-
-    gl.bindTexture(gl.TEXTURE_2D, displayTexture);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, renderWidth, renderHeight, gl.RGBA, gl.UNSIGNED_BYTE, dithered);
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, displayWidth, displayHeight);
-    gl.useProgram(blitProgram);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    ditherAndBlit(pixelBuffer, renderWidth, renderHeight);
   }
 
   startLoop();

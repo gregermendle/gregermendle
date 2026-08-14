@@ -1,5 +1,14 @@
 name = "gregermendle"
 compatibility_date = "2024-08-13"
+workers_dev = false
+
+[[routes]]
+pattern = "gregermendle.com"
+custom_domain = true
+
+[[routes]]
+pattern = "www.gregermendle.com"
+custom_domain = true
 
 [assets]
 directory = "./dist"
