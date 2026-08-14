@@ -61,5 +61,11 @@ self.onmessage = (event) => {
     case "clusters":
       if (renderer) renderer.setClusters(msg.clusters);
       break;
+    case "timeScale":
+      if (renderer) {
+        if (msg.reset) renderer.resetTimeScale();
+        else renderer.adjustTimeScale(msg.factor);
+      }
+      break;
   }
 };

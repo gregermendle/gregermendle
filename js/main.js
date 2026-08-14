@@ -35,9 +35,23 @@ function probeWorker() {
   });
 }
 
-function showFps(n) {
+function formatTimeScale(timeScale) {
+  if (timeScale >= 1e9) return `${(timeScale / 1e9).toFixed(timeScale >= 1e10 ? 0 : 1)}G`;
+  if (timeScale >= 1e6) return `${(timeScale / 1e6).toFixed(timeScale >= 1e7 ? 0 : 1)}M`;
+  if (timeScale >= 1e3) return `${(timeScale / 1e3).toFixed(timeScale >= 1e4 ? 0 : 1)}K`;
+  if (timeScale >= 10) return timeScale.toFixed(0);
+  if (timeScale >= 1) return timeScale.toFixed(1);
+  return timeScale.toFixed(2);
+}
+
+function showFps(n, timeScale) {
   const el = document.getElementById("fps");
-  if (el) el.textContent = String(n);
+  if (!el) return;
+  if (timeScale != null && timeScale !== 1) {
+    el.textContent = `${n} · ${formatTimeScale(timeScale)}×`;
+    return;
+  }
+  el.textContent = String(n);
 }
 
 function init() {
@@ -103,7 +117,8 @@ function init() {
         worker.postMessage({ type: "clusters", clusters });
       });
       worker.onmessage = (event) => {
-        if (event.data && event.data.type === "fps") showFps(event.data.v);
+        const data = event.data;
+        if (data && data.type === "fps") showFps(data.v, data.time);
       };
       let pointerX = 0;
       let pointerY = 0;
@@ -166,7 +181,7 @@ function init() {
     try {
       await loadScript("/js/renderer.js");
       renderer = self.createRenderer(canvas, (data) => {
-        if (data && data.type === "fps") showFps(data.v);
+        if (data && data.type === "fps") showFps(data.v, data.time);
       });
       clustersPromise.then((clusters) => {
         if (renderer) renderer.setClusters(clusters);
@@ -203,6 +218,10 @@ function init() {
           break;
         case "hidden":
           renderer.setHidden(msg.v);
+          break;
+        case "timeScale":
+          if (msg.reset) renderer.resetTimeScale();
+          else renderer.adjustTimeScale(msg.factor);
           break;
       }
     });
@@ -272,7 +291,20 @@ function init() {
     return true;
   }
   document.addEventListener("keydown", (e) => {
-    if (e.repeat || !controlsActive()) return;
+    if (e.repeat) return;
+    if (e.key === "1") {
+      send({ type: "timeScale", factor: 0.1 });
+      return;
+    }
+    if (e.key === "2") {
+      send({ type: "timeScale", reset: true });
+      return;
+    }
+    if (e.key === "3") {
+      send({ type: "timeScale", factor: 10 });
+      return;
+    }
+    if (!controlsActive()) return;
     if (applyKey(e.key.toLowerCase(), true)) sendKeys();
   });
   document.addEventListener("keyup", (e) => {

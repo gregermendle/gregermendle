@@ -57,12 +57,16 @@
   const LENS_FAR_START = 80;
   const LENS_FAR_END = 320;
   const DISK_OCCLUDE_LUMA = 0.42;
-  const GRAV_G = 0.000045;
+  const GRAV_G = 0.0011;
   const GRAV_SOFT2 = 2.25;
-  const GRAV_RANGE2 = 720 * 720;
-  const GRAV_STEP = 0.00042;
-  const GRAV_BH_MASS = 9000;
-  const GRAV_STAR_MASS = 52000;
+  const GRAV_STEP = 28;
+  const GRAV_SUBSTEP_H = 0.045;
+  const GRAV_MAX_SUBSTEPS = 56;
+  const GRAV_FAST_MUL = 36;
+  const GRAV_BH_MASS = 280000;
+  const GRAV_STAR_MASS = 1800;
+  const SIM_TIME_MIN = 0.001;
+  const SIM_TIME_MAX = 1e12;
 
   function marchStepSource() {
     return `
@@ -220,23 +224,6 @@
       return col;
     }
 
-    float holeBeacon(vec2 uv, vec3 ro, float radius, float minRes) {
-      vec3 toH = -ro;
-      float z = dot(toH, camFwd);
-      if (z <= 1e-4) return 0.0;
-      vec2 sp = vec2(dot(toH, camRight), dot(toH, camUp)) / z;
-      float px = 1.0 / minRes;
-      float ang = max(radius * 8.0 / z, px * 1.15);
-      float pad = max(ang * 6.0, px * 4.0);
-      if (abs(sp.x) > uViewHalf.x + pad || abs(sp.y) > uViewHalf.y + pad) return 0.0;
-      float coreR = max(ang, px * 1.15);
-      float glowR = max(ang * 5.5, px * 3.4);
-      float d = length(uv - sp);
-      float core = smoothstep(coreR, coreR * 0.42, d);
-      float halo = exp(-d / max(glowR, 1e-5)) * 0.55;
-      return core + halo;
-    }
-
     void main() {
       float minRes = min(resolution.x, resolution.y);
       vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
@@ -249,12 +236,6 @@
       vec3 rd = uDeflectCount < 1 ? rd0 : deflectRay(ro, rd0, holeT);
       vec4 marched = rayMarch(ro, rd, uv * aspect * 5.0, radius);
       vec4 col = vec4(marched.rgb * progress, marched.a);
-      float dist = length(ro);
-      float beaconMix = smoothstep(50.0, 160.0, dist);
-      float marchLum = dot(col.rgb, vec3(0.333));
-      float fill = beaconMix * (1.0 - smoothstep(0.0, 0.12, marchLum));
-      float beacon = holeBeacon(uv, ro, radius, minRes) * progress * fill;
-      col.rgb = max(col.rgb, vec3(beacon));
       float mask = marched.a;
       ${webgl2 ? `${writeColor} = vec4(col.r, mask, 0.0, 1.0);` : `${writeColor} = vec4(col.rgb, mask);`}
     }`;
@@ -903,11 +884,17 @@
           const rm = r * r * r;
           pointMass[p] = rm * GRAV_STAR_MASS;
           const dist = Math.hypot(wx, wy, wz) || 1;
-          const spin = 0.82 + (((p * 2654435761) >>> 0) / 4294967296) * 0.36;
+          const spin = 0.97 + (((p * 2654435761) >>> 0) / 4294967296) * 0.03;
           const orbV = Math.sqrt(Math.max(1e-8, (GRAV_G * bhMassRef) / dist)) * spin;
-          worldVx[p] = (-wz / dist) * orbV;
-          worldVy[p] = ((((p * 1597334677) >>> 0) / 4294967296) - 0.5) * orbV * 0.08;
-          worldVz[p] = (wx / dist) * orbV;
+          let tx = -wz / dist;
+          let tz = wx / dist;
+          const tilt = ((((p * 1597334677) >>> 0) / 4294967296) - 0.5) * 0.14;
+          const ty = -tz * Math.sin(tilt);
+          tz = tz * Math.cos(tilt);
+          const tLen = Math.hypot(tx, ty, tz) || 1;
+          worldVx[p] = (tx / tLen) * orbV;
+          worldVy[p] = (ty / tLen) * orbV;
+          worldVz[p] = (tz / tLen) * orbV;
           const ext = Math.hypot(x, y, z) + r;
           if (ext > maxExt) maxExt = ext;
           p++;
@@ -1169,7 +1156,63 @@
       }
     }
 
-    function updateGravity(step) {
+    function rotateAroundAxis(px, py, pz, ax, ay, az, angle) {
+      const c = Math.cos(angle);
+      const s = Math.sin(angle);
+      const dot = px * ax + py * ay + pz * az;
+      const cx = ay * pz - az * py;
+      const cy = az * px - ax * pz;
+      const cz = ax * py - ay * px;
+      return [
+        px * c + cx * s + ax * dot * (1 - c),
+        py * c + cy * s + ay * dot * (1 - c),
+        pz * c + cz * s + az * dot * (1 - c),
+      ];
+    }
+
+    function advanceBhFast(i, dt, bhMass, wx, wy, wz, vx, vy, vz, g) {
+      const px = wx[i];
+      const py = wy[i];
+      const pz = wz[i];
+      const r = Math.hypot(px, py, pz);
+      if (r < 1e-4 || dt === 0) return;
+      const vxi = vx[i];
+      const vyi = vy[i];
+      const vzi = vz[i];
+      let lx = py * vzi - pz * vyi;
+      let ly = pz * vxi - px * vzi;
+      let lz = px * vyi - py * vxi;
+      let llen = Math.hypot(lx, ly, lz);
+      if (llen < 1e-10) {
+        lx = -pz;
+        ly = 0;
+        lz = px;
+        llen = Math.hypot(lx, ly, lz) || 1;
+      }
+      const angle = (llen / (r * r)) * dt;
+      if (Math.abs(angle) < 1e-14) return;
+      lx /= llen;
+      ly /= llen;
+      lz /= llen;
+      const rp = rotateAroundAxis(px, py, pz, lx, ly, lz, angle);
+      const rv = rotateAroundAxis(vxi, vyi, vzi, lx, ly, lz, angle);
+      wx[i] = rp[0];
+      wy[i] = rp[1];
+      wz[i] = rp[2];
+      vx[i] = rv[0];
+      vy[i] = rv[1];
+      vz[i] = rv[2];
+      const vc = Math.sqrt((g * bhMass) / r);
+      const vm = Math.hypot(vx[i], vy[i], vz[i]);
+      if (vm < vc * 0.995) {
+        const fall = 1 - ((vc - vm) / vc) * Math.min(0.0015 * dt, 0.04);
+        wx[i] *= fall;
+        wy[i] *= fall;
+        wz[i] *= fall;
+      }
+    }
+
+    function updateGravity(frameMs, timeMul) {
       const n = totalStars;
       const cc = clusterCount;
       if (!n || !cc) return;
@@ -1190,15 +1233,88 @@
       const cm = comMass;
       const g = GRAV_G;
       const eps2 = GRAV_SOFT2;
-      const range2 = GRAV_RANGE2;
       const bhMass = schwarzschildRadius * schwarzschildRadius * schwarzschildRadius * GRAV_BH_MASS;
-      const dt = step * GRAV_STEP;
-      let dx;
-      let dy;
-      let dz;
-      let r2;
-      let invR;
-      let f;
+      const orbitDt = frameMs * 0.001 * GRAV_STEP * timeMul;
+
+      if (timeMul >= GRAV_FAST_MUL) {
+        for (let i = 0; i < n; i++) {
+          advanceBhFast(i, orbitDt, bhMass, wx, wy, wz, vx, vy, vz, g);
+        }
+      } else {
+        let remain = orbitDt;
+        let dx;
+        let dy;
+        let dz;
+        let r2;
+        let invR;
+        let f;
+
+        for (let step = 0; step < GRAV_MAX_SUBSTEPS && remain > 1e-8; step++) {
+          const h = remain > GRAV_SUBSTEP_H ? GRAV_SUBSTEP_H : remain;
+          remain -= h;
+
+          fx.fill(0);
+          fy.fill(0);
+          fz.fill(0);
+          for (let i = 0; i < n; i++) {
+            const px = wx[i];
+            const py = wy[i];
+            const pz = wz[i];
+            dx = -px;
+            dy = -py;
+            dz = -pz;
+            r2 = dx * dx + dy * dy + dz * dz + eps2;
+            invR = 1 / Math.sqrt(r2);
+            f = g * bhMass * invR * invR * invR;
+            fx[i] = f * dx;
+            fy[i] = f * dy;
+            fz[i] = f * dz;
+          }
+
+          for (let c = 0; c < cc; c++) {
+            const start = pointStart[c];
+            const count = pointCount[c];
+            if (count < 2) continue;
+            const end = start + count;
+            for (let i = start; i < end; i++) {
+              const ix = wx[i];
+              const iy = wy[i];
+              const iz = wz[i];
+              const mi = mass[i];
+              for (let j = i + 1; j < end; j++) {
+                dx = wx[j] - ix;
+                dy = wy[j] - iy;
+                dz = wz[j] - iz;
+                r2 = dx * dx + dy * dy + dz * dz + eps2;
+                invR = 1 / Math.sqrt(r2);
+                f = g * invR * invR * invR;
+                const mj = mass[j];
+                const fxi = f * dx;
+                const fyi = f * dy;
+                const fzi = f * dz;
+                fx[i] += fxi * mj;
+                fy[i] += fyi * mj;
+                fz[i] += fzi * mj;
+                fx[j] -= fxi * mi;
+                fy[j] -= fyi * mi;
+                fz[j] -= fzi * mi;
+              }
+            }
+          }
+
+          for (let i = 0; i < n; i++) {
+            const invM = 1 / mass[i];
+            vx[i] += fx[i] * h * invM;
+            vy[i] += fy[i] * h * invM;
+            vz[i] += fz[i] * h * invM;
+          }
+          for (let i = 0; i < n; i++) {
+            wx[i] += vx[i] * h;
+            wy[i] += vy[i] * h;
+            wz[i] += vz[i] * h;
+          }
+        }
+      }
 
       cx.fill(0);
       cy.fill(0);
@@ -1214,102 +1330,10 @@
       }
       for (let c = 0; c < cc; c++) {
         const m = cm[c];
-        if (m > 0) {
-          cx[c] /= m;
-          cy[c] /= m;
-          cz[c] /= m;
-        }
-      }
-
-      fx.fill(0);
-      fy.fill(0);
-      fz.fill(0);
-      for (let i = 0; i < n; i++) {
-        const px = wx[i];
-        const py = wy[i];
-        const pz = wz[i];
-        const ci = starCluster[i];
-        let ax = 0;
-        let ay = 0;
-        let az = 0;
-
-        dx = -px;
-        dy = -py;
-        dz = -pz;
-        r2 = dx * dx + dy * dy + dz * dz + eps2;
-        invR = 1 / Math.sqrt(r2);
-        f = g * bhMass * invR * invR * invR;
-        ax += f * dx;
-        ay += f * dy;
-        az += f * dz;
-
-        for (let c = 0; c < cc; c++) {
-          if (c === ci) continue;
-          const mC = cm[c];
-          if (mC <= 0) continue;
-          dx = cx[c] - px;
-          dy = cy[c] - py;
-          dz = cz[c] - pz;
-          r2 = dx * dx + dy * dy + dz * dz;
-          if (r2 > range2) continue;
-          r2 += eps2;
-          invR = 1 / Math.sqrt(r2);
-          f = g * mC * invR * invR * invR;
-          ax += f * dx;
-          ay += f * dy;
-          az += f * dz;
-        }
-
-        fx[i] = ax;
-        fy[i] = ay;
-        fz[i] = az;
-      }
-
-      for (let c = 0; c < cc; c++) {
-        const start = pointStart[c];
-        const count = pointCount[c];
-        if (count < 2) continue;
-        const end = start + count;
-        for (let i = start; i < end; i++) {
-          const ix = wx[i];
-          const iy = wy[i];
-          const iz = wz[i];
-          const mi = mass[i];
-          for (let j = i + 1; j < end; j++) {
-            dx = wx[j] - ix;
-            dy = wy[j] - iy;
-            dz = wz[j] - iz;
-            r2 = dx * dx + dy * dy + dz * dz + eps2;
-            invR = 1 / Math.sqrt(r2);
-            f = g * invR * invR * invR;
-            const mj = mass[j];
-            const fxi = f * dx;
-            const fyi = f * dy;
-            const fzi = f * dz;
-            fx[i] += fxi * mj;
-            fy[i] += fyi * mj;
-            fz[i] += fzi * mj;
-            fx[j] -= fxi * mi;
-            fy[j] -= fyi * mi;
-            fz[j] -= fzi * mi;
-          }
-        }
-      }
-
-      for (let i = 0; i < n; i++) {
-        const m = mass[i];
-        const invM = 1 / m;
-        vx[i] += fx[i] * dt * invM;
-        vy[i] += fy[i] * dt * invM;
-        vz[i] += fz[i] * dt * invM;
-        wx[i] += vx[i] * dt;
-        wy[i] += vy[i] * dt;
-        wz[i] += vz[i] * dt;
-      }
-
-      for (let c = 0; c < cc; c++) {
-        const m = cm[c];
         if (m <= 0) continue;
+        cx[c] /= m;
+        cy[c] /= m;
+        cz[c] /= m;
         clusterOx[c] = cx[c];
         clusterOy[c] = cy[c];
         clusterOz[c] = cz[c];
@@ -1709,6 +1733,8 @@
     let haveTime = false;
     let fpsFrames = 0;
     let fpsLast = 0;
+    let simTimeScale = 1;
+    let simClock = 0;
     let progress = 0;
     let easedProgress = 0;
     const minRadius = 0.08;
@@ -1988,7 +2014,7 @@
       gl.useProgram(programInfo.program);
       bindFullscreen();
       gl.uniform2f(programInfo.uniformLocations.resolution, renderWidth, renderHeight);
-      gl.uniform1f(programInfo.uniformLocations.time, now * 0.001);
+      gl.uniform1f(programInfo.uniformLocations.time, simClock);
       gl.uniform1f(programInfo.uniformLocations.progress, easedProgress);
       gl.uniform2f(programInfo.uniformLocations.mouse, mouseX, mouseY);
       gl.uniform1f(programInfo.uniformLocations.schwarzschildRadius, schwarzschildRadius);
@@ -2092,22 +2118,24 @@
       if (!fpsLast) fpsLast = t;
       const elapsed = t - fpsLast;
       if (elapsed >= 500) {
-        if (emit) emit({ type: "fps", v: Math.round((fpsFrames * 1000) / elapsed) });
+        if (emit) emit({ type: "fps", v: Math.round((fpsFrames * 1000) / elapsed), time: simTimeScale });
         fpsFrames = 0;
         fpsLast = t;
       }
 
+      let frameMs = 16;
       let timeScale;
       if (!haveTime) {
         haveTime = true;
         prevNow = now;
         timeScale = 15;
       } else {
-        const dt = now - prevNow;
+        frameMs = Math.min(50, Math.max(1, now - prevNow));
         prevNow = now;
-        timeScale = Math.abs(1 - (dt - 1));
+        timeScale = Math.abs(1 - (frameMs - 1));
         if (timeScale > 32) timeScale = 32;
       }
+      simClock += frameMs * 0.001 * simTimeScale;
 
       if (progress < 1) {
         progress = Math.min(1, progress + 0.0025);
@@ -2164,7 +2192,7 @@
       camY += velY * timeScale;
       camZ += velZ * timeScale;
       keepOut();
-      updateGravity(timeScale);
+      updateGravity(frameMs, simTimeScale);
 
       if (displayWidth <= 0 || displayHeight <= 0) return;
 
@@ -2204,6 +2232,12 @@
       },
       adjustRadius(delta) {
         targetRadius = Math.max(minRadius, Math.min(maxRadius, targetRadius + delta));
+      },
+      adjustTimeScale(factor) {
+        simTimeScale = Math.max(SIM_TIME_MIN, Math.min(SIM_TIME_MAX, simTimeScale * factor));
+      },
+      resetTimeScale() {
+        simTimeScale = 1;
       },
       look(dx, dy) {
         lookYaw += dx;
