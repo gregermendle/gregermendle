@@ -215,6 +215,7 @@ function init() {
   const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const webglEnabled = !prefersReducedMotion;
   canvas.style.display = webglEnabled ? "" : "none";
+  const isMobile = window.matchMedia("(pointer: coarse)").matches;
 
   let lastTouchY = 0;
 
@@ -229,6 +230,7 @@ function init() {
   document.addEventListener(
     "wheel",
     (e) => {
+      if (!controlsActive()) return;
       send({ type: "thrust", d: -e.deltaY * 0.004 });
     },
     { passive: true }
@@ -270,10 +272,11 @@ function init() {
     return true;
   }
   document.addEventListener("keydown", (e) => {
-    if (e.repeat) return;
+    if (e.repeat || !controlsActive()) return;
     if (applyKey(e.key.toLowerCase(), true)) sendKeys();
   });
   document.addEventListener("keyup", (e) => {
+    if (!controlsActive()) return;
     if (applyKey(e.key.toLowerCase(), false)) sendKeys();
   });
   window.addEventListener("blur", () => {
@@ -287,6 +290,10 @@ function init() {
 
   function pointerLocked() {
     return Boolean(document.pointerLockElement);
+  }
+
+  function controlsActive() {
+    return isMobile || pointerLocked();
   }
 
   function lockPointer() {
@@ -305,6 +312,10 @@ function init() {
   document.addEventListener("pointerlockchange", () => {
     lastLookX = null;
     lastLookY = null;
+    if (!controlsActive()) {
+      keys.f = keys.b = keys.l = keys.r = keys.u = keys.d = keys.boost = false;
+      sendKeys();
+    }
   });
 
   document.addEventListener("mousemove", (e) => {
@@ -315,6 +326,16 @@ function init() {
         y: e.movementY * lookScale,
       });
       send({ type: "pointer", x: 0.5, y: 0.5 });
+      return;
+    }
+    if (!isMobile && lastLookX !== null) {
+      lastLookX = e.clientX;
+      lastLookY = e.clientY;
+      send({
+        type: "pointer",
+        x: e.clientX / window.innerWidth,
+        y: 1 - e.clientY / window.innerHeight,
+      });
       return;
     }
     if (lastLookX !== null) {

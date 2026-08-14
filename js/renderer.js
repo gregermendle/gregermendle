@@ -57,6 +57,12 @@
   const LENS_FAR_START = 80;
   const LENS_FAR_END = 320;
   const DISK_OCCLUDE_LUMA = 0.42;
+  const GRAV_G = 0.000045;
+  const GRAV_SOFT2 = 2.25;
+  const GRAV_RANGE2 = 720 * 720;
+  const GRAV_STEP = 0.00042;
+  const GRAV_BH_MASS = 9000;
+  const GRAV_STAR_MASS = 52000;
 
   function marchStepSource() {
     return `
@@ -747,9 +753,11 @@
     let starVertCount = 0;
     let starFrontCount = 0;
     let lineVertCount = 0;
+    let lineFrontCount = 0;
     let starGeom = new Float32Array(10 * 6 * 256);
     let starGeomFront = new Float32Array(10 * 6 * 64);
     let lineGeom = new Float32Array(4 * 6 * 256);
+    let lineGeomFront = new Float32Array(4 * 6 * 64);
     let dustGeom = new Float32Array(9 * 6 * 128);
     let dustGeomFront = new Float32Array(9 * 6 * 32);
     let dustVertCount = 0;
@@ -776,6 +784,22 @@
     let pointCr = new Float32Array(0);
     let pointCg = new Float32Array(0);
     let pointCb = new Float32Array(0);
+    let worldX = new Float32Array(0);
+    let worldY = new Float32Array(0);
+    let worldZ = new Float32Array(0);
+    let worldVx = new Float32Array(0);
+    let worldVy = new Float32Array(0);
+    let worldVz = new Float32Array(0);
+    let pointMass = new Float32Array(0);
+    let starCluster = new Int16Array(0);
+    let comX = new Float32Array(0);
+    let comY = new Float32Array(0);
+    let comZ = new Float32Array(0);
+    let comMass = new Float32Array(0);
+    let physFx = new Float32Array(0);
+    let physFy = new Float32Array(0);
+    let physFz = new Float32Array(0);
+    let totalStars = 0;
     let dustCount = new Int32Array(0);
     let dustRadius = new Float32Array(0);
     let dustSize = new Float32Array(0);
@@ -818,6 +842,23 @@
       pointCr = new Float32Array(totalPts);
       pointCg = new Float32Array(totalPts);
       pointCb = new Float32Array(totalPts);
+      worldX = new Float32Array(totalPts);
+      worldY = new Float32Array(totalPts);
+      worldZ = new Float32Array(totalPts);
+      worldVx = new Float32Array(totalPts);
+      worldVy = new Float32Array(totalPts);
+      worldVz = new Float32Array(totalPts);
+      pointMass = new Float32Array(totalPts);
+      starCluster = new Int16Array(totalPts);
+      comX = new Float32Array(clusterCount);
+      comY = new Float32Array(clusterCount);
+      comZ = new Float32Array(clusterCount);
+      comMass = new Float32Array(clusterCount);
+      physFx = new Float32Array(totalPts);
+      physFy = new Float32Array(totalPts);
+      physFz = new Float32Array(totalPts);
+      totalStars = totalPts;
+      const bhMassRef = RS_REF * RS_REF * RS_REF * GRAV_BH_MASS;
       let p = 0;
       for (let c = 0; c < clusterCount; c++) {
         const cluster = src[c] || {};
@@ -852,6 +893,21 @@
           pointCr[p] = pt[4] == null ? 1 : pt[4];
           pointCg[p] = pt[5] == null ? 1 : pt[5];
           pointCb[p] = pt[6] == null ? 1 : pt[6];
+          const wx = (clusterOx[c] || 0) + x;
+          const wy = (clusterOy[c] || 0) + y;
+          const wz = (clusterOz[c] || 0) + z;
+          worldX[p] = wx;
+          worldY[p] = wy;
+          worldZ[p] = wz;
+          starCluster[p] = c;
+          const rm = r * r * r;
+          pointMass[p] = rm * GRAV_STAR_MASS;
+          const dist = Math.hypot(wx, wy, wz) || 1;
+          const spin = 0.82 + (((p * 2654435761) >>> 0) / 4294967296) * 0.36;
+          const orbV = Math.sqrt(Math.max(1e-8, (GRAV_G * bhMassRef) / dist)) * spin;
+          worldVx[p] = (-wz / dist) * orbV;
+          worldVy[p] = ((((p * 1597334677) >>> 0) / 4294967296) - 0.5) * orbV * 0.08;
+          worldVz[p] = (wx / dist) * orbV;
           const ext = Math.hypot(x, y, z) + r;
           if (ext > maxExt) maxExt = ext;
           p++;
@@ -1046,7 +1102,7 @@
       }
     }
 
-    function emitLineQuad(ax, ay, bx, by, z, minRes) {
+    function emitLineQuad(ax, ay, bx, by, z, minRes, front) {
       const dx = bx - ax;
       const dy = by - ay;
       const len = Math.hypot(dx, dy) || 1e-5;
@@ -1061,17 +1117,21 @@
       const y2 = by - ny;
       const x3 = bx + nx;
       const y3 = by + ny;
-      const need = lineVertCount * 4 + 24;
-      lineGeom = growFloat(lineGeom, need);
+      const count = front ? lineFrontCount : lineVertCount;
+      const need = count * 4 + 24;
+      if (front) lineGeomFront = growFloat(lineGeomFront, need);
+      else lineGeom = growFloat(lineGeom, need);
+      const geom = front ? lineGeomFront : lineGeom;
       const verts = [x0, y0, -0.85, x1, y1, 0.85, x2, y2, -0.85, x2, y2, -0.85, x1, y1, 0.85, x3, y3, 0.85];
       for (let i = 0; i < 6; i++) {
-        const o = lineVertCount * 4;
-        lineGeom[o] = verts[i * 3];
-        lineGeom[o + 1] = verts[i * 3 + 1];
-        lineGeom[o + 2] = z;
-        lineGeom[o + 3] = verts[i * 3 + 2];
-        lineVertCount++;
+        const o = count * 4 + i * 4;
+        geom[o] = verts[i * 3];
+        geom[o + 1] = verts[i * 3 + 1];
+        geom[o + 2] = z;
+        geom[o + 3] = verts[i * 3 + 2];
       }
+      if (front) lineFrontCount += 6;
+      else lineVertCount += 6;
     }
 
     function considerDeflect(wx, wy, wz, sr, z, px) {
@@ -1109,14 +1169,168 @@
       }
     }
 
+    function updateGravity(step) {
+      const n = totalStars;
+      const cc = clusterCount;
+      if (!n || !cc) return;
+
+      const wx = worldX;
+      const wy = worldY;
+      const wz = worldZ;
+      const vx = worldVx;
+      const vy = worldVy;
+      const vz = worldVz;
+      const mass = pointMass;
+      const fx = physFx;
+      const fy = physFy;
+      const fz = physFz;
+      const cx = comX;
+      const cy = comY;
+      const cz = comZ;
+      const cm = comMass;
+      const g = GRAV_G;
+      const eps2 = GRAV_SOFT2;
+      const range2 = GRAV_RANGE2;
+      const bhMass = schwarzschildRadius * schwarzschildRadius * schwarzschildRadius * GRAV_BH_MASS;
+      const dt = step * GRAV_STEP;
+      let dx;
+      let dy;
+      let dz;
+      let r2;
+      let invR;
+      let f;
+
+      cx.fill(0);
+      cy.fill(0);
+      cz.fill(0);
+      cm.fill(0);
+      for (let i = 0; i < n; i++) {
+        const m = mass[i];
+        const c = starCluster[i];
+        cx[c] += wx[i] * m;
+        cy[c] += wy[i] * m;
+        cz[c] += wz[i] * m;
+        cm[c] += m;
+      }
+      for (let c = 0; c < cc; c++) {
+        const m = cm[c];
+        if (m > 0) {
+          cx[c] /= m;
+          cy[c] /= m;
+          cz[c] /= m;
+        }
+      }
+
+      fx.fill(0);
+      fy.fill(0);
+      fz.fill(0);
+      for (let i = 0; i < n; i++) {
+        const px = wx[i];
+        const py = wy[i];
+        const pz = wz[i];
+        const ci = starCluster[i];
+        let ax = 0;
+        let ay = 0;
+        let az = 0;
+
+        dx = -px;
+        dy = -py;
+        dz = -pz;
+        r2 = dx * dx + dy * dy + dz * dz + eps2;
+        invR = 1 / Math.sqrt(r2);
+        f = g * bhMass * invR * invR * invR;
+        ax += f * dx;
+        ay += f * dy;
+        az += f * dz;
+
+        for (let c = 0; c < cc; c++) {
+          if (c === ci) continue;
+          const mC = cm[c];
+          if (mC <= 0) continue;
+          dx = cx[c] - px;
+          dy = cy[c] - py;
+          dz = cz[c] - pz;
+          r2 = dx * dx + dy * dy + dz * dz;
+          if (r2 > range2) continue;
+          r2 += eps2;
+          invR = 1 / Math.sqrt(r2);
+          f = g * mC * invR * invR * invR;
+          ax += f * dx;
+          ay += f * dy;
+          az += f * dz;
+        }
+
+        fx[i] = ax;
+        fy[i] = ay;
+        fz[i] = az;
+      }
+
+      for (let c = 0; c < cc; c++) {
+        const start = pointStart[c];
+        const count = pointCount[c];
+        if (count < 2) continue;
+        const end = start + count;
+        for (let i = start; i < end; i++) {
+          const ix = wx[i];
+          const iy = wy[i];
+          const iz = wz[i];
+          const mi = mass[i];
+          for (let j = i + 1; j < end; j++) {
+            dx = wx[j] - ix;
+            dy = wy[j] - iy;
+            dz = wz[j] - iz;
+            r2 = dx * dx + dy * dy + dz * dz + eps2;
+            invR = 1 / Math.sqrt(r2);
+            f = g * invR * invR * invR;
+            const mj = mass[j];
+            const fxi = f * dx;
+            const fyi = f * dy;
+            const fzi = f * dz;
+            fx[i] += fxi * mj;
+            fy[i] += fyi * mj;
+            fz[i] += fzi * mj;
+            fx[j] -= fxi * mi;
+            fy[j] -= fyi * mi;
+            fz[j] -= fzi * mi;
+          }
+        }
+      }
+
+      for (let i = 0; i < n; i++) {
+        const m = mass[i];
+        const invM = 1 / m;
+        vx[i] += fx[i] * dt * invM;
+        vy[i] += fy[i] * dt * invM;
+        vz[i] += fz[i] * dt * invM;
+        wx[i] += vx[i] * dt;
+        wy[i] += vy[i] * dt;
+        wz[i] += vz[i] * dt;
+      }
+
+      for (let c = 0; c < cc; c++) {
+        const m = cm[c];
+        if (m <= 0) continue;
+        clusterOx[c] = cx[c];
+        clusterOy[c] = cy[c];
+        clusterOz[c] = cz[c];
+        const start = pointStart[c];
+        const end = start + pointCount[c];
+        for (let i = start; i < end; i++) {
+          pointX[i] = wx[i] - cx[c];
+          pointY[i] = wy[i] - cy[c];
+          pointZ[i] = wz[i] - cz[c];
+        }
+      }
+    }
+
     function packScene(now, b, renderW, renderH, radius) {
-      const t = now * 0.001;
       const minRes = Math.min(renderW, renderH);
       const px = 1 / minRes;
       const holeZ = -camX * b.fx - camY * b.fy - camZ * b.fz;
       starVertCount = 0;
       starFrontCount = 0;
       lineVertCount = 0;
+      lineFrontCount = 0;
       dustVertCount = 0;
       dustFrontCount = 0;
       deflectCount = 0;
@@ -1137,30 +1351,33 @@
         ) {
           continue;
         }
-        const speed = clusterSpeed[c];
-        const phase = clusterPhase[c];
-        const ox = clusterOx[c] + clusterAmpX[c] * Math.sin(t * speed + phase);
-        const oy = clusterOy[c] + clusterAmpY[c] * Math.sin(t * speed * 0.83 + phase + 1.1);
-        const oz = clusterOz[c] + clusterAmpZ[c] * Math.cos(t * speed * 0.71 + phase);
+        const ox = clusterOx[c];
+        const oy = clusterOy[c];
+        const oz = clusterOz[c];
         if (!clusterInView(b, ox, oy, oz, clusterBound[c], minRes, renderW, renderH)) continue;
         emitClusterDust(c, ox, oy, oz, b, minRes, renderW, renderH, holeZ);
         const start = pointStart[c];
-        let prevOn = false;
+        const maxSpan = clusterBound[c] * 1.75 + 6;
+        let prevPi = -1;
         let prevAx = 0;
         let prevAy = 0;
+        let prevWx = 0;
+        let prevWy = 0;
+        let prevWz = 0;
         let prevZ = 0;
+        let prevBehind = false;
         for (let i = 0; i < npts; i++) {
           const pi = start + i;
-          const wx = ox + pointX[pi];
-          const wy = oy + pointY[pi];
-          const wz = oz + pointZ[pi];
+          const wx = worldX[pi];
+          const wy = worldY[pi];
+          const wz = worldZ[pi];
           const sr = pointR[pi];
           const displaySr = sr * (schwarzschildRadius / RS_REF);
           const scr = pointCr[pi];
           const scg = pointCg[pi];
           const scb = pointCb[pi];
           if (!starInView(b, wx, wy, wz, displaySr, minRes, renderW, renderH)) {
-            prevOn = false;
+            prevPi = -1;
             continue;
           }
           const dx = wx - camX;
@@ -1174,13 +1391,20 @@
           if (!behind) emitStarTo("starGeomFront", "front", spx, spy, z, ang, 0, scr, scg, scb);
           else emitStarQuad(spx, spy, z, ang, 0, scr, scg, scb);
           considerDeflect(wx, wy, wz, sr, z, px);
-          if (prevOn) {
-            emitLineQuad(prevAx, prevAy, spx, spy, Math.min(prevZ, z), minRes);
+          if (prevPi >= 0 && pi === prevPi + 1 && behind === prevBehind) {
+            const span = Math.hypot(wx - prevWx, wy - prevWy, wz - prevWz);
+            if (span <= maxSpan) {
+              emitLineQuad(prevAx, prevAy, spx, spy, Math.min(prevZ, z), minRes, !behind);
+            }
           }
-          prevOn = true;
+          prevPi = pi;
           prevAx = spx;
           prevAy = spy;
+          prevWx = wx;
+          prevWy = wy;
+          prevWz = wz;
           prevZ = z;
+          prevBehind = behind;
         }
       }
     }
@@ -1595,8 +1819,8 @@
       gl.drawArrays(gl.TRIANGLES, 0, count);
     }
 
-    function drawLineGeom(renderWidth, renderHeight, b, useMask) {
-      if (!lineVertCount) return;
+    function drawLineGeom(geom, count, renderWidth, renderHeight, b, useMask) {
+      if (!count) return;
       disableAttrib(starAttribs.corner);
       disableAttrib(starAttribs.star);
       disableAttrib(starAttribs.color);
@@ -1609,13 +1833,13 @@
       gl.uniform1i(lineUniforms.mask, 0);
       gl.uniform1f(lineUniforms.useMask, useMask ? 1 : 0);
       gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, lineGeom.subarray(0, lineVertCount * 4), gl.STREAM_DRAW);
+      gl.bufferData(gl.ARRAY_BUFFER, geom.subarray(0, count * 4), gl.STREAM_DRAW);
       const stride = 16;
       gl.vertexAttribPointer(lineAttribs.pos, 2, gl.FLOAT, false, stride, 0);
       gl.enableVertexAttribArray(lineAttribs.pos);
       gl.vertexAttribPointer(lineAttribs.meta, 2, gl.FLOAT, false, stride, 8);
       gl.enableVertexAttribArray(lineAttribs.meta);
-      gl.drawArrays(gl.TRIANGLES, 0, lineVertCount);
+      gl.drawArrays(gl.TRIANGLES, 0, count);
     }
 
     function blitScene(renderWidth, renderHeight) {
@@ -1639,10 +1863,10 @@
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE);
         drawStarGeom(starGeom, starVertCount, renderWidth, renderHeight, b, false, false);
-        drawLineGeom(renderWidth, renderHeight, b, false);
+        drawLineGeom(lineGeom, lineVertCount, renderWidth, renderHeight, b, false);
       }
       blitScene(renderWidth, renderHeight);
-      if (!starVertCount && !lineVertCount && !starFrontCount) return;
+      if (!starVertCount && !lineVertCount && !starFrontCount && !lineFrontCount) return;
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE);
       if (starVertCount || lineVertCount) {
@@ -1672,6 +1896,7 @@
         gl.bindTexture(gl.TEXTURE_2D, sceneTexture);
       }
       drawStarGeom(starGeomFront, starFrontCount, renderWidth, renderHeight, b, false, true);
+      drawLineGeom(lineGeomFront, lineFrontCount, renderWidth, renderHeight, b, true);
       gl.disable(gl.BLEND);
     }
 
@@ -1939,6 +2164,7 @@
       camY += velY * timeScale;
       camZ += velZ * timeScale;
       keepOut();
+      updateGravity(timeScale);
 
       if (displayWidth <= 0 || displayHeight <= 0) return;
 
