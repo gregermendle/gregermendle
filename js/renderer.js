@@ -48,10 +48,8 @@
 
   function marchStepSource() {
     return `
-        stepCount += 1.0;
-        if (stepCount > marchBudget) return col * marchGain;
         r = length(p);
-        adaptiveStepSize = STEP_SIZE * max(1.0, r * 0.1) * stepMul;
+        adaptiveStepSize = STEP_SIZE * max(1.0, r * 0.1);
         if (r < influenceRadius) {
           rd = normalize(rd - p * (radius * adaptiveStepSize / (r * r * r)));
         }
@@ -75,7 +73,7 @@
             col += diskCol;
           }
         }
-        if (r < radius || totalDist > 100.0 || dot(col, col) > 100.0) return col * marchGain;
+        if (r < radius || totalDist > 100.0 || dot(col, col) > 100.0) return col;
 `;
   }
 
@@ -134,10 +132,6 @@
       float tExit = -b + sqrt(h);
       if (tExit < 0.0) return vec4(0.0);
       float tEnter = max(-b - sqrt(h), 0.0);
-      float lod = smoothstep(10.0, 36.0, length(ro));
-      float marchBudget = mix(float(MAX_STEPS), float(MAX_STEPS) * 0.35, lod);
-      float stepMul = mix(1.0, 2.4, lod);
-      float marchGain = mix(1.0, 0.55, lod);
       float jitter = hash(uv) * STEP_SIZE;
       vec3 p = ro + rd * (tEnter + jitter);
       float r = length(p);
@@ -146,10 +140,9 @@
       float tRot = time * 0.3;
       float adaptiveStepSize;
       vec3 prevP;
-      float stepCount = 0.0;
 
       ${loop}
-      return col * marchGain;
+      return col;
     }
 
     vec2 projectStar(vec3 w, vec3 ro) {
