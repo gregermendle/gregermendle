@@ -336,8 +336,8 @@ function init() {
   let prevNow = 0, progress = 0;
   const minRadius = 0.25;
   const maxRadius = 1.2;
-  let schwarzschildRadius = isMobile() ? 0.6 : 0.4;
-  let targetRadius = schwarzschildRadius;
+  let schwarzschildRadius = maxRadius;
+  let targetRadius = maxRadius;
   let lastTouchY = 0;
   function adjustRadius(delta) {
     targetRadius = Math.max(minRadius, Math.min(maxRadius, targetRadius + delta));
