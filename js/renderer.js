@@ -1119,6 +1119,7 @@
       gl.uniform1i(programInfo.uniformLocations.deflectCount, deflectCount);
       gl.uniform1i(programInfo.uniformLocations.micro, micro);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.flush();
     }
 
     function present(width, height, upload) {
