@@ -103,12 +103,13 @@ function dustColor(rng) {
 }
 
 function buildDust(rng) {
-  if (rng() < 0.22) return null;
+  if (rng() < 0.38) return null;
+  const radius = 3.8 + rng() * 6.5;
   return {
-    count: 5 + ((rng() * 9) | 0),
-    radius: round1(2.2 + rng() * 5.5),
-    size: round3(0.55 + rng() * 1.1),
-    opacity: round3(0.028 + rng() * 0.03),
+    count: 12 + ((rng() * 10) | 0),
+    radius: round1(radius),
+    size: round3(radius * (0.32 + rng() * 0.16)),
+    opacity: round3(0.034 + rng() * 0.018),
     color: dustColor(rng),
   };
 }

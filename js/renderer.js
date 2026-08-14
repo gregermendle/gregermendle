@@ -843,13 +843,13 @@
         if (dust && (dust.count | 0) > 0) {
           const col = dust.color || [1, 1, 1];
           dustCount[c] = dust.count | 0;
-          dustRadius[c] = dust.radius || 3;
-          dustSize[c] = dust.size || 0.7;
+          dustRadius[c] = dust.radius || 5;
+          dustSize[c] = dust.size || 1.6;
           dustGain[c] = Math.max(0, dust.opacity == null ? 0.04 : dust.opacity);
           dustR[c] = col[0] == null ? 1 : col[0];
           dustG[c] = col[1] == null ? 1 : col[1];
           dustB[c] = col[2] == null ? 1 : col[2];
-          const dustExt = dustRadius[c] + dustSize[c];
+          const dustExt = dustRadius[c] + dustSize[c] * 1.4;
           if (dustExt > maxExt) maxExt = dustExt;
         }
         clusterBound[c] = maxExt;
@@ -1003,23 +1003,25 @@
         const w = dustHash(c, i, 2);
         const theta = u * Math.PI * 2;
         const zN = v * 2 - 1;
-        const rxy = Math.sqrt(Math.max(0, 1 - zN * zN)) * Math.cbrt(w);
+        const rxy = Math.sqrt(Math.max(0, 1 - zN * zN)) * Math.pow(w, 0.62);
         const r = rad * rxy;
         const wx = ox + Math.cos(theta) * r;
-        const wy = oy + zN * rad * 0.28;
+        const wy = oy + zN * rad * 0.4;
         const wz = oz + Math.sin(theta) * r;
-        if (!starInView(b, wx, wy, wz, size, minRes, renderW, renderH)) continue;
+        const puff = size * (0.55 + dustHash(c, i, 4) * 0.85);
+        if (!starInView(b, wx, wy, wz, puff, minRes, renderW, renderH)) continue;
         const dx = wx - camX;
         const dy = wy - camY;
         const dz = wz - camZ;
         const z = dx * b.fx + dy * b.fy + dz * b.fz;
         const spx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
         const spy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
-        const ang = size / Math.max(z, size * 0.35);
+        const ang = puff / Math.max(z, puff * 0.35);
         const j = dustHash(c, i, 3) * 0.28 - 0.1;
-        const cr = Math.min(1, Math.max(0, dustR[c] + j)) * gain;
-        const cg = Math.min(1, Math.max(0, dustG[c] + j * 0.7)) * gain;
-        const cb = Math.min(1, Math.max(0, dustB[c] + j * 0.45)) * gain;
+        const puffGain = gain * (0.7 + dustHash(c, i, 5) * 0.3);
+        const cr = Math.min(1, Math.max(0, dustR[c] + j)) * puffGain;
+        const cg = Math.min(1, Math.max(0, dustG[c] + j * 0.7)) * puffGain;
+        const cb = Math.min(1, Math.max(0, dustB[c] + j * 0.45)) * puffGain;
         emitDustTo(z <= zCut, spx, spy, z, ang, cr, cg, cb);
       }
     }
