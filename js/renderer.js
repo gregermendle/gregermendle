@@ -55,7 +55,7 @@
   const LENS_FADE_FRONT = 0.6;
   const LENS_FAR_START = 180;
   const LENS_FAR_END = 280;
-  const DISK_MASK_LUMA = 0.07;
+  const DISK_OCCLUDE_LUMA = 0.2;
 
   function marchStepSource() {
     return `
@@ -83,7 +83,6 @@
             diskCol *= 1.0 + 0.08 * sin((atan(hit.z, hit.x) + tRot) * 8.0);
             diskCol *= 0.75 + 0.08 * sin((atan(rd.x, rd.y) + tRot) * 8.0);
             col += diskCol;
-            if (dot(diskCol.rgb, vec3(0.333)) > ${DISK_MASK_LUMA}) col.a = 1.0;
           }
         }
         if (r > influenceRadius && dot(p, rd) > 0.0) return col;
@@ -246,7 +245,8 @@
       float fill = beaconMix * (1.0 - smoothstep(0.0, 0.12, marchLum));
       float beacon = holeBeacon(uv, ro, radius, minRes) * progress * fill;
       col.rgb = max(col.rgb, vec3(beacon));
-      ${webgl2 ? `${writeColor} = vec4(col.r, col.a, 0.0, 1.0);` : `${writeColor} = col;`}
+      float mask = max(marched.a, step(${DISK_OCCLUDE_LUMA.toFixed(2)}, marched.r * progress));
+      ${webgl2 ? `${writeColor} = vec4(col.r, mask, 0.0, 1.0);` : `${writeColor} = vec4(col.rgb, mask);`}
     }`;
 
     const vs = `${ver}${attr} vec4 aVertexPosition;
