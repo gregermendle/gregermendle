@@ -282,35 +282,59 @@ function init() {
     { passive: true }
   );
 
-  const keys = { f: false, b: false, l: false, r: false, u: false, d: false };
+  const keys = { f: false, b: false, l: false, r: false, u: false, d: false, boost: false };
   function sendKeys() {
     send({ type: "keys", ...keys });
   }
+  function applyKey(k, down) {
+    if (k === "w" || k === "arrowup") keys.f = down;
+    else if (k === "s" || k === "arrowdown") keys.b = down;
+    else if (k === "a" || k === "arrowleft") keys.l = down;
+    else if (k === "d" || k === "arrowright") keys.r = down;
+    else if (k === "e") keys.u = down;
+    else if (k === "q") keys.d = down;
+    else if (k === "shift") keys.boost = down;
+    else return false;
+    return true;
+  }
   document.addEventListener("keydown", (e) => {
-    const k = e.key.toLowerCase();
-    if (k === "w" || k === "arrowup") keys.f = true;
-    else if (k === "s" || k === "arrowdown") keys.b = true;
-    else if (k === "a" || k === "arrowleft") keys.l = true;
-    else if (k === "d" || k === "arrowright") keys.r = true;
-    else if (k === "e") keys.u = true;
-    else if (k === "q") keys.d = true;
-    else return;
-    sendKeys();
+    if (e.repeat) return;
+    if (applyKey(e.key.toLowerCase(), true)) sendKeys();
   });
   document.addEventListener("keyup", (e) => {
-    const k = e.key.toLowerCase();
-    if (k === "w" || k === "arrowup") keys.f = false;
-    else if (k === "s" || k === "arrowdown") keys.b = false;
-    else if (k === "a" || k === "arrowleft") keys.l = false;
-    else if (k === "d" || k === "arrowright") keys.r = false;
-    else if (k === "e") keys.u = false;
-    else if (k === "q") keys.d = false;
-    else return;
+    if (applyKey(e.key.toLowerCase(), false)) sendKeys();
+  });
+  window.addEventListener("blur", () => {
+    keys.f = keys.b = keys.l = keys.r = keys.u = keys.d = keys.boost = false;
     sendKeys();
   });
 
   let lastLookX = null;
   let lastLookY = null;
+  const lookScale = 0.0035;
+
+  function pointerLocked() {
+    return Boolean(document.pointerLockElement);
+  }
+
+  function lockPointer() {
+    const el = document.documentElement;
+    if (!el.requestPointerLock || pointerLocked()) return;
+    const req = el.requestPointerLock({ unadjustedMovement: true });
+    if (req && typeof req.catch === "function") {
+      req.catch(() => el.requestPointerLock());
+    }
+  }
+
+  document.addEventListener("click", (e) => {
+    if (e.target.closest(".minimap")) return;
+    lockPointer();
+  });
+
+  document.addEventListener("pointerlockchange", () => {
+    lastLookX = null;
+    lastLookY = null;
+  });
 
   function mapToWorld(clientX, clientY) {
     const rect = minimapEl.getBoundingClientRect();
@@ -333,26 +357,31 @@ function init() {
     send({ type: "nav", x: w.x, z: w.z });
   });
 
-  document.addEventListener(
-    "pointermove",
-    (e) => {
-      if (!e.target.closest(".minimap") && lastLookX !== null) {
-        send({
-          type: "look",
-          x: (e.clientX - lastLookX) * 0.0035,
-          y: (e.clientY - lastLookY) * 0.0035,
-        });
-      }
-      lastLookX = e.clientX;
-      lastLookY = e.clientY;
+  document.addEventListener("mousemove", (e) => {
+    if (pointerLocked()) {
       send({
-        type: "pointer",
-        x: e.clientX / window.innerWidth,
-        y: 1 - e.clientY / window.innerHeight,
+        type: "look",
+        x: e.movementX * lookScale,
+        y: e.movementY * lookScale,
       });
-    },
-    { passive: true }
-  );
+      send({ type: "pointer", x: 0.5, y: 0.5 });
+      return;
+    }
+    if (!e.target.closest(".minimap") && lastLookX !== null) {
+      send({
+        type: "look",
+        x: (e.clientX - lastLookX) * lookScale,
+        y: (e.clientY - lastLookY) * lookScale,
+      });
+    }
+    lastLookX = e.clientX;
+    lastLookY = e.clientY;
+    send({
+      type: "pointer",
+      x: e.clientX / window.innerWidth,
+      y: 1 - e.clientY / window.innerHeight,
+    });
+  });
 
   send({ type: "size", w: canvas.clientWidth, h: canvas.clientHeight });
   send({ type: "running", v: webglEnabled });

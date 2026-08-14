@@ -41,6 +41,10 @@
   }
 
   const DISK_SIZE = 43;
+  const MAX_STARS = 48;
+  const MAX_LINES = 36;
+  const STAR_RADIUS = 0.0145;
+  const WORLD_LIMIT = 20000;
 
   function marchStepSource() {
     return `
@@ -101,18 +105,20 @@
     uniform vec3 camFwd;
     uniform vec3 camRight;
     uniform vec3 camUp;
-    uniform vec3 uStars[24];
-    uniform vec3 uLineA[20];
-    uniform vec3 uLineB[20];
+    uniform vec4 uStars[${MAX_STARS}];
+    uniform vec3 uLineA[${MAX_LINES}];
+    uniform vec3 uLineB[${MAX_LINES}];
     uniform int uStarCount;
     uniform int uLineCount;
+    uniform float uWarp;
+    uniform vec2 uWarpCenter;
     ${fragOut}
     #define MAX_STEPS ${maxSteps}
     #define WARP_SIZE 0.25
     #define STEP_SIZE ${stepSize.toFixed(2)}
     #define DISK_SIZE ${DISK_SIZE.toFixed(1)}
-    #define MAX_STARS 24
-    #define MAX_LINES 20
+    #define MAX_STARS ${MAX_STARS}
+    #define MAX_LINES ${MAX_LINES}
 
     float hash(vec2 p) {
       return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
@@ -154,16 +160,27 @@
 
     float starField(vec2 uv, vec3 ro, float radius, float minRes) {
       float glow = 0.0;
+      float px = 1.0 / minRes;
       for (int i = 0; i < MAX_STARS; i++) {
         float on = step(float(i) + 0.5, float(uStarCount));
-        vec3 w = uStars[i];
+        vec4 s = uStars[i];
+        vec3 w = s.xyz;
         vec3 toS = w - ro;
+        float z = dot(toS, camFwd);
+        on *= step(1e-4, z);
         float denom = dot(toS, toS);
-        float t = -dot(ro, toS) / max(denom, 1e-5);
-        vec3 closest = ro + clamp(t, 0.0, 1.0) * toS;
+        float tHit = -dot(ro, toS) / max(denom, 1e-5);
+        vec3 closest = ro + clamp(tHit, 0.0, 1.0) * toS;
         on *= step(radius * radius, dot(closest, closest));
-        float d = length(uv - projectStar(w, ro)) * minRes;
-        glow += on * (exp(-d * d * 0.55) * 1.2 + exp(-d * 0.22) * 0.14);
+        vec2 sp = vec2(dot(toS, camRight), dot(toS, camUp)) / max(z, 1e-4);
+        float ang = s.w / max(z, s.w * 0.35);
+        float coreR = max(ang, px * 1.15);
+        float glowR = max(ang * 5.5, px * 3.4);
+        float d = length(uv - sp);
+        float core = smoothstep(coreR, coreR * 0.42, d);
+        float near = clamp(ang / (px * 10.0), 0.0, 1.0);
+        float halo = exp(-d / max(glowR, 1e-5)) * mix(0.16, 0.52, near);
+        glow += on * (core + halo);
       }
       for (int i = 0; i < MAX_LINES; i++) {
         float on = step(float(i) + 0.5, float(uLineCount));
@@ -173,7 +190,7 @@
         vec2 ba = b - a;
         float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-5), 0.0, 1.0);
         float d = length(pa - ba * h) * minRes;
-        glow += on * (1.0 - smoothstep(0.35, 0.85, d)) * 0.22;
+        glow += on * (1.0 - smoothstep(0.35, 0.85, d)) * 0.16;
       }
       return glow;
     }
@@ -182,11 +199,20 @@
       float minRes = min(resolution.x, resolution.y);
       vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
       vec2 aspect = resolution.xy / minRes;
+      float w = uWarp;
+      vec2 from = uv - uWarpCenter;
+      float r = length(from);
+      vec2 dir = r > 1e-5 ? from / r : vec2(0.0);
+      float coneR = mix(0.14, 0.82, w);
+      float t = r / max(coneR, 1e-4);
+      float cone = max(1.0 - t, 0.0);
+      float rim = smoothstep(0.72, 0.96, t) * (1.0 - smoothstep(0.96, 1.12, t));
+      vec2 wuv = uv + dir * w * coneR * (0.48 * cone + 0.2 * rim);
       vec3 ro = camPos;
-      vec3 rd = normalize(uv.x * camRight + uv.y * camUp + camFwd);
+      vec3 rd = normalize(wuv.x * camRight + wuv.y * camUp + camFwd);
       float radius = schwarzschildRadius * progress;
-      vec4 col = rayMarch(ro, rd, uv * aspect * 5.0, radius) * progress;
-      col += vec4(vec3(starField(uv, ro, radius, minRes) * progress), 0.0);
+      vec4 col = rayMarch(ro, rd, wuv * aspect * 5.0, radius) * progress;
+      col += vec4(vec3(starField(wuv, ro, radius, minRes) * progress), 0.0);
       ${writeColor} = col;
     }`;
 
@@ -382,9 +408,7 @@
     const buffers = initBuffers(gl);
     loadWasmDither();
 
-    const MAX_STARS = 24;
-    const MAX_LINES = 20;
-    const starData = new Float32Array(MAX_STARS * 3);
+    const starData = new Float32Array(MAX_STARS * 4);
     const lineAData = new Float32Array(MAX_LINES * 3);
     const lineBData = new Float32Array(MAX_LINES * 3);
     let clusters = [];
@@ -402,12 +426,11 @@
 
     function packClusters(now) {
       const t = now * 0.001;
-      starCount = 0;
-      lineCount = 0;
+      const placed = [];
       for (let c = 0; c < clusters.length; c++) {
         const cluster = clusters[c];
         const pts = cluster.points || [];
-        if (!pts.length || starCount >= MAX_STARS) break;
+        if (!pts.length) continue;
         const origin = cluster.origin || [0, 0, 0];
         const glide = cluster.glide || {};
         const amp = glide.amp || [0, 0, 0];
@@ -416,25 +439,44 @@
         const ox = origin[0] + amp[0] * Math.sin(t * speed + phase);
         const oy = origin[1] + amp[1] * Math.sin(t * speed * 0.83 + phase + 1.1);
         const oz = origin[2] + amp[2] * Math.cos(t * speed * 0.71 + phase);
-        for (let i = 0; i < pts.length && starCount < MAX_STARS; i++) {
-          const p = pts[i];
-          const o = starCount * 3;
-          starData[o] = ox + (p[0] || 0);
-          starData[o + 1] = 0;
-          starData[o + 2] = oz + (p[2] || 0);
-          if (i > 0 && lineCount < MAX_LINES) {
-            const a = (starCount - 1) * 3;
-            const b = starCount * 3;
-            const lo = lineCount * 3;
-            lineAData[lo] = starData[a];
-            lineAData[lo + 1] = starData[a + 1];
-            lineAData[lo + 2] = starData[a + 2];
-            lineBData[lo] = starData[b];
-            lineBData[lo + 1] = starData[b + 1];
-            lineBData[lo + 2] = starData[b + 2];
-            lineCount++;
-          }
+        const dx = ox - camX;
+        const dy = oy - camY;
+        const dz = oz - camZ;
+        placed.push({
+          dist2: dx * dx + dy * dy + dz * dz,
+          ox,
+          oy,
+          oz,
+          pts,
+          radius: cluster.radius || STAR_RADIUS,
+        });
+      }
+      placed.sort((a, b) => a.dist2 - b.dist2);
+      starCount = 0;
+      lineCount = 0;
+      for (let c = 0; c < placed.length && starCount < MAX_STARS; c++) {
+        const cluster = placed[c];
+        const first = starCount;
+        for (let i = 0; i < cluster.pts.length && starCount < MAX_STARS; i++) {
+          const p = cluster.pts[i];
+          const o = starCount * 4;
+          starData[o] = cluster.ox + (p[0] || 0);
+          starData[o + 1] = cluster.oy + (p[1] || 0);
+          starData[o + 2] = cluster.oz + (p[2] || 0);
+          starData[o + 3] = p[3] || cluster.radius;
           starCount++;
+        }
+        for (let i = first + 1; i < starCount && lineCount < MAX_LINES; i++) {
+          const a = (i - 1) * 4;
+          const b = i * 4;
+          const lo = lineCount * 3;
+          lineAData[lo] = starData[a];
+          lineAData[lo + 1] = starData[a + 1];
+          lineAData[lo + 2] = starData[a + 2];
+          lineBData[lo] = starData[b];
+          lineBData[lo + 1] = starData[b + 1];
+          lineBData[lo + 2] = starData[b + 2];
+          lineCount++;
         }
       }
     }
@@ -468,6 +510,8 @@
         lineB: gl.getUniformLocation(program, "uLineB[0]"),
         starCount: gl.getUniformLocation(program, "uStarCount"),
         lineCount: gl.getUniformLocation(program, "uLineCount"),
+        warp: gl.getUniformLocation(program, "uWarp"),
+        warpCenter: gl.getUniformLocation(program, "uWarpCenter"),
       },
     };
 
@@ -643,7 +687,12 @@
     let keyR = 0;
     let keyU = 0;
     let keyD = 0;
-    const mapBounds = 40;
+    let keyBoost = 0;
+    let engine = 0;
+    let screenWarp = 0;
+    let warpCenterX = 0;
+    let warpCenterY = 0;
+    const mapPad = 48;
     let displayWidth = 0;
     let displayHeight = 0;
 
@@ -667,17 +716,36 @@
     }
 
     function keepOut() {
+      if (!Number.isFinite(camX + camY + camZ + velX + velY + velZ)) {
+        camX = -2;
+        camY = 6;
+        camZ = -26;
+        velX = 0;
+        velY = 0;
+        velZ = 0;
+        return;
+      }
       const r = Math.hypot(camX, camY, camZ);
-      const min = schwarzschildRadius * 3 + 1.2;
-      if (r < min && r > 1e-5) {
-        const s = min / r;
+      if (r > WORLD_LIMIT) {
+        const s = WORLD_LIMIT / r;
         camX *= s;
         camY *= s;
         camZ *= s;
+        velX *= 0.35;
+        velY *= 0.35;
+        velZ *= 0.35;
       }
-      camX = Math.max(-mapBounds, Math.min(mapBounds, camX));
-      camY = Math.max(0.4, Math.min(24, camY));
-      camZ = Math.max(-mapBounds, Math.min(mapBounds, camZ));
+    }
+
+    function mapReach() {
+      let reach = mapPad;
+      const cr = Math.hypot(camX, camZ);
+      if (cr * 1.2 > reach) reach = cr * 1.2;
+      for (let i = 0; i < starCount; i++) {
+        const sr = Math.hypot(starData[i * 4], starData[i * 4 + 2]);
+        if (sr * 1.05 > reach) reach = sr * 1.05;
+      }
+      return reach;
     }
 
     function emitHud() {
@@ -688,10 +756,10 @@
           camX,
           camZ,
           yaw: camYaw,
-          bounds: mapBounds,
+          bounds: mapReach(),
           stars: Array.from({ length: starCount }, (_, i) => [
-            starData[i * 3],
-            starData[i * 3 + 2],
+            starData[i * 4],
+            starData[i * 4 + 2],
           ]),
         },
       });
@@ -712,11 +780,13 @@
       gl.uniform3f(programInfo.uniformLocations.camRight, b.rx, b.ry, b.rz);
       gl.uniform3f(programInfo.uniformLocations.camUp, b.ux, b.uy, b.uz);
       packClusters(now);
-      gl.uniform3fv(programInfo.uniformLocations.stars, starData);
+      gl.uniform4fv(programInfo.uniformLocations.stars, starData);
       gl.uniform3fv(programInfo.uniformLocations.lineA, lineAData);
       gl.uniform3fv(programInfo.uniformLocations.lineB, lineBData);
       gl.uniform1i(programInfo.uniformLocations.starCount, starCount);
       gl.uniform1i(programInfo.uniformLocations.lineCount, lineCount);
+      gl.uniform1f(programInfo.uniformLocations.warp, screenWarp);
+      gl.uniform2f(programInfo.uniformLocations.warpCenter, warpCenterX, warpCenterY);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.flush();
     }
@@ -803,20 +873,42 @@
       camYaw += (lookYaw - camYaw) * 0.14 * timeScale;
       camPitch += (lookPitch - camPitch) * 0.14 * timeScale;
       const b = camBasis();
-      const wishX = b.fx * (keyF - keyB) + b.rx * (keyR - keyL) + b.ux * (keyU - keyD);
-      const wishY = b.fy * (keyF - keyB) + b.ry * (keyR - keyL) + b.uy * (keyU - keyD);
-      const wishZ = b.fz * (keyF - keyB) + b.rz * (keyR - keyL) + b.uz * (keyU - keyD);
-      const accel = 0.0004 * timeScale;
-      velX += wishX * accel;
-      velY += wishY * accel;
-      velZ += wishZ * accel;
-      const damp = Math.pow(0.993, timeScale);
-      velX *= damp;
-      velY *= damp;
-      velZ *= damp;
+      let wishX = b.fx * (keyF - keyB) + b.rx * (keyR - keyL) + b.ux * (keyU - keyD);
+      let wishY = b.fy * (keyF - keyB) + b.ry * (keyR - keyL) + b.uy * (keyU - keyD);
+      let wishZ = b.fz * (keyF - keyB) + b.rz * (keyR - keyL) + b.uz * (keyU - keyD);
+      let wishLen = Math.hypot(wishX, wishY, wishZ);
+      if (keyBoost && wishLen < 1e-6) {
+        wishX = b.fx;
+        wishY = b.fy;
+        wishZ = b.fz;
+        wishLen = 1;
+      }
+      const thrusting = wishLen > 1e-6;
+      const targetEngine = thrusting ? (keyBoost ? 1 : 0.4) : 0;
+      const spool = targetEngine > engine ? (keyBoost ? 0.0042 : 0.0024) : 0.0055;
+      engine += (targetEngine - engine) * spool * timeScale;
+      if (engine < 1e-4) engine = 0;
+      if (thrusting) {
+        const inv = 1 / wishLen;
+        const accel = engine * (keyBoost ? 0.0001 : 0.0000085) * timeScale;
+        velX += wishX * inv * accel;
+        velY += wishY * inv * accel;
+        velZ += wishZ * inv * accel;
+      }
+      const dragMul = Math.pow(thrusting ? 0.99992 : 0.99974, timeScale);
+      velX *= dragMul;
+      velY *= dragMul;
+      velZ *= dragMul;
+      const cruiseSpeed = 0.007;
+      const warpSpeed = 0.075;
       const speed = Math.hypot(velX, velY, velZ);
-      if (speed > 0.007) {
-        const s = 0.007 / speed;
+      const cap = keyBoost ? warpSpeed : cruiseSpeed;
+      if (speed > cap) {
+        let next = cap;
+        if (!keyBoost) {
+          next = cap + (speed - cap) * Math.pow(0.985, timeScale);
+        }
+        const s = next / speed;
         velX *= s;
         velY *= s;
         velZ *= s;
@@ -825,6 +917,32 @@
       camY += velY * timeScale;
       camZ += velZ * timeScale;
       keepOut();
+      const flySpeed = Math.hypot(velX, velY, velZ);
+      const targetWarp = Math.min(1, flySpeed / warpSpeed);
+      screenWarp += (targetWarp - screenWarp) * 0.028 * timeScale;
+      if (screenWarp < 1e-4) screenWarp = 0;
+      if (flySpeed > 1e-8) {
+        const inv = 1 / flySpeed;
+        const dx = velX * inv;
+        const dy = velY * inv;
+        const dz = velZ * inv;
+        const vz = dx * b.fx + dy * b.fy + dz * b.fz;
+        const vx = dx * b.rx + dy * b.ry + dz * b.rz;
+        const vy = dx * b.ux + dy * b.uy + dz * b.uz;
+        let nextX;
+        let nextY;
+        if (vz > 0.04) {
+          nextX = vx / vz;
+          nextY = vy / vz;
+        } else {
+          const sl = Math.hypot(vx, vy) || 1;
+          nextX = (vx / sl) * 4;
+          nextY = (vy / sl) * 4;
+        }
+        const follow = Math.min(1, 0.012 * timeScale);
+        warpCenterX += (nextX - warpCenterX) * follow;
+        warpCenterY += (nextY - warpCenterY) * follow;
+      }
 
       if (displayWidth <= 0 || displayHeight <= 0) return;
 
@@ -881,6 +999,7 @@
         keyR = keys.r ? 1 : 0;
         keyU = keys.u ? 1 : 0;
         keyD = keys.d ? 1 : 0;
+        keyBoost = keys.boost ? 1 : 0;
       },
       setNav(x, z) {
         camX = x;
