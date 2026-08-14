@@ -36,29 +36,15 @@
 }
 
 @layer components {
-  canvas {
+  #canvas {
     @apply fixed inset-0 w-screen h-screen z-10 pointer-events-none;
   }
 
-  .bh-label {
-    @apply fixed left-0 top-0 z-[15] pointer-events-none whitespace-nowrap tracking-[0.18em] font-[650] text-[14px] leading-none origin-bottom;
-    will-change: transform, opacity;
-    opacity: 0;
+  .minimap {
+    @apply fixed top-5 right-5 z-20 w-[132px] h-[132px] border border-white bg-black cursor-crosshair;
   }
 
-  .bh-orbits {
-    @apply fixed inset-0 z-[15] pointer-events-none;
-    opacity: 0;
-  }
-
-  .bh-orbit {
-    @apply absolute left-0 top-0 whitespace-nowrap font-normal text-base tracking-tight px-3 py-2 cursor-pointer;
-    pointer-events: auto;
-    will-change: transform, opacity;
-    opacity: 0;
-  }
-
-  .bh-orbit:hover {
-    @apply underline underline-offset-2;
+  .minimap canvas {
+    @apply block w-full h-full pointer-events-none;
   }
 }

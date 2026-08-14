@@ -44,30 +44,34 @@
 
   function marchStepSource() {
     return `
+        stepCount += 1.0;
+        if (stepCount > marchBudget) return col * marchGain;
         r = length(p);
-        adaptiveStepSize = STEP_SIZE * max(1.0, r * 0.1);
-        if (r >= influenceRadius) {
-          if (dot(rd, p) > 0.0) return col;
-          adaptiveStepSize = max(adaptiveStepSize, (r - influenceRadius) * 0.25);
-        } else {
+        adaptiveStepSize = STEP_SIZE * max(1.0, r * 0.1) * stepMul;
+        if (r < influenceRadius) {
           rd = normalize(rd - p * (radius * adaptiveStepSize / (r * r * r)));
         }
+        prevP = p;
         p += rd * adaptiveStepSize;
         totalDist += adaptiveStepSize;
-        if (abs(p.y) < 0.12) {
-          float diskRadius = length(p.xz);
+        if (prevP.y * p.y <= 0.0 || abs(p.y) < 0.12) {
+          vec3 hit = p;
+          if (abs(rd.y) > 1e-4 && prevP.y * p.y <= 0.0) {
+            hit = prevP + rd * (-prevP.y / rd.y);
+          }
+          float diskRadius = length(hit.xz);
           if (diskRadius > radius) {
             float d = (diskRadius - radius) / radius;
             float innerTemp = smoothstep(DISK_SIZE * 0.25, DISK_SIZE * 0.5, d);
             float outerTemp = smoothstep(DISK_SIZE * 0.5, DISK_SIZE, d);
             float gray = mix(1.0, mix(0.4, 0.1, outerTemp), innerTemp);
-            vec4 diskCol = vec4(vec3(gray * exp(-d * (1.7 / DISK_SIZE))), 1.0) * exp(-totalDist * 0.12);
-            diskCol *= 1.0 + 0.08 * sin((atan(p.z, p.x) + tRot) * 8.0);
+            vec4 diskCol = vec4(vec3(gray * exp(-d * (1.7 / DISK_SIZE))), 1.0);
+            diskCol *= 1.0 + 0.08 * sin((atan(hit.z, hit.x) + tRot) * 8.0);
             diskCol *= 0.75 + 0.08 * sin((atan(rd.x, rd.y) + tRot) * 8.0);
             col += diskCol;
           }
         }
-        if (r < radius || totalDist > 100.0 || dot(col, col) > 100.0) return col;
+        if (r < radius || totalDist > 100.0 || dot(col, col) > 100.0) return col * marchGain;
 `;
   }
 
@@ -93,42 +97,97 @@
     uniform vec2 mouse;
     uniform float progress;
     uniform float schwarzschildRadius;
+    uniform vec3 camPos;
+    uniform vec3 camFwd;
+    uniform vec3 camRight;
+    uniform vec3 camUp;
+    uniform vec3 uStars[24];
+    uniform vec3 uLineA[20];
+    uniform vec3 uLineB[20];
+    uniform int uStarCount;
+    uniform int uLineCount;
     ${fragOut}
     #define MAX_STEPS ${maxSteps}
     #define WARP_SIZE 0.25
     #define STEP_SIZE ${stepSize.toFixed(2)}
     #define DISK_SIZE ${DISK_SIZE.toFixed(1)}
+    #define MAX_STARS 24
+    #define MAX_LINES 20
 
     float hash(vec2 p) {
       return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
     }
 
     vec4 rayMarch(vec3 ro, vec3 rd, vec2 uv, float radius) {
+      float influenceRadius = max(radius * 50.0, radius * DISK_SIZE + 4.0);
+      float b = dot(ro, rd);
+      float c = dot(ro, ro) - influenceRadius * influenceRadius;
+      float h = b * b - c;
+      if (h < 0.0) return vec4(0.0);
+      float tExit = -b + sqrt(h);
+      if (tExit < 0.0) return vec4(0.0);
+      float tEnter = max(-b - sqrt(h), 0.0);
+      float lod = smoothstep(10.0, 36.0, length(ro));
+      float marchBudget = mix(float(MAX_STEPS), float(MAX_STEPS) * 0.35, lod);
+      float stepMul = mix(1.0, 2.4, lod);
+      float marchGain = mix(1.0, 0.55, lod);
       float jitter = hash(uv) * STEP_SIZE;
-      vec3 p = ro + rd * jitter;
+      vec3 p = ro + rd * (tEnter + jitter);
       float r = length(p);
       vec4 col = vec4(0.0);
-      float totalDist = jitter;
-      float influenceRadius = radius * 50.0;
+      float totalDist = tEnter + jitter;
       float tRot = time * 0.3;
       float adaptiveStepSize;
-
-      if (r > influenceRadius && dot(rd, p) > 0.0) return col;
+      vec3 prevP;
+      float stepCount = 0.0;
 
       ${loop}
-      return col;
+      return col * marchGain;
+    }
+
+    vec2 projectStar(vec3 w, vec3 ro) {
+      vec3 d = w - ro;
+      float z = dot(d, camFwd);
+      if (z <= 1e-4) return vec2(100.0);
+      return vec2(dot(d, camRight) / z, dot(d, camUp) / z);
+    }
+
+    float starField(vec2 uv, vec3 ro, float radius, float minRes) {
+      float glow = 0.0;
+      for (int i = 0; i < MAX_STARS; i++) {
+        float on = step(float(i) + 0.5, float(uStarCount));
+        vec3 w = uStars[i];
+        vec3 toS = w - ro;
+        float denom = dot(toS, toS);
+        float t = -dot(ro, toS) / max(denom, 1e-5);
+        vec3 closest = ro + clamp(t, 0.0, 1.0) * toS;
+        on *= step(radius * radius, dot(closest, closest));
+        float d = length(uv - projectStar(w, ro)) * minRes;
+        glow += on * (exp(-d * d * 0.55) * 1.2 + exp(-d * 0.22) * 0.14);
+      }
+      for (int i = 0; i < MAX_LINES; i++) {
+        float on = step(float(i) + 0.5, float(uLineCount));
+        vec2 a = projectStar(uLineA[i], ro);
+        vec2 b = projectStar(uLineB[i], ro);
+        vec2 pa = uv - a;
+        vec2 ba = b - a;
+        float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-5), 0.0, 1.0);
+        float d = length(pa - ba * h) * minRes;
+        glow += on * (1.0 - smoothstep(0.35, 0.85, d)) * 0.22;
+      }
+      return glow;
     }
 
     void main() {
       float minRes = min(resolution.x, resolution.y);
       vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
       vec2 aspect = resolution.xy / minRes;
-      vec2 muv = (mouse.xy - 0.5) * aspect;
-      float warp = 1.0 - smoothstep(0.0, WARP_SIZE, length(uv - muv));
-      vec2 outward = normalize(muv - uv + 0.001) * warp * 2.0;
-      vec3 ro = vec3(-1.0, 2.0, -10.0) + vec3(muv * 2.0, 0.0) + vec3(outward, 0.0);
-      vec3 rd = normalize(vec3(uv, 1.0)) - vec3(0.0, 0.2, 0.0);
-      ${writeColor} = rayMarch(ro, rd, uv * aspect * 5.0, schwarzschildRadius * progress) * progress;
+      vec3 ro = camPos;
+      vec3 rd = normalize(uv.x * camRight + uv.y * camUp + camFwd);
+      float radius = schwarzschildRadius * progress;
+      vec4 col = rayMarch(ro, rd, uv * aspect * 5.0, radius) * progress;
+      col += vec4(vec3(starField(uv, ro, radius, minRes) * progress), 0.0);
+      ${writeColor} = col;
     }`;
 
     const vs = `${ver}${attr} vec4 aVertexPosition;
@@ -323,6 +382,63 @@
     const buffers = initBuffers(gl);
     loadWasmDither();
 
+    const MAX_STARS = 24;
+    const MAX_LINES = 20;
+    const starData = new Float32Array(MAX_STARS * 3);
+    const lineAData = new Float32Array(MAX_LINES * 3);
+    const lineBData = new Float32Array(MAX_LINES * 3);
+    let clusters = [];
+    let starCount = 0;
+    let lineCount = 0;
+
+    fetch("/js/clusters.json")
+      .then((res) => res.json())
+      .then((data) => {
+        clusters = data.clusters || [];
+      })
+      .catch(() => {
+        clusters = [];
+      });
+
+    function packClusters(now) {
+      const t = now * 0.001;
+      starCount = 0;
+      lineCount = 0;
+      for (let c = 0; c < clusters.length; c++) {
+        const cluster = clusters[c];
+        const pts = cluster.points || [];
+        if (!pts.length || starCount >= MAX_STARS) break;
+        const origin = cluster.origin || [0, 0, 0];
+        const glide = cluster.glide || {};
+        const amp = glide.amp || [0, 0, 0];
+        const speed = glide.speed || 0;
+        const phase = glide.phase || 0;
+        const ox = origin[0] + amp[0] * Math.sin(t * speed + phase);
+        const oy = origin[1] + amp[1] * Math.sin(t * speed * 0.83 + phase + 1.1);
+        const oz = origin[2] + amp[2] * Math.cos(t * speed * 0.71 + phase);
+        for (let i = 0; i < pts.length && starCount < MAX_STARS; i++) {
+          const p = pts[i];
+          const o = starCount * 3;
+          starData[o] = ox + (p[0] || 0);
+          starData[o + 1] = 0;
+          starData[o + 2] = oz + (p[2] || 0);
+          if (i > 0 && lineCount < MAX_LINES) {
+            const a = (starCount - 1) * 3;
+            const b = starCount * 3;
+            const lo = lineCount * 3;
+            lineAData[lo] = starData[a];
+            lineAData[lo + 1] = starData[a + 1];
+            lineAData[lo + 2] = starData[a + 2];
+            lineBData[lo] = starData[b];
+            lineBData[lo + 1] = starData[b + 1];
+            lineBData[lo + 2] = starData[b + 2];
+            lineCount++;
+          }
+          starCount++;
+        }
+      }
+    }
+
     const readbackCaps = webgl2 ? probeSingleChannelTarget(gl, true) : { single: false, pbo: false };
     const singleTarget = readbackCaps.single;
     const usePbo = webgl2 && (singleTarget ? readbackCaps.pbo : true);
@@ -343,6 +459,15 @@
         mouse: gl.getUniformLocation(program, "mouse"),
         progress: gl.getUniformLocation(program, "progress"),
         schwarzschildRadius: gl.getUniformLocation(program, "schwarzschildRadius"),
+        camPos: gl.getUniformLocation(program, "camPos"),
+        camFwd: gl.getUniformLocation(program, "camFwd"),
+        camRight: gl.getUniformLocation(program, "camRight"),
+        camUp: gl.getUniformLocation(program, "camUp"),
+        stars: gl.getUniformLocation(program, "uStars[0]"),
+        lineA: gl.getUniformLocation(program, "uLineA[0]"),
+        lineB: gl.getUniformLocation(program, "uLineB[0]"),
+        starCount: gl.getUniformLocation(program, "uStarCount"),
+        lineCount: gl.getUniformLocation(program, "uLineCount"),
       },
     };
 
@@ -502,89 +627,73 @@
     const maxRadius = 1.2;
     let schwarzschildRadius = 0.25;
     let targetRadius = 0.25;
+    let camX = -2;
+    let camY = 6;
+    let camZ = -26;
+    let camYaw = 0;
+    let camPitch = -0.18;
+    let lookYaw = 0;
+    let lookPitch = -0.18;
+    let velX = 0;
+    let velY = 0;
+    let velZ = 0;
+    let keyF = 0;
+    let keyB = 0;
+    let keyL = 0;
+    let keyR = 0;
+    let keyU = 0;
+    let keyD = 0;
+    const mapBounds = 40;
     let displayWidth = 0;
     let displayHeight = 0;
-    let hoverPaused = false;
-    let spin = 0;
-    let prevHudNow = 0;
 
-    function projectWorld(wx, wy, wz, minRes, rox, roy, roz) {
-      const dx = wx - rox;
-      const dy = wy - roy;
-      const dz = wz - roz;
-      const len = Math.hypot(dx, dy, dz);
-      const ndy = dy / len;
-      const ndz = dz / len;
-      const k = (-0.4 * ndy + Math.sqrt(0.16 * ndy * ndy + 3.84)) * 0.5;
-      const sz = k * ndz;
-      if (sz <= 1e-5) return null;
-      return {
-        x: ((k * (dx / len)) / sz) * minRes + 0.5 * displayWidth,
-        y: displayHeight - (((k * ndy + 0.2) / sz) * minRes + 0.5 * displayHeight),
-        len,
-      };
+    function camBasis() {
+      const cp = Math.cos(camPitch);
+      const sp = Math.sin(camPitch);
+      const cy = Math.cos(camYaw);
+      const sy = Math.sin(camYaw);
+      const fx = sy * cp;
+      const fy = sp;
+      const fz = cy * cp;
+      let rx = fz;
+      let rz = -fx;
+      const rl = Math.hypot(rx, rz) || 1;
+      rx /= rl;
+      rz /= rl;
+      const ux = fy * rz;
+      const uy = fz * rx - fx * rz;
+      const uz = -fy * rx;
+      return { fx, fy, fz, rx, ry: 0, rz, ux, uy, uz };
     }
 
-    const ORBIT_COUNT = 8;
-
-    function occluded(wx, wy, wz, rox, roy, roz, radius) {
-      const dx = wx - rox;
-      const dy = wy - roy;
-      const dz = wz - roz;
-      const denom = dx * dx + dy * dy + dz * dz;
-      if (denom < 1e-8) return false;
-      const t = -(rox * dx + roy * dy + roz * dz) / denom;
-      if (t <= 0.04 || t >= 0.96) return false;
-      const cx = rox + t * dx;
-      const cy = roy + t * dy;
-      const cz = roz + t * dz;
-      return cx * cx + cy * cy + cz * cz < radius * radius;
+    function keepOut() {
+      const r = Math.hypot(camX, camY, camZ);
+      const min = schwarzschildRadius * 3 + 1.2;
+      if (r < min && r > 1e-5) {
+        const s = min / r;
+        camX *= s;
+        camY *= s;
+        camZ *= s;
+      }
+      camX = Math.max(-mapBounds, Math.min(mapBounds, camX));
+      camY = Math.max(0.4, Math.min(24, camY));
+      camZ = Math.max(-mapBounds, Math.min(mapBounds, camZ));
     }
 
-    function emitHud(now) {
+    function emitHud() {
       if (!emit || displayWidth <= 0 || displayHeight <= 0) return;
-      const minRes = Math.min(displayWidth, displayHeight);
-      const rox = -1 + (mouseX - 0.5) * (displayWidth / minRes) * 2;
-      const roy = 2 + (mouseY - 0.5) * (displayHeight / minRes) * 2;
-      const roz = -10;
-      const center = projectWorld(0, 0, 0, minRes, rox, roy, roz);
-      const top = projectWorld(0, schwarzschildRadius, 0, minRes, rox, roy, roz);
-      if (!center || !top) {
-        emit({ type: "hud", a: 0 });
-        return;
-      }
-      const holeR = Math.hypot(top.x - center.x, top.y - center.y);
-      if (!prevHudNow) prevHudNow = now;
-      if (!hoverPaused) spin += (now - prevHudNow) * 0.001 * 0.3;
-      prevHudNow = now;
-      const orbits = [];
-      for (let i = 0; i < ORBIT_COUNT; i++) {
-        const angle = spin + (i / ORBIT_COUNT) * Math.PI * 2;
-        const rad = schwarzschildRadius * easedProgress * (DISK_SIZE * 0.88);
-        const wx = Math.cos(angle) * rad;
-        const wz = Math.sin(angle) * rad;
-        const pt = projectWorld(wx, 0, wz, minRes, rox, roy, roz);
-        if (!pt) {
-          orbits.push({ a: 0 });
-          continue;
-        }
-        const behind = occluded(wx, 0, wz, rox, roy, roz, schwarzschildRadius);
-        const depth = Math.min(1.2, Math.max(0.55, 10 / pt.len));
-        orbits.push({
-          x: pt.x,
-          y: pt.y,
-          s: easedProgress * depth,
-          a: easedProgress * (behind ? 0.12 : Math.min(1, 12 / pt.len)),
-          z: Math.round(2000 - pt.len * 40),
-        });
-      }
       emit({
         type: "hud",
-        x: top.x,
-        y: top.y - holeR * 0.55 - 28,
-        s: easedProgress * (10 / top.len),
-        a: easedProgress,
-        orbits,
+        map: {
+          camX,
+          camZ,
+          yaw: camYaw,
+          bounds: mapBounds,
+          stars: Array.from({ length: starCount }, (_, i) => [
+            starData[i * 3],
+            starData[i * 3 + 2],
+          ]),
+        },
       });
     }
 
@@ -597,6 +706,17 @@
       gl.uniform1f(programInfo.uniformLocations.progress, easedProgress);
       gl.uniform2f(programInfo.uniformLocations.mouse, mouseX, mouseY);
       gl.uniform1f(programInfo.uniformLocations.schwarzschildRadius, schwarzschildRadius);
+      const b = camBasis();
+      gl.uniform3f(programInfo.uniformLocations.camPos, camX, camY, camZ);
+      gl.uniform3f(programInfo.uniformLocations.camFwd, b.fx, b.fy, b.fz);
+      gl.uniform3f(programInfo.uniformLocations.camRight, b.rx, b.ry, b.rz);
+      gl.uniform3f(programInfo.uniformLocations.camUp, b.ux, b.uy, b.uz);
+      packClusters(now);
+      gl.uniform3fv(programInfo.uniformLocations.stars, starData);
+      gl.uniform3fv(programInfo.uniformLocations.lineA, lineAData);
+      gl.uniform3fv(programInfo.uniformLocations.lineB, lineBData);
+      gl.uniform1i(programInfo.uniformLocations.starCount, starCount);
+      gl.uniform1i(programInfo.uniformLocations.lineCount, lineCount);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       gl.flush();
     }
@@ -680,6 +800,31 @@
       mouseX += (nextMouseX - mouseX) * 0.01 * timeScale;
       mouseY += (nextMouseY - mouseY) * 0.01 * timeScale;
       schwarzschildRadius += (targetRadius - schwarzschildRadius) * 0.02 * timeScale;
+      camYaw += (lookYaw - camYaw) * 0.14 * timeScale;
+      camPitch += (lookPitch - camPitch) * 0.14 * timeScale;
+      const b = camBasis();
+      const wishX = b.fx * (keyF - keyB) + b.rx * (keyR - keyL) + b.ux * (keyU - keyD);
+      const wishY = b.fy * (keyF - keyB) + b.ry * (keyR - keyL) + b.uy * (keyU - keyD);
+      const wishZ = b.fz * (keyF - keyB) + b.rz * (keyR - keyL) + b.uz * (keyU - keyD);
+      const accel = 0.0004 * timeScale;
+      velX += wishX * accel;
+      velY += wishY * accel;
+      velZ += wishZ * accel;
+      const damp = Math.pow(0.993, timeScale);
+      velX *= damp;
+      velY *= damp;
+      velZ *= damp;
+      const speed = Math.hypot(velX, velY, velZ);
+      if (speed > 0.007) {
+        const s = 0.007 / speed;
+        velX *= s;
+        velY *= s;
+        velZ *= s;
+      }
+      camX += velX * timeScale;
+      camY += velY * timeScale;
+      camZ += velZ * timeScale;
+      keepOut();
 
       if (displayWidth <= 0 || displayHeight <= 0) return;
 
@@ -694,7 +839,7 @@
 
       refreshViews();
       renderScene(renderWidth, renderHeight, now);
-      emitHud(now);
+      emitHud();
       if (readback(renderWidth, renderHeight)) {
         dither(renderWidth, renderHeight);
         present(renderWidth, renderHeight, true);
@@ -719,18 +864,38 @@
       adjustRadius(delta) {
         targetRadius = Math.max(minRadius, Math.min(maxRadius, targetRadius + delta));
       },
+      look(dx, dy) {
+        lookYaw += dx;
+        lookPitch = Math.max(-1.2, Math.min(1.2, lookPitch - dy));
+      },
+      thrust(delta) {
+        const b = camBasis();
+        velX += b.fx * delta * 0.002;
+        velY += b.fy * delta * 0.002;
+        velZ += b.fz * delta * 0.002;
+      },
+      setKeys(keys) {
+        keyF = keys.f ? 1 : 0;
+        keyB = keys.b ? 1 : 0;
+        keyL = keys.l ? 1 : 0;
+        keyR = keys.r ? 1 : 0;
+        keyU = keys.u ? 1 : 0;
+        keyD = keys.d ? 1 : 0;
+      },
+      setNav(x, z) {
+        camX = x;
+        camZ = z;
+        lookYaw = Math.atan2(-camX, -camZ);
+        camYaw = lookYaw;
+        keepOut();
+      },
       setHidden(value) {
         hidden = value;
-        if (hidden && emit) emit({ type: "hud", a: 0 });
         start();
       },
       setRunning(value) {
         running = value;
-        if (!running && emit) emit({ type: "hud", a: 0 });
         start();
-      },
-      setHover(value) {
-        hoverPaused = value;
       },
     };
   }

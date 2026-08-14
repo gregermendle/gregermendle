@@ -35,111 +35,47 @@ function probeWorker() {
   });
 }
 
-const orbitEls = document.getElementById("bh-orbits").children;
-const labelEl = document.getElementById("bh-label");
-const orbitsRoot = document.getElementById("bh-orbits");
-
+const minimapEl = document.getElementById("minimap");
+const minimapCtx = document.getElementById("minimap-canvas").getContext("2d");
 let lastHud = null;
-let cursorX = 0;
-let cursorY = 0;
-let hoverActive = false;
-let sendHover = () => {};
-let pinned = null;
-const lastShown = [];
 
-function smoothstep(edge0, edge1, x) {
-  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
-function repel(x, y) {
-  const minRes = Math.min(window.innerWidth, window.innerHeight);
-  const dx = x - cursorX;
-  const dy = y - cursorY;
-  const dist = Math.hypot(dx, dy) || 0.001;
-  const warp = 1 - smoothstep(0, 0.25 * minRes, dist);
-  const push = warp * 2 * minRes * 0.12;
-  return { x: x + (dx / dist) * push, y: y + (dy / dist) * push };
+function paintMinimap(map) {
+  if (!map || !minimapCtx) return;
+  const ctx = minimapCtx;
+  const size = 132;
+  const bounds = map.bounds || 40;
+  const to = (x, z) => [
+    ((x + bounds) / (bounds * 2)) * size,
+    ((z + bounds) / (bounds * 2)) * size,
+  ];
+  ctx.clearRect(0, 0, size, size);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, size, size);
+  const hole = to(0, 0);
+  ctx.fillStyle = "#fff";
+  ctx.beginPath();
+  ctx.arc(hole[0], hole[1], 3, 0, Math.PI * 2);
+  ctx.fill();
+  const stars = map.stars || [];
+  for (let i = 0; i < stars.length; i++) {
+    const p = to(stars[i][0], stars[i][1]);
+    ctx.fillRect(p[0] - 0.5, p[1] - 0.5, 1.5, 1.5);
+  }
+  const c = to(map.camX || 0, map.camZ || 0);
+  const yaw = map.yaw || 0;
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(c[0] + Math.sin(yaw) * 8, c[1] + Math.cos(yaw) * 8);
+  ctx.lineTo(c[0] + Math.sin(yaw + 2.5) * 5, c[1] + Math.cos(yaw + 2.5) * 5);
+  ctx.lineTo(c[0] + Math.sin(yaw - 2.5) * 5, c[1] + Math.cos(yaw - 2.5) * 5);
+  ctx.closePath();
+  ctx.stroke();
 }
 
 function applyHud(data) {
   lastHud = data;
-  paintHud();
-}
-
-function paintHud() {
-  const data = lastHud;
-  if (!data) return;
-  const a = data.a || 0;
-  if (a <= 0) {
-    labelEl.style.opacity = "0";
-    orbitsRoot.style.opacity = "0";
-    return;
-  }
-  const label = repel(data.x, data.y);
-  labelEl.style.opacity = String(a);
-  labelEl.style.transform =
-    "translate3d(" +
-    label.x +
-    "px," +
-    label.y +
-    "px,0) translate(-50%,-100%) scale(" +
-    data.s +
-    ")";
-  orbitsRoot.style.opacity = "1";
-  const orbits = data.orbits || [];
-  let next = -1;
-  if (pinned) {
-    const hold = Math.hypot(pinned.x - cursorX, pinned.y - cursorY);
-    if (hold < 160) next = pinned.i;
-    else pinned = null;
-  }
-  if (next < 0) {
-    let best = 90;
-    for (let i = 0; i < orbits.length; i++) {
-      const o = orbits[i];
-      if (!o || !o.a) continue;
-      const shown = lastShown[i] || o;
-      const d = Math.min(
-        Math.hypot(shown.x - cursorX, shown.y - cursorY),
-        Math.hypot(o.x - cursorX, o.y - cursorY)
-      );
-      if (d < best) {
-        best = d;
-        next = i;
-      }
-    }
-  }
-  if (next >= 0) {
-    if (!pinned || pinned.i !== next) {
-      const shown = lastShown[next] || orbits[next];
-      pinned = { i: next, x: shown.x, y: shown.y };
-    }
-  }
-  if ((next >= 0) !== hoverActive) {
-    hoverActive = next >= 0;
-    sendHover(hoverActive);
-  }
-  for (let i = 0; i < orbitEls.length; i++) {
-    const item = orbitEls[i];
-    const o = orbits[i];
-    if (!o || !o.a) {
-      item.style.opacity = "0";
-      continue;
-    }
-    const pos = pinned && i === pinned.i ? pinned : repel(o.x, o.y);
-    lastShown[i] = pos;
-    item.style.opacity = String(o.a);
-    item.style.zIndex = String(o.z);
-    item.style.transform =
-      "translate3d(" +
-      pos.x +
-      "px," +
-      pos.y +
-      "px,0) translate(-50%,-50%) scale(" +
-      o.s +
-      ")";
-  }
+  if (data.map) paintMinimap(data.map);
 }
 
 function init() {
@@ -148,12 +84,20 @@ function init() {
   let sink = null;
   const pending = new Map();
   let pendingRadius = 0;
+  let pendingThrust = 0;
+  let pendingLookX = 0;
+  let pendingLookY = 0;
 
   function send(msg) {
     if (sink) {
       sink(msg);
     } else if (msg.type === "radius") {
       pendingRadius += msg.d;
+    } else if (msg.type === "thrust") {
+      pendingThrust += msg.d;
+    } else if (msg.type === "look") {
+      pendingLookX += msg.x;
+      pendingLookY += msg.y;
     } else {
       pending.set(msg.type, msg);
     }
@@ -166,6 +110,15 @@ function init() {
     if (pendingRadius !== 0) {
       sink({ type: "radius", d: pendingRadius });
       pendingRadius = 0;
+    }
+    if (pendingThrust !== 0) {
+      sink({ type: "thrust", d: pendingThrust });
+      pendingThrust = 0;
+    }
+    if (pendingLookX !== 0 || pendingLookY !== 0) {
+      sink({ type: "look", x: pendingLookX, y: pendingLookY });
+      pendingLookX = 0;
+      pendingLookY = 0;
     }
   }
 
@@ -186,6 +139,9 @@ function init() {
       let pointerY = 0;
       let pointerDirty = false;
       let radiusDelta = 0;
+      let thrustDelta = 0;
+      let lookX = 0;
+      let lookY = 0;
       let inputRaf = 0;
       function flushInput() {
         inputRaf = 0;
@@ -196,6 +152,15 @@ function init() {
         if (radiusDelta !== 0) {
           worker.postMessage({ type: "radius", d: radiusDelta });
           radiusDelta = 0;
+        }
+        if (thrustDelta !== 0) {
+          worker.postMessage({ type: "thrust", d: thrustDelta });
+          thrustDelta = 0;
+        }
+        if (lookX !== 0 || lookY !== 0) {
+          worker.postMessage({ type: "look", x: lookX, y: lookY });
+          lookX = 0;
+          lookY = 0;
         }
       }
       attach((msg) => {
@@ -208,6 +173,17 @@ function init() {
         }
         if (msg.type === "radius") {
           radiusDelta += msg.d;
+          if (!inputRaf) inputRaf = requestAnimationFrame(flushInput);
+          return;
+        }
+        if (msg.type === "thrust") {
+          thrustDelta += msg.d;
+          if (!inputRaf) inputRaf = requestAnimationFrame(flushInput);
+          return;
+        }
+        if (msg.type === "look") {
+          lookX += msg.x;
+          lookY += msg.y;
           if (!inputRaf) inputRaf = requestAnimationFrame(flushInput);
           return;
         }
@@ -238,14 +214,23 @@ function init() {
         case "radius":
           renderer.adjustRadius(msg.d);
           break;
+        case "look":
+          renderer.look(msg.x, msg.y);
+          break;
+        case "thrust":
+          renderer.thrust(msg.d);
+          break;
+        case "keys":
+          renderer.setKeys(msg);
+          break;
+        case "nav":
+          renderer.setNav(msg.x, msg.z);
+          break;
         case "running":
           renderer.setRunning(msg.v);
           break;
         case "hidden":
           renderer.setHidden(msg.v);
-          break;
-        case "hover":
-          renderer.setHover(msg.v);
           break;
       }
     });
@@ -258,7 +243,6 @@ function init() {
   const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const webglEnabled = !prefersReducedMotion;
   canvas.style.display = webglEnabled ? "" : "none";
-  if (!webglEnabled) applyHud({ a: 0 });
 
   let lastTouchY = 0;
 
@@ -273,7 +257,7 @@ function init() {
   document.addEventListener(
     "wheel",
     (e) => {
-      send({ type: "radius", d: -e.deltaY * 0.00008 });
+      send({ type: "thrust", d: -e.deltaY * 0.004 });
     },
     { passive: true }
   );
@@ -292,18 +276,75 @@ function init() {
       if (e.touches.length === 1) {
         const delta = lastTouchY - e.touches[0].clientY;
         lastTouchY = e.touches[0].clientY;
-        send({ type: "radius", d: delta * 0.0005 });
+        send({ type: "thrust", d: delta * 0.012 });
       }
     },
     { passive: true }
   );
 
+  const keys = { f: false, b: false, l: false, r: false, u: false, d: false };
+  function sendKeys() {
+    send({ type: "keys", ...keys });
+  }
+  document.addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+    if (k === "w" || k === "arrowup") keys.f = true;
+    else if (k === "s" || k === "arrowdown") keys.b = true;
+    else if (k === "a" || k === "arrowleft") keys.l = true;
+    else if (k === "d" || k === "arrowright") keys.r = true;
+    else if (k === "e") keys.u = true;
+    else if (k === "q") keys.d = true;
+    else return;
+    sendKeys();
+  });
+  document.addEventListener("keyup", (e) => {
+    const k = e.key.toLowerCase();
+    if (k === "w" || k === "arrowup") keys.f = false;
+    else if (k === "s" || k === "arrowdown") keys.b = false;
+    else if (k === "a" || k === "arrowleft") keys.l = false;
+    else if (k === "d" || k === "arrowright") keys.r = false;
+    else if (k === "e") keys.u = false;
+    else if (k === "q") keys.d = false;
+    else return;
+    sendKeys();
+  });
+
+  let lastLookX = null;
+  let lastLookY = null;
+
+  function mapToWorld(clientX, clientY) {
+    const rect = minimapEl.getBoundingClientRect();
+    const bounds = (lastHud && lastHud.map && lastHud.map.bounds) || 40;
+    const x = ((clientX - rect.left) / rect.width) * bounds * 2 - bounds;
+    const z = ((clientY - rect.top) / rect.height) * bounds * 2 - bounds;
+    return { x, z };
+  }
+
+  minimapEl.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    minimapEl.setPointerCapture(e.pointerId);
+    const w = mapToWorld(e.clientX, e.clientY);
+    send({ type: "nav", x: w.x, z: w.z });
+  });
+
+  minimapEl.addEventListener("pointermove", (e) => {
+    if ((e.buttons & 1) === 0) return;
+    const w = mapToWorld(e.clientX, e.clientY);
+    send({ type: "nav", x: w.x, z: w.z });
+  });
+
   document.addEventListener(
     "pointermove",
     (e) => {
-      cursorX = e.clientX;
-      cursorY = e.clientY;
-      paintHud();
+      if (!e.target.closest(".minimap") && lastLookX !== null) {
+        send({
+          type: "look",
+          x: (e.clientX - lastLookX) * 0.0035,
+          y: (e.clientY - lastLookY) * 0.0035,
+        });
+      }
+      lastLookX = e.clientX;
+      lastLookY = e.clientY;
       send({
         type: "pointer",
         x: e.clientX / window.innerWidth,
@@ -312,8 +353,6 @@ function init() {
     },
     { passive: true }
   );
-
-  sendHover = (v) => send({ type: "hover", v });
 
   send({ type: "size", w: canvas.clientWidth, h: canvas.clientHeight });
   send({ type: "running", v: webglEnabled });

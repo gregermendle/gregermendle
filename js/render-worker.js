@@ -43,14 +43,23 @@ self.onmessage = (event) => {
     case "radius":
       if (renderer) renderer.adjustRadius(msg.d);
       break;
+    case "look":
+      if (renderer) renderer.look(msg.x, msg.y);
+      break;
+    case "thrust":
+      if (renderer) renderer.thrust(msg.d);
+      break;
+    case "keys":
+      if (renderer) renderer.setKeys(msg);
+      break;
+    case "nav":
+      if (renderer) renderer.setNav(msg.x, msg.z);
+      break;
     case "running":
       if (renderer) renderer.setRunning(msg.v);
       break;
     case "hidden":
       if (renderer) renderer.setHidden(msg.v);
-      break;
-    case "hover":
-      if (renderer) renderer.setHover(msg.v);
       break;
   }
 };
