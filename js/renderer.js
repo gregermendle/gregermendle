@@ -44,19 +44,19 @@
   const MAX_STARS = 48;
   const MAX_LINES = 36;
   const STAR_RADIUS = 0.0145;
-  const WORLD_LIMIT = 20000;
 
   function marchStepSource() {
     return `
         r = length(p);
-        adaptiveStepSize = STEP_SIZE * max(1.0, r * 0.1);
+        adaptiveStepSize = STEP_SIZE * max(1.0, min(r * 0.1, influenceRadius * 0.07));
+        adaptiveStepSize = min(adaptiveStepSize, stepCap);
         if (r < influenceRadius) {
           rd = normalize(rd - p * (radius * adaptiveStepSize / (r * r * r)));
         }
         prevP = p;
         p += rd * adaptiveStepSize;
         totalDist += adaptiveStepSize;
-        if (prevP.y * p.y <= 0.0 || abs(p.y) < 0.12) {
+        if (prevP.y * p.y <= 0.0 || abs(p.y) < max(0.12, adaptiveStepSize * 0.55)) {
           vec3 hit = p;
           if (abs(rd.y) > 1e-4 && prevP.y * p.y <= 0.0) {
             hit = prevP + rd * (-prevP.y / rd.y);
@@ -73,7 +73,7 @@
             col += diskCol;
           }
         }
-        if (r < radius || totalDist > 100.0 || dot(col, col) > 100.0) return col;
+        if (r < radius || dot(col, col) > 100.0) return col;
 `;
   }
 
@@ -125,6 +125,7 @@
 
     vec4 rayMarch(vec3 ro, vec3 rd, vec2 uv, float radius) {
       float influenceRadius = max(radius * 50.0, radius * DISK_SIZE + 4.0);
+      float stepCap = max(radius * 0.2, STEP_SIZE * 1.8);
       float b = dot(ro, rd);
       float c = dot(ro, ro) - influenceRadius * influenceRadius;
       float h = b * b - c;
@@ -143,6 +144,23 @@
 
       ${loop}
       return col;
+    }
+
+    float holeBeacon(vec2 uv, vec3 ro, float radius, float minRes) {
+      vec3 toH = -ro;
+      float z = dot(toH, camFwd);
+      if (z <= 1e-4) return 0.0;
+      vec2 sp = vec2(dot(toH, camRight), dot(toH, camUp)) / z;
+      float px = 1.0 / minRes;
+      float ang = max(radius * 8.0 / z, px * 1.15);
+      float pad = max(ang * 6.0, px * 4.0);
+      if (abs(sp.x) > uViewHalf.x + pad || abs(sp.y) > uViewHalf.y + pad) return 0.0;
+      float coreR = max(ang, px * 1.15);
+      float glowR = max(ang * 5.5, px * 3.4);
+      float d = length(uv - sp);
+      float core = smoothstep(coreR, coreR * 0.42, d);
+      float halo = exp(-d / max(glowR, 1e-5)) * 0.55;
+      return core + halo;
     }
 
     vec2 projectStar(vec3 w, vec3 ro) {
@@ -223,6 +241,12 @@
       float radius = schwarzschildRadius * progress;
       vec4 col = rayMarch(ro, rd, wuv * aspect * 5.0, radius) * progress;
       col += vec4(vec3(starField(wuv, ro, radius, minRes) * progress), 0.0);
+      float dist = length(ro);
+      float beaconMix = smoothstep(50.0, 160.0, dist);
+      float marchLum = dot(col.rgb, vec3(0.333));
+      float fill = beaconMix * (1.0 - smoothstep(0.0, 0.12, marchLum));
+      float beacon = holeBeacon(wuv, ro, radius, minRes) * progress * fill;
+      col.rgb = max(col.rgb, vec3(beacon));
       ${writeColor} = col;
     }`;
 
@@ -755,17 +779,6 @@
         velX = 0;
         velY = 0;
         velZ = 0;
-        return;
-      }
-      const r = Math.hypot(camX, camY, camZ);
-      if (r > WORLD_LIMIT) {
-        const s = WORLD_LIMIT / r;
-        camX *= s;
-        camY *= s;
-        camZ *= s;
-        velX *= 0.35;
-        velY *= 0.35;
-        velZ *= 0.35;
       }
     }
 
