@@ -105,10 +105,13 @@
     uniform vec3 camRight;
     uniform vec3 camUp;
     uniform vec4 uStars[${MAX_STARS}];
+    uniform vec4 uStarProj[${MAX_STARS}];
     uniform vec3 uLineA[${MAX_LINES}];
     uniform vec3 uLineB[${MAX_LINES}];
     uniform int uStarCount;
     uniform int uLineCount;
+    uniform int uDeflectCount;
+    uniform int uMicro;
     uniform vec2 uViewHalf;
     ${fragOut}
     #define MAX_STEPS ${maxSteps}
@@ -137,7 +140,7 @@
 
     vec3 deflectRay(vec3 ro, vec3 rd, float maxT) {
       for (int i = 0; i < MAX_STARS; i++) {
-        if (float(i) + 0.5 > float(uStarCount)) break;
+        if (float(i) + 0.5 > float(uDeflectCount)) break;
         vec4 s = uStars[i];
         rd = pullRay(rd, s.xyz - ro, s.w * STAR_COMPACT, maxT);
       }
@@ -198,13 +201,6 @@
       return core + halo;
     }
 
-    vec2 projectStar(vec3 w, vec3 ro) {
-      vec3 d = w - ro;
-      float z = dot(d, camFwd);
-      if (z <= 1e-4) return vec2(100.0);
-      return vec2(dot(d, camRight) / z, dot(d, camUp) / z);
-    }
-
     float starField(vec2 uv, vec3 ro, float radius, float minRes, float holeMask) {
       float glow = 0.0;
       float px = 1.0 / minRes;
@@ -212,39 +208,44 @@
       vec2 holeP = holeZ > 1e-4
         ? vec2(dot(-ro, camRight), dot(-ro, camUp)) / holeZ
         : vec2(100.0);
+      float coverZ = 1.0e20;
+      for (int j = 0; j < MAX_STARS; j++) {
+        if (float(j) + 0.5 > float(uStarCount)) break;
+        vec4 p = uStarProj[j];
+        vec2 cd = uv - p.xy;
+        float cr = max(p.w, px * 1.15);
+        if (p.z > 1e-4 && dot(cd, cd) < cr * cr) {
+          coverZ = min(coverZ, p.z);
+        }
+      }
       for (int i = 0; i < MAX_STARS; i++) {
         if (float(i) + 0.5 > float(uStarCount)) break;
-        vec4 s = uStars[i];
-        vec3 toS = s.xyz - ro;
-        float z = dot(toS, camFwd);
-        if (z <= 1e-4) continue;
+        vec4 p = uStarProj[i];
+        float z = p.z;
+        if (z <= 1e-4 || z > coverZ) continue;
         if (holeZ > 1e-4 && z > holeZ && holeMask > 0.5) continue;
-        vec2 sp = vec2(dot(toS, camRight), dot(toS, camUp)) / z;
-        float ang = s.w / max(z, s.w * 0.35);
+        vec2 sp = p.xy;
+        float ang = p.w;
         float holeTe2 = einstein2(radius, holeZ, z);
         if (holeTe2 < px * px) holeTe2 = 0.0;
         float ring = sqrt(holeTe2);
         float pad = max(max(ang * 6.0, px * 4.0), ring * 2.4);
-        bool nearHole = holeTe2 > 0.0 && length(uv - holeP) < pad;
+        vec2 holeD = uv - holeP;
+        bool nearHole = holeTe2 > 0.0 && dot(holeD, holeD) < pad * pad;
         if (!nearHole && (abs(sp.x) > uViewHalf.x + pad || abs(sp.y) > uViewHalf.y + pad)) continue;
         vec2 src = uv;
         if (holeTe2 > 0.0) src -= lensPull(uv, holeP, holeTe2);
-        float blocked = 0.0;
-        for (int j = 0; j < MAX_STARS; j++) {
-          if (float(j) + 0.5 > float(uStarCount)) break;
-          if (i == j) continue;
-          vec4 o = uStars[j];
-          vec3 toO = o.xyz - ro;
-          float zj = dot(toO, camFwd);
-          if (zj <= 1e-4 || zj >= z) continue;
-          vec2 lp = vec2(dot(toO, camRight), dot(toO, camUp)) / zj;
-          float angj = o.w / max(zj, o.w * 0.35);
-          if (length(uv - lp) < max(angj, px * 1.15)) blocked = 1.0;
-          if (zj > 90.0) continue;
-          float starTe2 = einstein2(o.w * STAR_COMPACT, zj, z);
-          if (starTe2 >= px * px) src -= lensPull(uv, lp, starTe2);
+        if (uMicro > 0) {
+          for (int j = 0; j < MAX_STARS; j++) {
+            if (float(j) + 0.5 > float(uStarCount)) break;
+            if (i == j) continue;
+            vec4 o = uStarProj[j];
+            float zj = o.z;
+            if (zj <= 1e-4 || zj >= z || zj > 90.0) continue;
+            float starTe2 = einstein2(uStars[j].w * STAR_COMPACT, zj, z);
+            if (starTe2 >= px * px) src -= lensPull(uv, o.xy, starTe2);
+          }
         }
-        if (blocked > 0.5) continue;
         float coreR = max(ang, px * 1.15);
         float glowR = max(ang * 5.5, px * 3.4);
         float d = length(src - sp);
@@ -255,24 +256,13 @@
       }
       for (int i = 0; i < MAX_LINES; i++) {
         if (float(i) + 0.5 > float(uLineCount)) break;
-        vec3 wa = uLineA[i];
-        vec3 wb = uLineB[i];
-        vec3 da = wa - ro;
-        vec3 db = wb - ro;
-        float za = dot(da, camFwd);
-        float zb = dot(db, camFwd);
-        if (za <= 1e-4 && zb <= 1e-4) continue;
-        float zLine = min(za > 1e-4 ? za : zb, zb > 1e-4 ? zb : za);
+        vec3 la = uLineA[i];
+        vec3 lb = uLineB[i];
+        float zLine = la.z;
+        if (zLine < 0.0) continue;
         if (holeZ > 1e-4 && zLine > holeZ && holeMask > 0.5) continue;
-        vec2 a = vec2(dot(da, camRight), dot(da, camUp)) / max(za, 1e-4);
-        vec2 b = vec2(dot(db, camRight), dot(db, camUp)) / max(zb, 1e-4);
-        if (holeZ > 1e-4 && holeZ < zLine) {
-          float te2 = einstein2(radius, holeZ, zLine);
-          if (te2 >= px * px) {
-            a -= lensPull(a, holeP, te2);
-            b -= lensPull(b, holeP, te2);
-          }
-        }
+        vec2 a = la.xy;
+        vec2 b = lb.xy;
         float pad = 0.35;
         float minX = min(a.x, b.x);
         float maxX = max(a.x, b.x);
@@ -298,10 +288,12 @@
       vec3 rd0 = normalize(uv.x * camRight + uv.y * camUp + camFwd);
       float holeT = max(-dot(ro, rd0), 0.0);
       if (holeT < 1e-4) holeT = 1.0e20;
-      vec3 rd = holeT > 220.0 ? rd0 : deflectRay(ro, rd0, holeT);
+      vec3 rd = (holeT > 220.0 || uDeflectCount < 1) ? rd0 : deflectRay(ro, rd0, holeT);
       vec4 marched = rayMarch(ro, rd, uv * aspect * 5.0, radius);
       vec4 col = vec4(marched.rgb * progress, marched.a);
-      col.rgb += vec3(starField(uv, ro, radius, minRes, marched.a) * progress);
+      if (uStarCount > 0 || uLineCount > 0) {
+        col.rgb += vec3(starField(uv, ro, radius, minRes, marched.a) * progress);
+      }
       float dist = length(ro);
       float beaconMix = smoothstep(50.0, 160.0, dist);
       float marchLum = dot(col.rgb, vec3(0.333));
@@ -503,15 +495,113 @@
     const buffers = initBuffers(gl);
     loadWasmDither();
 
+    const STAR_COMPACT = 0.000004;
     const starData = new Float32Array(MAX_STARS * 4);
+    const starProjData = new Float32Array(MAX_STARS * 4);
     const lineAData = new Float32Array(MAX_LINES * 3);
     const lineBData = new Float32Array(MAX_LINES * 3);
-    let clusters = [];
     let starCount = 0;
     let lineCount = 0;
+    let deflectCount = 0;
+    let micro = 0;
+
+    let clusterCount = 0;
+    let clusterOx = new Float32Array(0);
+    let clusterOy = new Float32Array(0);
+    let clusterOz = new Float32Array(0);
+    let clusterAmpX = new Float32Array(0);
+    let clusterAmpY = new Float32Array(0);
+    let clusterAmpZ = new Float32Array(0);
+    let clusterSpeed = new Float32Array(0);
+    let clusterPhase = new Float32Array(0);
+    let clusterBound = new Float32Array(0);
+    let clusterAmpR = new Float32Array(0);
+    let clusterR = new Float32Array(0);
+    let pointStart = new Int32Array(0);
+    let pointCount = new Int32Array(0);
+    let pointX = new Float32Array(0);
+    let pointY = new Float32Array(0);
+    let pointZ = new Float32Array(0);
+    let pointR = new Float32Array(0);
+    let visWX = new Float32Array(0);
+    let visWY = new Float32Array(0);
+    let visWZ = new Float32Array(0);
+    let visWR = new Float32Array(0);
+    let candMinD2 = new Float32Array(0);
+    let candStart = new Int32Array(0);
+    let candNpts = new Int32Array(0);
+    let candOrder = new Int32Array(0);
 
     function setClusters(next) {
-      clusters = Array.isArray(next) ? next : [];
+      const src = Array.isArray(next) ? next : [];
+      clusterCount = src.length;
+      clusterOx = new Float32Array(clusterCount);
+      clusterOy = new Float32Array(clusterCount);
+      clusterOz = new Float32Array(clusterCount);
+      clusterAmpX = new Float32Array(clusterCount);
+      clusterAmpY = new Float32Array(clusterCount);
+      clusterAmpZ = new Float32Array(clusterCount);
+      clusterSpeed = new Float32Array(clusterCount);
+      clusterPhase = new Float32Array(clusterCount);
+      clusterBound = new Float32Array(clusterCount);
+      clusterAmpR = new Float32Array(clusterCount);
+      clusterR = new Float32Array(clusterCount);
+      pointStart = new Int32Array(clusterCount);
+      pointCount = new Int32Array(clusterCount);
+      candMinD2 = new Float32Array(clusterCount);
+      candStart = new Int32Array(clusterCount);
+      candNpts = new Int32Array(clusterCount);
+      candOrder = new Int32Array(clusterCount);
+      let totalPts = 0;
+      for (let i = 0; i < clusterCount; i++) {
+        const pts = src[i] && src[i].points;
+        totalPts += pts ? pts.length : 0;
+      }
+      pointX = new Float32Array(totalPts);
+      pointY = new Float32Array(totalPts);
+      pointZ = new Float32Array(totalPts);
+      pointR = new Float32Array(totalPts);
+      visWX = new Float32Array(totalPts);
+      visWY = new Float32Array(totalPts);
+      visWZ = new Float32Array(totalPts);
+      visWR = new Float32Array(totalPts);
+      let p = 0;
+      for (let c = 0; c < clusterCount; c++) {
+        const cluster = src[c] || {};
+        const origin = cluster.origin || [0, 0, 0];
+        const glide = cluster.glide || {};
+        const amp = glide.amp || [0, 0, 0];
+        clusterOx[c] = origin[0] || 0;
+        clusterOy[c] = origin[1] || 0;
+        clusterOz[c] = origin[2] || 0;
+        clusterAmpX[c] = amp[0] || 0;
+        clusterAmpY[c] = amp[1] || 0;
+        clusterAmpZ[c] = amp[2] || 0;
+        clusterSpeed[c] = glide.speed || 0;
+        clusterPhase[c] = glide.phase || 0;
+        clusterAmpR[c] = Math.hypot(clusterAmpX[c], clusterAmpY[c], clusterAmpZ[c]);
+        const cr = cluster.radius || STAR_RADIUS;
+        clusterR[c] = cr;
+        const pts = cluster.points || [];
+        pointStart[c] = p;
+        pointCount[c] = pts.length;
+        let maxExt = 0;
+        for (let i = 0; i < pts.length; i++) {
+          const pt = pts[i] || [];
+          const x = pt[0] || 0;
+          const y = pt[1] || 0;
+          const z = pt[2] || 0;
+          const r = pt[3] || cr;
+          pointX[p] = x;
+          pointY[p] = y;
+          pointZ[p] = z;
+          pointR[p] = r;
+          const ext = Math.hypot(x, y, z) + r;
+          if (ext > maxExt) maxExt = ext;
+          p++;
+        }
+        clusterBound[c] = maxExt;
+      }
     }
 
     fetch("/js/clusters.json")
@@ -537,54 +627,116 @@
       return Math.abs(sx) <= halfX && Math.abs(sy) <= halfY;
     }
 
-    function packClusters(now, b, renderW, renderH) {
+    function clusterInView(b, ox, oy, oz, boundR, minRes, renderW, renderH) {
+      const dx = ox - camX;
+      const dy = oy - camY;
+      const dz = oz - camZ;
+      const z = dx * b.fx + dy * b.fy + dz * b.fz;
+      if (z + boundR < 0.05) return false;
+      if (z <= boundR * 2 + 0.05) return true;
+      const sx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
+      const sy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
+      const pad = (boundR / z) * 8 + 0.18;
+      const halfX = renderW / (2 * minRes) + pad;
+      const halfY = renderH / (2 * minRes) + pad;
+      return Math.abs(sx) <= halfX && Math.abs(sy) <= halfY;
+    }
+
+    function einstein2JS(mass, zL, zS) {
+      const dls = zS - zL;
+      if (dls <= 0 || zL <= 1e-4 || zL > 220) return 0;
+      return (2 * mass * dls) / Math.max(zL * zS, 1e-8);
+    }
+
+    function lensPullJS(uvx, uvy, lpx, lpy, te2) {
+      if (te2 <= 0) return [0, 0];
+      const dx = uvx - lpx;
+      const dy = uvy - lpy;
+      const s = te2 / Math.max(dx * dx + dy * dy, te2 * 0.08);
+      return [dx * s, dy * s];
+    }
+
+    function packScene(now, b, renderW, renderH, radius) {
       const t = now * 0.001;
       const minRes = Math.min(renderW, renderH);
-      const candidates = [];
-      for (let c = 0; c < clusters.length; c++) {
-        const cluster = clusters[c];
-        const pts = cluster.points || [];
-        if (!pts.length) continue;
-        const origin = cluster.origin || [0, 0, 0];
-        const glide = cluster.glide || {};
-        const amp = glide.amp || [0, 0, 0];
-        const speed = glide.speed || 0;
-        const phase = glide.phase || 0;
-        const ox = origin[0] + amp[0] * Math.sin(t * speed + phase);
-        const oy = origin[1] + amp[1] * Math.sin(t * speed * 0.83 + phase + 1.1);
-        const oz = origin[2] + amp[2] * Math.cos(t * speed * 0.71 + phase);
-        const clusterR = cluster.radius || STAR_RADIUS;
-        const visible = [];
-        let minDist2 = Infinity;
-        for (let i = 0; i < pts.length; i++) {
-          const p = pts[i];
-          const wx = ox + (p[0] || 0);
-          const wy = oy + (p[1] || 0);
-          const wz = oz + (p[2] || 0);
-          const sr = p[3] || clusterR;
+      let visN = 0;
+      let candN = 0;
+      for (let c = 0; c < clusterCount; c++) {
+        const npts = pointCount[c];
+        if (!npts) continue;
+        if (
+          !clusterInView(
+            b,
+            clusterOx[c],
+            clusterOy[c],
+            clusterOz[c],
+            clusterBound[c] + clusterAmpR[c],
+            minRes,
+            renderW,
+            renderH
+          )
+        ) {
+          continue;
+        }
+        const speed = clusterSpeed[c];
+        const phase = clusterPhase[c];
+        const ox = clusterOx[c] + clusterAmpX[c] * Math.sin(t * speed + phase);
+        const oy = clusterOy[c] + clusterAmpY[c] * Math.sin(t * speed * 0.83 + phase + 1.1);
+        const oz = clusterOz[c] + clusterAmpZ[c] * Math.cos(t * speed * 0.71 + phase);
+        if (!clusterInView(b, ox, oy, oz, clusterBound[c], minRes, renderW, renderH)) continue;
+        const start = pointStart[c];
+        const visStart = visN;
+        let minDist2 = 1e20;
+        for (let i = 0; i < npts; i++) {
+          const pi = start + i;
+          const wx = ox + pointX[pi];
+          const wy = oy + pointY[pi];
+          const wz = oz + pointZ[pi];
+          const sr = pointR[pi];
           if (!starInView(b, wx, wy, wz, sr, minRes, renderW, renderH)) continue;
           const dx = wx - camX;
           const dy = wy - camY;
           const dz = wz - camZ;
           const dist2 = dx * dx + dy * dy + dz * dz;
           if (dist2 < minDist2) minDist2 = dist2;
-          visible.push({ wx, wy, wz, sr });
+          visWX[visN] = wx;
+          visWY[visN] = wy;
+          visWZ[visN] = wz;
+          visWR[visN] = sr;
+          visN++;
         }
-        if (visible.length) candidates.push({ minDist2, visible });
+        if (visN !== visStart) {
+          candMinD2[candN] = minDist2;
+          candStart[candN] = visStart;
+          candNpts[candN] = visN - visStart;
+          candOrder[candN] = candN;
+          candN++;
+        }
       }
-      candidates.sort((a, b) => a.minDist2 - b.minDist2);
+      for (let i = 1; i < candN; i++) {
+        const id = candOrder[i];
+        const d = candMinD2[id];
+        let j = i - 1;
+        while (j >= 0 && candMinD2[candOrder[j]] > d) {
+          candOrder[j + 1] = candOrder[j];
+          j--;
+        }
+        candOrder[j + 1] = id;
+      }
       starCount = 0;
       lineCount = 0;
-      for (let c = 0; c < candidates.length && starCount < MAX_STARS; c++) {
-        const cluster = candidates[c];
+      for (let ci = 0; ci < candN && starCount < MAX_STARS; ci++) {
+        const c = candOrder[ci];
         const first = starCount;
-        for (let i = 0; i < cluster.visible.length && starCount < MAX_STARS; i++) {
-          const star = cluster.visible[i];
+        const start = candStart[c];
+        const n = candNpts[c];
+        for (let i = 0; i < n && starCount < MAX_STARS; i++) {
+          const s = start + i;
           const o = starCount * 4;
-          starData[o] = star.wx;
-          starData[o + 1] = star.wy;
-          starData[o + 2] = star.wz;
-          starData[o + 3] = star.sr;
+          starData[o] = visWX[s];
+          starData[o + 1] = visWY[s];
+          starData[o + 2] = visWZ[s];
+          starData[o + 3] = visWR[s];
           starCount++;
         }
         for (let i = first + 1; i < starCount && lineCount < MAX_LINES; i++) {
@@ -599,6 +751,90 @@
           lineBData[lo + 2] = starData[bi + 2];
           lineCount++;
         }
+      }
+
+      const px = 1 / minRes;
+      const px2 = px * px;
+      const holeZ = -camX * b.fx - camY * b.fy - camZ * b.fz;
+      const holePx = holeZ > 1e-4 ? (-camX * b.rx - camY * b.ry - camZ * b.rz) / holeZ : 100;
+      const holePy = holeZ > 1e-4 ? (-camX * b.ux - camY * b.uy - camZ * b.uz) / holeZ : 100;
+      deflectCount = 0;
+      micro = 0;
+      for (let i = 0; i < starCount; i++) {
+        const o = i * 4;
+        const dx = starData[o] - camX;
+        const dy = starData[o + 1] - camY;
+        const dz = starData[o + 2] - camZ;
+        const z = dx * b.fx + dy * b.fy + dz * b.fz;
+        const sr = starData[o + 3];
+        let spx = 100;
+        let spy = 100;
+        let ang = 0;
+        if (z > 1e-4) {
+          spx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
+          spy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
+          ang = sr / Math.max(z, sr * 0.35);
+        }
+        starProjData[o] = spx;
+        starProjData[o + 1] = spy;
+        starProjData[o + 2] = z;
+        starProjData[o + 3] = ang;
+        const mass = sr * STAR_COMPACT;
+        if (z > 1e-4 && (mass * 48) / z > px * 0.5) deflectCount = starCount;
+      }
+      for (let i = 0; i < starCount && !micro; i++) {
+        const z = starProjData[i * 4 + 2];
+        for (let j = 0; j < starCount; j++) {
+          if (i === j) continue;
+          const zj = starProjData[j * 4 + 2];
+          if (zj <= 1e-4 || zj >= z || zj > 90) continue;
+          if (einstein2JS(starData[j * 4 + 3] * STAR_COMPACT, zj, z) >= px2) {
+            micro = 1;
+            break;
+          }
+        }
+      }
+      for (let i = 0; i < lineCount; i++) {
+        const lo = i * 3;
+        const dax = lineAData[lo] - camX;
+        const day = lineAData[lo + 1] - camY;
+        const daz = lineAData[lo + 2] - camZ;
+        const dbx = lineBData[lo] - camX;
+        const dby = lineBData[lo + 1] - camY;
+        const dbz = lineBData[lo + 2] - camZ;
+        const za = dax * b.fx + day * b.fy + daz * b.fz;
+        const zb = dbx * b.fx + dby * b.fy + dbz * b.fz;
+        if (za <= 1e-4 && zb <= 1e-4) {
+          lineAData[lo] = 0;
+          lineAData[lo + 1] = 0;
+          lineAData[lo + 2] = -1;
+          lineBData[lo] = 0;
+          lineBData[lo + 1] = 0;
+          lineBData[lo + 2] = 0;
+          continue;
+        }
+        const zLine = Math.min(za > 1e-4 ? za : zb, zb > 1e-4 ? zb : za);
+        let ax = (dax * b.rx + day * b.ry + daz * b.rz) / Math.max(za, 1e-4);
+        let ay = (dax * b.ux + day * b.uy + daz * b.uz) / Math.max(za, 1e-4);
+        let bx = (dbx * b.rx + dby * b.ry + dbz * b.rz) / Math.max(zb, 1e-4);
+        let by = (dbx * b.ux + dby * b.uy + dbz * b.uz) / Math.max(zb, 1e-4);
+        if (holeZ > 1e-4 && holeZ < zLine) {
+          const te2 = einstein2JS(radius, holeZ, zLine);
+          if (te2 >= px2) {
+            const pa = lensPullJS(ax, ay, holePx, holePy, te2);
+            const pb = lensPullJS(bx, by, holePx, holePy, te2);
+            ax -= pa[0];
+            ay -= pa[1];
+            bx -= pb[0];
+            by -= pb[1];
+          }
+        }
+        lineAData[lo] = ax;
+        lineAData[lo + 1] = ay;
+        lineAData[lo + 2] = zLine;
+        lineBData[lo] = bx;
+        lineBData[lo + 1] = by;
+        lineBData[lo + 2] = 0;
       }
     }
 
@@ -627,10 +863,13 @@
         camRight: gl.getUniformLocation(program, "camRight"),
         camUp: gl.getUniformLocation(program, "camUp"),
         stars: gl.getUniformLocation(program, "uStars[0]"),
+        starProj: gl.getUniformLocation(program, "uStarProj[0]"),
         lineA: gl.getUniformLocation(program, "uLineA[0]"),
         lineB: gl.getUniformLocation(program, "uLineB[0]"),
         starCount: gl.getUniformLocation(program, "uStarCount"),
         lineCount: gl.getUniformLocation(program, "uLineCount"),
+        deflectCount: gl.getUniformLocation(program, "uDeflectCount"),
+        micro: gl.getUniformLocation(program, "uMicro"),
         viewHalf: gl.getUniformLocation(program, "uViewHalf"),
       },
     };
@@ -864,14 +1103,22 @@
         renderWidth / (2 * minRes),
         renderHeight / (2 * minRes)
       );
-      packClusters(now, b, renderWidth, renderHeight);
-      gl.uniform4fv(programInfo.uniformLocations.stars, starData);
-      gl.uniform3fv(programInfo.uniformLocations.lineA, lineAData);
-      gl.uniform3fv(programInfo.uniformLocations.lineB, lineBData);
+      packScene(now, b, renderWidth, renderHeight, schwarzschildRadius * easedProgress);
+      if (starCount) {
+        if (deflectCount || micro) {
+          gl.uniform4fv(programInfo.uniformLocations.stars, starData.subarray(0, starCount * 4));
+        }
+        gl.uniform4fv(programInfo.uniformLocations.starProj, starProjData.subarray(0, starCount * 4));
+      }
+      if (lineCount) {
+        gl.uniform3fv(programInfo.uniformLocations.lineA, lineAData.subarray(0, lineCount * 3));
+        gl.uniform3fv(programInfo.uniformLocations.lineB, lineBData.subarray(0, lineCount * 3));
+      }
       gl.uniform1i(programInfo.uniformLocations.starCount, starCount);
       gl.uniform1i(programInfo.uniformLocations.lineCount, lineCount);
+      gl.uniform1i(programInfo.uniformLocations.deflectCount, deflectCount);
+      gl.uniform1i(programInfo.uniformLocations.micro, micro);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
-      gl.flush();
     }
 
     function present(width, height, upload) {
@@ -905,25 +1152,27 @@
       }
     }
 
-    function readback(renderWidth, renderHeight) {
+    function pullPrevRead(renderWidth, renderHeight) {
+      if (!pbos || !pboHasPrev) return false;
       const dest = readDest(renderWidth);
-      if (pbos) {
-        const write = pboIndex;
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[write]);
-        gl.readPixels(0, 0, renderWidth, renderHeight, sceneFormat, gl.UNSIGNED_BYTE, 0);
-        pboIndex ^= 1;
-        if (!pboHasPrev) {
-          pboHasPrev = true;
-          gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-          return false;
-        }
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[pboIndex]);
-        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, dest);
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-      } else {
-        gl.readPixels(0, 0, renderWidth, renderHeight, sceneFormat, gl.UNSIGNED_BYTE, dest);
-      }
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[pboIndex ^ 1]);
+      gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, dest);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      unpackRead(renderWidth, renderHeight);
+      return true;
+    }
 
+    function packCurrent(renderWidth, renderHeight) {
+      if (pbos) {
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[pboIndex]);
+        gl.readPixels(0, 0, renderWidth, renderHeight, sceneFormat, gl.UNSIGNED_BYTE, 0);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        pboIndex ^= 1;
+        pboHasPrev = true;
+        return false;
+      }
+      const dest = readDest(renderWidth);
+      gl.readPixels(0, 0, renderWidth, renderHeight, sceneFormat, gl.UNSIGNED_BYTE, dest);
       unpackRead(renderWidth, renderHeight);
       return true;
     }
@@ -1022,8 +1271,10 @@
       }
 
       refreshViews();
+      const prevReady = pullPrevRead(renderWidth, renderHeight);
       renderScene(renderWidth, renderHeight, now);
-      if (readback(renderWidth, renderHeight)) {
+      const syncReady = packCurrent(renderWidth, renderHeight);
+      if (prevReady || syncReady) {
         dither(renderWidth, renderHeight);
         present(renderWidth, renderHeight, true);
       } else if (hasPresented) {
