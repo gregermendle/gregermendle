@@ -1,14 +1,14 @@
 import { writeFileSync } from "node:fs";
 
-const COUNT = 500;
-const NEAR_COUNT = 450;
 const SEED = 0x6d656e646c65;
 const RS = 0.25;
 const OUT = "js/clusters.json";
-const NEAR_MIN = 55;
-const NEAR_MAX = 240;
-const FAR_MIN = 320;
-const FAR_MAX = 3600;
+const ARMS = 3;
+const PITCH = 0.26;
+const R_CORE = 18;
+const R_DISK = 230;
+const R_SCALE = 72;
+const DUST_MUL = 2 / 3;
 
 function stellarRadiusRs(rng) {
   const t = rng();
@@ -27,10 +27,6 @@ function mulberry32(seed) {
   };
 }
 
-function pick(rng, arr) {
-  return arr[(rng() * arr.length) | 0];
-}
-
 function round1(n) {
   return Math.round(n * 10) / 10;
 }
@@ -39,55 +35,16 @@ function round3(n) {
   return Math.round(n * 1000) / 1000;
 }
 
-function randomDir(rng) {
-  const u = rng();
+function gauss(rng) {
+  const u = Math.max(1e-6, rng());
   const v = rng();
-  const theta = 2 * Math.PI * u;
-  const z = 2 * v - 1;
-  const r = Math.sqrt(1 - z * z);
-  return [r * Math.cos(theta), z * 0.35 + (rng() - 0.5) * 0.12, r * Math.sin(theta)];
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(Math.PI * 2 * v);
 }
 
-function randomShell(rng, minR, maxR) {
-  const u = rng();
-  const r = minR + (maxR - minR) * Math.cbrt(u);
-  const dir = randomDir(rng);
-  return [dir[0] * r, dir[1] * r * 0.18, dir[2] * r];
-}
-
-function starPoint(rng, x, y, z) {
-  const color = starColor(rng);
-  return [round1(x), round1(y), round1(z), round3(stellarRadiusRs(rng) * RS), color[0], color[1], color[2]];
-}
-
-function buildPoints(rng) {
-  const n = 3 + ((rng() * 6) | 0);
-  const points = [starPoint(rng, 0, 0, 0)];
-  let x = 0;
-  let y = 0;
-  let z = 0;
-  let yaw = rng() * Math.PI * 2;
-  let pitch = (rng() - 0.5) * 0.35;
-
-  for (let i = 1; i < n; i++) {
-    yaw += (rng() - 0.5) * 1.4;
-    pitch = pitch * 0.65 + (rng() - 0.5) * 0.25;
-    const step = 1.8 + rng() * 3.8;
-    x += Math.cos(yaw) * Math.cos(pitch) * step;
-    y += Math.sin(pitch) * step * 0.35 + (rng() - 0.5) * 0.4;
-    z += Math.sin(yaw) * Math.cos(pitch) * step;
-
-    if (rng() < 0.14 && i > 1) {
-      const bx = x + (rng() - 0.5) * 2.4;
-      const by = y + (rng() - 0.5) * 0.8;
-      const bz = z + (rng() - 0.5) * 2.4;
-      points.push(starPoint(rng, bx, by, bz));
-    }
-
-    points.push(starPoint(rng, x, y, z));
-  }
-
-  return points;
+function expRadius(rng, rMin, rMax, scale) {
+  const a = Math.exp(-rMin / scale);
+  const b = Math.exp(-rMax / scale);
+  return -scale * Math.log(Math.max(1e-8, a - rng() * (a - b)));
 }
 
 function starColor(rng) {
@@ -104,41 +61,67 @@ function starColor(rng) {
   return [round3(1), round3(0.78 + u * 0.22), round3(0.38 + u * 0.62)];
 }
 
-function dustColor() {
-  return [1, 1, 1];
+function starPoint(rng, x, y, z) {
+  const color = starColor(rng);
+  return [round1(x), round1(y), round1(z), round3(stellarRadiusRs(rng) * RS), color[0], color[1], color[2]];
 }
 
-function buildDust(rng) {
-  if (rng() < 0.38) return null;
-  const radius = 3.8 + rng() * 6.5;
+function armTheta(arm, r, scatter) {
+  return arm * ((Math.PI * 2) / ARMS) + PITCH * Math.log(Math.max(r, R_CORE) / R_CORE) + scatter;
+}
+
+function diskPos(rng, r, arm, scatter, yScale) {
+  const theta = armTheta(arm, r, scatter);
+  const y = gauss(rng) * yScale;
+  return [r * Math.cos(theta), y, r * Math.sin(theta)];
+}
+
+function bulgePos(rng) {
+  const r = 10 + Math.pow(rng(), 0.62) * 36;
+  const u = rng();
+  const v = rng();
+  const theta = Math.PI * 2 * u;
+  const z = 2 * v - 1;
+  const s = Math.sqrt(Math.max(0, 1 - z * z));
+  return [s * Math.cos(theta) * r, z * r * 0.52, s * Math.sin(theta) * r];
+}
+
+function buildPoints(rng, origin, n, spread) {
+  const points = [starPoint(rng, 0, 0, 0)];
+  if (n <= 1) return points;
+  const ox = origin[0];
+  const oz = origin[2];
+  const rl = Math.hypot(ox, oz) || 1;
+  const rx = ox / rl;
+  const rz = oz / rl;
+  const tx = -rz;
+  const tz = rx;
+  for (let i = 1; i < n; i++) {
+    const dr = (rng() < 0.5 ? -1 : 1) * (7 + rng() * spread);
+    const dt = (rng() - 0.5) * spread * 0.7;
+    const dy = (rng() - 0.5) * spread * 0.1;
+    points.push(starPoint(rng, rx * dr + tx * dt, dy, rz * dr + tz * dt));
+  }
+  return points;
+}
+
+function buildDust(rng, count, radius, size, opacity, height, stretch) {
   return {
-    count: 12 + ((rng() * 10) | 0),
+    count: Math.max(1, Math.round(count * DUST_MUL)),
     radius: round1(radius),
-    size: round3(radius * (0.32 + rng() * 0.16)),
-    opacity: round3(0.034 + rng() * 0.018),
-    color: dustColor(),
+    size: round3(size),
+    opacity: round3(opacity * DUST_MUL),
+    height: round3(height),
+    stretch: round3(stretch),
+    color: [1, 1, 1],
   };
 }
 
-function buildCluster(rng, origin) {
-  const radius = round3((0.18 + rng() * 0.14) * RS);
-  const ampScale = 4 + rng() * 14;
-  const dir = randomDir(rng);
-  const glide = {
-    amp: [
-      round1(dir[0] * ampScale),
-      round1((rng() - 0.5) * 2.4),
-      round1(dir[2] * ampScale),
-    ],
-    speed: round3(0.006 + rng() * 0.008),
-    phase: round1(rng() * Math.PI * 2),
-  };
-  const dust = buildDust(rng);
+function clusterOf(rng, origin, points, dust) {
   const cluster = {
     origin: origin.map(round1),
-    radius,
-    glide,
-    points: buildPoints(rng),
+    radius: round3((0.16 + rng() * 0.12) * RS),
+    points,
   };
   if (dust) cluster.dust = dust;
   return cluster;
@@ -147,13 +130,77 @@ function buildCluster(rng, origin) {
 const rng = mulberry32(SEED);
 const clusters = [];
 
-for (let i = 0; i < NEAR_COUNT; i++) {
-  clusters.push(buildCluster(rng, randomShell(rng, NEAR_MIN, NEAR_MAX)));
+for (let i = 0; i < 860; i++) {
+  const arm = i % ARMS;
+  const r = expRadius(rng, R_CORE, R_DISK, R_SCALE);
+  const origin = diskPos(rng, r, arm, (rng() - 0.5) * 0.2, 1.6 + r * 0.01);
+  const n = rng() < 0.42 ? 1 : 2;
+  const dust = buildDust(
+    rng,
+    18 + ((rng() * 14) | 0),
+    14 + rng() * 15,
+    3.2 + rng() * 2.8,
+    0.018 + rng() * 0.014,
+    0.09 + rng() * 0.05,
+    1.9 + rng() * 0.8
+  );
+  clusters.push(clusterOf(rng, origin, buildPoints(rng, origin, n, 10 + rng() * 9), dust));
 }
-for (let i = NEAR_COUNT; i < COUNT; i++) {
-  clusters.push(buildCluster(rng, randomShell(rng, FAR_MIN, FAR_MAX)));
+
+for (let i = 0; i < 380; i++) {
+  const arm = (rng() * ARMS) | 0;
+  const r = expRadius(rng, R_CORE + 6, R_DISK, R_SCALE * 1.15);
+  const origin = diskPos(rng, r, arm, (rng() - 0.5) * 0.72, 2.1 + r * 0.012);
+  const n = rng() < 0.62 ? 1 : 2;
+  const dust =
+    rng() < 0.7
+      ? buildDust(
+          rng,
+          10 + ((rng() * 8) | 0),
+          9 + rng() * 10,
+          2.2 + rng() * 1.8,
+          0.01 + rng() * 0.01,
+          0.11 + rng() * 0.06,
+          1.2 + rng() * 0.5
+        )
+      : null;
+  clusters.push(clusterOf(rng, origin, buildPoints(rng, origin, n, 8 + rng() * 7), dust));
+}
+
+for (let i = 0; i < 110; i++) {
+  const origin = bulgePos(rng);
+  const n = 2 + ((rng() * 3) | 0);
+  const dust = buildDust(
+    rng,
+    18 + ((rng() * 12) | 0),
+    8 + rng() * 9,
+    2.4 + rng() * 2,
+    0.02 + rng() * 0.014,
+    0.38 + rng() * 0.18,
+    0.85 + rng() * 0.3
+  );
+  clusters.push(clusterOf(rng, origin, buildPoints(rng, origin, n, 5 + rng() * 5), dust));
+}
+
+for (let i = 0; i < 70; i++) {
+  const arm = (rng() * ARMS) | 0;
+  const r = 260 + rng() * 900;
+  const origin = diskPos(rng, r, arm, (rng() - 0.5) * 0.9, 4 + r * 0.004);
+  const dust =
+    rng() < 0.55
+      ? buildDust(
+          rng,
+          10 + ((rng() * 8) | 0),
+          10 + rng() * 12,
+          2.2 + rng() * 2,
+          0.008 + rng() * 0.008,
+          0.12 + rng() * 0.08,
+          1.3 + rng() * 0.5
+        )
+      : null;
+  clusters.push(clusterOf(rng, origin, buildPoints(rng, origin, 1, 6), dust));
 }
 
 const payload = { clusters };
-writeFileSync(OUT, `${JSON.stringify(payload, null, 2)}\n`);
+writeFileSync(OUT, `${JSON.stringify(payload)}\n`);
 console.log(`Wrote ${clusters.length} clusters to ${OUT}`);
