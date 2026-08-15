@@ -104,24 +104,8 @@ function starColor(rng) {
   return [round3(1), round3(0.78 + u * 0.22), round3(0.38 + u * 0.62)];
 }
 
-function dustColor(rng) {
-  const palettes = [
-    [1, 0.12, 0.1],
-    [0.95, 0.08, 0.06],
-    [0.88, 0.15, 0.12],
-    [1, 0.25, 0.2],
-    [0.82, 0.1, 0.08],
-    [0.92, 0.18, 0.14],
-    [1, 0.35, 0.28],
-    [0.78, 0.06, 0.05],
-  ];
-  const base = palettes[(rng() * palettes.length) | 0];
-  const lift = 0.12 + rng() * 0.18;
-  return [
-    round3(Math.min(1, base[0] + lift * (rng() - 0.2))),
-    round3(Math.min(1, base[1] + lift * (rng() - 0.2))),
-    round3(Math.min(1, base[2] + lift * (rng() - 0.2))),
-  ];
+function dustColor() {
+  return [1, 1, 1];
 }
 
 function buildDust(rng) {
@@ -132,7 +116,7 @@ function buildDust(rng) {
     radius: round1(radius),
     size: round3(radius * (0.32 + rng() * 0.16)),
     opacity: round3(0.034 + rng() * 0.018),
-    color: dustColor(rng),
+    color: dustColor(),
   };
 }
 
