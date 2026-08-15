@@ -58,11 +58,7 @@
   const LENS_FAR_END = 320;
   const DISK_OCCLUDE_LUMA = 0.42;
   const GRAV_G = 0.0011;
-  const GRAV_SOFT2 = 2.25;
   const GRAV_STEP = 8.5;
-  const GRAV_KICK_H = 0.75;
-  const GRAV_MAX_KICKS = 8;
-  const GRAV_FAST_MUL = 36;
   const GRAV_BH_MASS = 280000;
   const GRAV_STAR_MASS = 1800;
   const SIM_TIME_MIN = 0.001;
@@ -777,9 +773,6 @@
     let comY = new Float32Array(0);
     let comZ = new Float32Array(0);
     let comMass = new Float32Array(0);
-    let physFx = new Float32Array(0);
-    let physFy = new Float32Array(0);
-    let physFz = new Float32Array(0);
     let totalStars = 0;
     let dustCount = new Int32Array(0);
     let dustRadius = new Float32Array(0);
@@ -835,9 +828,6 @@
       comY = new Float32Array(clusterCount);
       comZ = new Float32Array(clusterCount);
       comMass = new Float32Array(clusterCount);
-      physFx = new Float32Array(totalPts);
-      physFy = new Float32Array(totalPts);
-      physFz = new Float32Array(totalPts);
       totalStars = totalPts;
       const bhMassRef = RS_REF * RS_REF * RS_REF * GRAV_BH_MASS;
       let p = 0;
@@ -883,21 +873,52 @@
           starCluster[p] = c;
           const rm = r * r * r;
           pointMass[p] = rm * GRAV_STAR_MASS;
-          const dist = Math.hypot(wx, wy, wz) || 1;
-          const spin = 0.97 + (((p * 2654435761) >>> 0) / 4294967296) * 0.03;
-          const orbV = Math.sqrt(Math.max(1e-8, (GRAV_G * bhMassRef) / dist)) * spin;
-          let tx = -wz / dist;
-          let tz = wx / dist;
-          const tilt = ((((p * 1597334677) >>> 0) / 4294967296) - 0.5) * 0.14;
-          const ty = -tz * Math.sin(tilt);
-          tz = tz * Math.cos(tilt);
-          const tLen = Math.hypot(tx, ty, tz) || 1;
-          worldVx[p] = (tx / tLen) * orbV;
-          worldVy[p] = (ty / tLen) * orbV;
-          worldVz[p] = (tz / tLen) * orbV;
           const ext = Math.hypot(x, y, z) + r;
           if (ext > maxExt) maxExt = ext;
           p++;
+        }
+        const start = pointStart[c];
+        const end = start + pts.length;
+        let cmx = 0;
+        let cmy = 0;
+        let cmz = 0;
+        let cm = 0;
+        for (let i = start; i < end; i++) {
+          const m = pointMass[i];
+          cmx += worldX[i] * m;
+          cmy += worldY[i] * m;
+          cmz += worldZ[i] * m;
+          cm += m;
+        }
+        if (cm > 0) {
+          cmx /= cm;
+          cmy /= cm;
+          cmz /= cm;
+        }
+        const comR = Math.hypot(cmx, cmy, cmz) || 1;
+        const spin = 0.97 + (((c * 2654435761) >>> 0) / 4294967296) * 0.03;
+        const semiMajor = comR / Math.max(0.05, 2 - spin * spin);
+        const tiltA = ((((c * 1597334677) >>> 0) / 4294967296) - 0.5) * 0.14;
+        const tiltB = ((((c * 2246822519) >>> 0) / 4294967296) - 0.5) * 0.14;
+        const nLen = Math.hypot(tiltA, 1, tiltB);
+        const nx = tiltA / nLen;
+        const ny = -1 / nLen;
+        const nz = tiltB / nLen;
+        for (let i = start; i < end; i++) {
+          const sx = worldX[i];
+          const sy = worldY[i];
+          const sz = worldZ[i];
+          const sr = Math.hypot(sx, sy, sz) || 1;
+          const speed = Math.sqrt(
+            Math.max(1e-8, GRAV_G * bhMassRef * (2 / sr - 1 / semiMajor))
+          );
+          const tx = ny * (sz / sr) - nz * (sy / sr);
+          const ty = nz * (sx / sr) - nx * (sz / sr);
+          const tz = nx * (sy / sr) - ny * (sx / sr);
+          const tLen = Math.hypot(tx, ty, tz) || 1;
+          worldVx[i] = (tx / tLen) * speed;
+          worldVy[i] = (ty / tLen) * speed;
+          worldVz[i] = (tz / tLen) * speed;
         }
         const dust = Array.isArray(cluster.dust) ? cluster.dust[0] : cluster.dust;
         if (dust && (dust.count | 0) > 0) {
@@ -1179,25 +1200,36 @@
     }
 
     const keplerStump = new Float64Array(2);
+    const keplerOut = new Float64Array(6);
 
-    function keplerAdvance(i, dt, mu, wx, wy, wz, vx, vy, vz) {
-      const px = wx[i];
-      const py = wy[i];
-      const pz = wz[i];
+    function keplerStep(px, py, pz, vx, vy, vz, dt, mu, out) {
       const r0 = Math.hypot(px, py, pz);
-      if (r0 < 1e-6 || dt === 0) return;
+      if (r0 < 1e-6 || dt === 0) {
+        out[0] = px;
+        out[1] = py;
+        out[2] = pz;
+        out[3] = vx;
+        out[4] = vy;
+        out[5] = vz;
+        return true;
+      }
 
-      const vxi = vx[i];
-      const vyi = vy[i];
-      const vzi = vz[i];
-      const v2 = vxi * vxi + vyi * vyi + vzi * vzi;
-      const rdotv = px * vxi + py * vyi + pz * vzi;
+      const v2 = vx * vx + vy * vy + vz * vz;
+      const rdotv = px * vx + py * vy + pz * vz;
       const alpha = 2 / r0 - v2 / mu;
       if (alpha > 1e-12) {
         const a = 1 / alpha;
         const period = Math.PI * 2 * Math.sqrt((a * a * a) / mu);
         dt -= period * Math.round(dt / period);
-        if (dt === 0) return;
+        if (dt === 0) {
+          out[0] = px;
+          out[1] = py;
+          out[2] = pz;
+          out[3] = vx;
+          out[4] = vy;
+          out[5] = vz;
+          return true;
+        }
       }
 
       const sqrtMu = Math.sqrt(mu);
@@ -1240,25 +1272,26 @@
       const chi3 = chi2 * chi;
       const f = 1 - (chi2 / r0) * C;
       const g = dt - (chi3 / sqrtMu) * S;
-      const nx = f * px + g * vxi;
-      const ny = f * py + g * vyi;
-      const nz = f * pz + g * vzi;
+      const nx = f * px + g * vx;
+      const ny = f * py + g * vy;
+      const nz = f * pz + g * vz;
       const r = Math.hypot(nx, ny, nz);
-      if (!converged || !(r > 1e-8) || !Number.isFinite(r)) return;
+      if (!converged || !(r > 1e-8) || !Number.isFinite(r)) return false;
 
       const fdot = (sqrtMu / (r * r0)) * (alpha * chi3 * S - chi);
       const gdot = 1 - (chi2 / r) * C;
-      const nvx = fdot * px + gdot * vxi;
-      const nvy = fdot * py + gdot * vyi;
-      const nvz = fdot * pz + gdot * vzi;
-      if (!Number.isFinite(nvx + nvy + nvz)) return;
+      const nvx = fdot * px + gdot * vx;
+      const nvy = fdot * py + gdot * vy;
+      const nvz = fdot * pz + gdot * vz;
+      if (!Number.isFinite(nvx + nvy + nvz)) return false;
 
-      wx[i] = nx;
-      wy[i] = ny;
-      wz[i] = nz;
-      vx[i] = nvx;
-      vy[i] = nvy;
-      vz[i] = nvz;
+      out[0] = nx;
+      out[1] = ny;
+      out[2] = nz;
+      out[3] = nvx;
+      out[4] = nvy;
+      out[5] = nvz;
+      return true;
     }
 
     function enforceIsco(i, wx, wy, wz, vx, vy, vz, rs) {
@@ -1284,43 +1317,6 @@
       }
     }
 
-    function kickCluster(n, cc, h, wx, wy, wz, vx, vy, vz, mass, g, eps2, ax, ay, az) {
-      ax.fill(0);
-      ay.fill(0);
-      az.fill(0);
-      for (let c = 0; c < cc; c++) {
-        const start = pointStart[c];
-        const count = pointCount[c];
-        if (count < 2) continue;
-        const end = start + count;
-        for (let i = start; i < end; i++) {
-          const ix = wx[i];
-          const iy = wy[i];
-          const iz = wz[i];
-          const mi = mass[i];
-          for (let j = i + 1; j < end; j++) {
-            const dx = wx[j] - ix;
-            const dy = wy[j] - iy;
-            const dz = wz[j] - iz;
-            const r2 = dx * dx + dy * dy + dz * dz + eps2;
-            const invR3 = g / (r2 * Math.sqrt(r2));
-            const mj = mass[j];
-            ax[i] += dx * invR3 * mj;
-            ay[i] += dy * invR3 * mj;
-            az[i] += dz * invR3 * mj;
-            ax[j] -= dx * invR3 * mi;
-            ay[j] -= dy * invR3 * mi;
-            az[j] -= dz * invR3 * mi;
-          }
-        }
-      }
-      for (let i = 0; i < n; i++) {
-        vx[i] += ax[i] * h;
-        vy[i] += ay[i] * h;
-        vz[i] += az[i] * h;
-      }
-    }
-
     function updateGravity(frameMs, timeMul) {
       const n = totalStars;
       const cc = clusterCount;
@@ -1333,32 +1329,24 @@
       const vy = worldVy;
       const vz = worldVz;
       const mass = pointMass;
-      const fx = physFx;
-      const fy = physFy;
-      const fz = physFz;
       const cx = comX;
       const cy = comY;
       const cz = comZ;
       const cm = comMass;
-      const g = GRAV_G;
-      const eps2 = GRAV_SOFT2;
       const mu = bhMu();
       const rs = schwarzschildRadius;
       const orbitDt = frameMs * 0.001 * GRAV_STEP * timeMul;
+      const out = keplerOut;
 
-      if (timeMul < GRAV_FAST_MUL) {
-        const steps = Math.min(GRAV_MAX_KICKS, Math.max(1, Math.ceil(orbitDt / GRAV_KICK_H)));
-        const h = orbitDt / steps;
-        const half = h * 0.5;
-        for (let step = 0; step < steps; step++) {
-          kickCluster(n, cc, half, wx, wy, wz, vx, vy, vz, mass, g, eps2, fx, fy, fz);
-          for (let i = 0; i < n; i++) keplerAdvance(i, h, mu, wx, wy, wz, vx, vy, vz);
-          kickCluster(n, cc, half, wx, wy, wz, vx, vy, vz, mass, g, eps2, fx, fy, fz);
-        }
-      } else {
-        for (let i = 0; i < n; i++) keplerAdvance(i, orbitDt, mu, wx, wy, wz, vx, vy, vz);
-      }
       for (let i = 0; i < n; i++) {
+        if (keplerStep(wx[i], wy[i], wz[i], vx[i], vy[i], vz[i], orbitDt, mu, out)) {
+          wx[i] = out[0];
+          wy[i] = out[1];
+          wz[i] = out[2];
+          vx[i] = out[3];
+          vy[i] = out[4];
+          vz[i] = out[5];
+        }
         enforceIsco(i, wx, wy, wz, vx, vy, vz, rs);
       }
 
