@@ -3,6 +3,10 @@ import { writeFileSync } from "node:fs";
 const SEED = 0x6d656e646c65;
 const RS = 0.25;
 const OUT = "js/clusters.json";
+const CLUSTER_DISK = 600;
+const CLUSTER_SCATTER = 270;
+const CLUSTER_BULGE = 80;
+const CLUSTER_HALO = 50;
 const ARMS = 3;
 const PITCH = 0.26;
 const R_CORE = 18;
@@ -130,7 +134,7 @@ function clusterOf(rng, origin, points, dust) {
 const rng = mulberry32(SEED);
 const clusters = [];
 
-for (let i = 0; i < 860; i++) {
+for (let i = 0; i < CLUSTER_DISK; i++) {
   const arm = i % ARMS;
   const r = expRadius(rng, R_CORE, R_DISK, R_SCALE);
   const origin = diskPos(rng, r, arm, (rng() - 0.5) * 0.2, 1.6 + r * 0.01);
@@ -147,7 +151,7 @@ for (let i = 0; i < 860; i++) {
   clusters.push(clusterOf(rng, origin, buildPoints(rng, origin, n, 10 + rng() * 9), dust));
 }
 
-for (let i = 0; i < 380; i++) {
+for (let i = 0; i < CLUSTER_SCATTER; i++) {
   const arm = (rng() * ARMS) | 0;
   const r = expRadius(rng, R_CORE + 6, R_DISK, R_SCALE * 1.15);
   const origin = diskPos(rng, r, arm, (rng() - 0.5) * 0.72, 2.1 + r * 0.012);
@@ -167,7 +171,7 @@ for (let i = 0; i < 380; i++) {
   clusters.push(clusterOf(rng, origin, buildPoints(rng, origin, n, 8 + rng() * 7), dust));
 }
 
-for (let i = 0; i < 110; i++) {
+for (let i = 0; i < CLUSTER_BULGE; i++) {
   const origin = bulgePos(rng);
   const n = 2 + ((rng() * 3) | 0);
   const dust = buildDust(
@@ -182,7 +186,7 @@ for (let i = 0; i < 110; i++) {
   clusters.push(clusterOf(rng, origin, buildPoints(rng, origin, n, 5 + rng() * 5), dust));
 }
 
-for (let i = 0; i < 70; i++) {
+for (let i = 0; i < CLUSTER_HALO; i++) {
   const arm = (rng() * ARMS) | 0;
   const r = 260 + rng() * 900;
   const origin = diskPos(rng, r, arm, (rng() - 0.5) * 0.9, 4 + r * 0.004);
