@@ -3,16 +3,12 @@ import { writeFileSync } from "node:fs";
 const SEED = 0x6d656e646c65;
 const RS = 0.25;
 const OUT = "js/clusters.json";
-const CLUSTER_DISK = 600;
-const CLUSTER_SCATTER = 270;
-const CLUSTER_BULGE = 80;
-const CLUSTER_HALO = 50;
 const ARMS = 3;
 const PITCH = 0.26;
 const R_CORE = 18;
 const R_DISK = 230;
 const R_SCALE = 72;
-const DUST_MUL = 2 / 3;
+const DUST_MUL = 0.82;
 
 function stellarRadiusRs(rng) {
   const t = rng();
@@ -134,24 +130,24 @@ function clusterOf(rng, origin, points, dust) {
 const rng = mulberry32(SEED);
 const clusters = [];
 
-for (let i = 0; i < CLUSTER_DISK; i++) {
+for (let i = 0; i < 860; i++) {
   const arm = i % ARMS;
   const r = expRadius(rng, R_CORE, R_DISK, R_SCALE);
   const origin = diskPos(rng, r, arm, (rng() - 0.5) * 0.2, 1.6 + r * 0.01);
   const n = rng() < 0.42 ? 1 : 2;
   const dust = buildDust(
     rng,
-    18 + ((rng() * 14) | 0),
-    14 + rng() * 15,
-    3.2 + rng() * 2.8,
-    0.018 + rng() * 0.014,
+    24 + ((rng() * 16) | 0),
+    16 + rng() * 16,
+    3.4 + rng() * 3.0,
+    0.024 + rng() * 0.016,
     0.09 + rng() * 0.05,
-    1.9 + rng() * 0.8
+    2.2 + rng() * 0.9
   );
   clusters.push(clusterOf(rng, origin, buildPoints(rng, origin, n, 10 + rng() * 9), dust));
 }
 
-for (let i = 0; i < CLUSTER_SCATTER; i++) {
+for (let i = 0; i < 380; i++) {
   const arm = (rng() * ARMS) | 0;
   const r = expRadius(rng, R_CORE + 6, R_DISK, R_SCALE * 1.15);
   const origin = diskPos(rng, r, arm, (rng() - 0.5) * 0.72, 2.1 + r * 0.012);
@@ -171,7 +167,7 @@ for (let i = 0; i < CLUSTER_SCATTER; i++) {
   clusters.push(clusterOf(rng, origin, buildPoints(rng, origin, n, 8 + rng() * 7), dust));
 }
 
-for (let i = 0; i < CLUSTER_BULGE; i++) {
+for (let i = 0; i < 110; i++) {
   const origin = bulgePos(rng);
   const n = 2 + ((rng() * 3) | 0);
   const dust = buildDust(
@@ -186,7 +182,7 @@ for (let i = 0; i < CLUSTER_BULGE; i++) {
   clusters.push(clusterOf(rng, origin, buildPoints(rng, origin, n, 5 + rng() * 5), dust));
 }
 
-for (let i = 0; i < CLUSTER_HALO; i++) {
+for (let i = 0; i < 70; i++) {
   const arm = (rng() * ARMS) | 0;
   const r = 260 + rng() * 900;
   const origin = diskPos(rng, r, arm, (rng() - 0.5) * 0.9, 4 + r * 0.004);

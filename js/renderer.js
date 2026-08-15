@@ -70,11 +70,21 @@
   const GRAV_KICK_MUL = 24;
   const SIM_TIME_MIN = 0.001;
   const SIM_TIME_MAX = 1e12;
-  const SIM_WARMUP_SCALE = 8;
-  const SIM_WARMUP_SEC = 10;
-  const DUST_GAIN_MUL = 0.85;
-  const DUST_COUNT_MUL = 0.55;
+  const DUST_GAIN_MUL = 0.95;
+  const DUST_COUNT_MUL = 0.72;
   const GALAXY_OUT_SCALE = 2;
+  const STAR_VISUAL = 0.95;
+  const DUST_SIZE_MUL = 0.72;
+  const PHYS_RS = 0.5;
+  const HORIZON_RS = 1.08;
+  const ISCO_RS = 3;
+  const ADAF_RS = 42;
+  const ADAF_ALPHA = 0.1;
+  const JET_OUTER_RS = 12;
+  const DISK_H_R = 0.1;
+  const JET_ETA = 0.08;
+  const JET_LAMBDA = 4;
+  const JET_LAUNCH_INC = 0.61;
 
   function getShaders(webgl2) {
     const ver = webgl2 ? "#version 300 es\n" : "";
@@ -630,6 +640,8 @@
     let worldVy = new Float32Array(0);
     let worldVz = new Float32Array(0);
     let pointMass = new Float32Array(0);
+    let starLive = new Uint8Array(0);
+    let starJet = new Uint8Array(0);
     let starCluster = new Int16Array(0);
     let comX = new Float32Array(0);
     let comY = new Float32Array(0);
@@ -652,6 +664,7 @@
     let hashNext = new Int32Array(0);
     let totalStars = 0;
     let dustCount = new Int32Array(0);
+    let dustJet = new Uint8Array(0);
     let dustRadius = new Float32Array(0);
     let dustSize = new Float32Array(0);
     let dustGain = new Float32Array(0);
@@ -667,6 +680,9 @@
     let dustBakePuff = new Float32Array(0);
     let dustBakeGain = new Float32Array(0);
     function setClusters(next) {
+      holeMass = PHYS_RS * PHYS_RS * PHYS_RS * GRAV_BH_MASS;
+      targetRadius = PHYS_RS;
+      schwarzschildRadius = PHYS_RS;
       const src = Array.isArray(next) ? next : [];
       clusterCount = src.length;
       clusterOx = new Float32Array(clusterCount);
@@ -677,6 +693,7 @@
       pointStart = new Int32Array(clusterCount);
       pointCount = new Int32Array(clusterCount);
       dustCount = new Int32Array(clusterCount);
+      dustJet = new Uint8Array(clusterCount);
       dustRadius = new Float32Array(clusterCount);
       dustSize = new Float32Array(clusterCount);
       dustGain = new Float32Array(clusterCount);
@@ -715,6 +732,8 @@
       worldVy = new Float32Array(totalPts);
       worldVz = new Float32Array(totalPts);
       pointMass = new Float32Array(totalPts);
+      starLive = new Uint8Array(totalPts);
+      starJet = new Uint8Array(totalPts);
       starCluster = new Int16Array(totalPts);
       comX = new Float32Array(clusterCount);
       comY = new Float32Array(clusterCount);
@@ -735,7 +754,7 @@
       clusterLineMax = new Float32Array(clusterCount);
       hashNext = new Int32Array(clusterCount);
       totalStars = totalPts;
-      const bhMassRef = RS_REF * RS_REF * RS_REF * GRAV_BH_MASS;
+      const bhMassRef = PHYS_RS * PHYS_RS * PHYS_RS * GRAV_BH_MASS;
       let p = 0;
       for (let c = 0; c < clusterCount; c++) {
         const cluster = src[c] || {};
@@ -771,6 +790,7 @@
           starCluster[p] = c;
           const rm = r * r * r;
           pointMass[p] = rm * GRAV_STAR_MASS;
+          starLive[p] = 1;
           const ext = Math.hypot(x, y, z) + r;
           if (ext > maxExt) maxExt = ext;
           p++;
@@ -780,7 +800,7 @@
         const muRef = GRAV_G * bhMassRef;
         let maxSpan = 0;
         for (let i = start; i < end; i++) {
-          diskOrbitVel(worldX[i], worldY[i], worldZ[i], muRef);
+          diskOrbitVel(worldX[i], worldY[i], worldZ[i], muRef, i + 1);
           worldVx[i] = orbitScratch[0];
           worldVy[i] = orbitScratch[1];
           worldVz[i] = orbitScratch[2];
@@ -800,12 +820,8 @@
         const dust = Array.isArray(cluster.dust) ? cluster.dust[0] : cluster.dust;
         if (dust && (dust.count | 0) > 0) {
           dustCount[c] = dust.count | 0;
-          diskOrbitVel(dustWx[c], dustWy[c], dustWz[c], muRef);
-          dustVx[c] = orbitScratch[0];
-          dustVy[c] = orbitScratch[1];
-          dustVz[c] = orbitScratch[2];
           dustRadius[c] = (dust.radius || 5) * GALAXY_OUT_SCALE;
-          dustSize[c] = dust.size || 1.6;
+          dustSize[c] = (dust.size || 1.6) * DUST_SIZE_MUL;
           dustGain[c] = Math.max(0, dust.opacity == null ? 0.04 : dust.opacity) * DUST_GAIN_MUL;
           dustH[c] = dust.height == null ? 0.12 : Math.max(0.03, dust.height);
           dustStretch[c] = dust.stretch == null ? 1.4 : Math.max(0.4, dust.stretch);
@@ -816,15 +832,23 @@
           const size = dustSize[c];
           const height = dustH[c];
           const stretch = dustStretch[c];
+          const tlen0 = Math.hypot(dustWx[c], dustWz[c]) || 1;
+          const rx0 = dustWx[c] / tlen0;
+          const rz0 = dustWz[c] / tlen0;
+          const tx0 = -rz0;
+          const tz0 = rx0;
           dustBakeStart[c] = dustBakePtr;
           const dn = dustCount[c];
           for (let i = 0; i < dn; i++) {
             const u = dustHash(c, i, 0);
             const v = dustHash(c, i, 1);
             const w = dustHash(c, i, 2);
-            dustBakeAlong[dustBakePtr] = (u - 0.5) * 2 * rad * stretch;
-            dustBakeOut[dustBakePtr] = (w - 0.5) * 2 * rad * 0.42;
-            dustBakeUp[dustBakePtr] = (v - 0.5) * 2 * rad * height;
+            const along = (u - 0.5) * 2 * rad * stretch;
+            const out = (w - 0.5) * 2 * rad * 0.42;
+            const up = (v - 0.5) * 2 * rad * height;
+            dustBakeAlong[dustBakePtr] = tx0 * along + rx0 * out;
+            dustBakeOut[dustBakePtr] = up;
+            dustBakeUp[dustBakePtr] = tz0 * along + rz0 * out;
             dustBakePuff[dustBakePtr] = size * (0.55 + dustHash(c, i, 4) * 0.85);
             dustBakeGain[dustBakePtr] = 0.7 + dustHash(c, i, 5) * 0.3;
             dustBakePtr++;
@@ -834,7 +858,6 @@
         }
         clusterBound[c] = maxExt;
       }
-      warmSim(SIM_WARMUP_SEC, SIM_WARMUP_SCALE);
     }
 
     fetch("/js/clusters.json")
@@ -975,20 +998,12 @@
       const dustStep = Math.max(1, (baseN / n) | 0);
       const gain = dustGain[c];
       const zCut = Math.max(holeZ, LENS_Z_MIN);
-      const tlen = Math.hypot(ox, oz) || 1;
-      const rx = ox / tlen;
-      const rz = oz / tlen;
-      const tx = -rz;
-      const tz = rx;
       const bakeStart = dustBakeStart[c];
       for (let i = 0; i < baseN; i += dustStep) {
         const bi = bakeStart + i;
-        const along = dustBakeAlong[bi];
-        const out = dustBakeOut[bi];
-        const up = dustBakeUp[bi];
-        const wx = ox + tx * along + rx * out;
-        const wy = oy + up;
-        const wz = oz + tz * along + rz * out;
+        const wx = ox + dustBakeAlong[bi];
+        const wy = oy + dustBakeOut[bi];
+        const wz = oz + dustBakeUp[bi];
         const puff = dustBakePuff[bi];
         if (!starInView(b, wx, wy, wz, puff, half)) continue;
         const dx = wx - camX;
@@ -1037,22 +1052,34 @@
 
     const orbitScratch = new Float32Array(3);
 
-    function diskOrbitVel(px, py, pz, mu) {
+    function diskOrbitVel(px, py, pz, mu, hash) {
       const sr = Math.hypot(px, py, pz) || 1;
-      const speed = Math.sqrt(Math.max(1e-8, mu / sr));
+      const h1 = (Math.imul(hash, 2654435761) >>> 0) / 4294967296;
+      const h2 = (Math.imul(hash, 1597334677) >>> 0) / 4294967296;
+      const h3 = (Math.imul(hash, 2246822519) >>> 0) / 4294967296;
+      const inner = Math.max(0, 1 - sr / 140);
+      const spin = 0.72 + h1 * 0.38 - inner * 0.18;
+      const speed = Math.sqrt(Math.max(1e-8, mu / sr)) * spin;
       let tx = -pz;
       let tz = px;
       const tLen = Math.hypot(tx, tz) || 1;
       tx /= tLen;
       tz /= tLen;
-      orbitScratch[0] = tx * speed;
-      orbitScratch[1] = 0;
-      orbitScratch[2] = tz * speed;
+      const pec = (h2 - 0.5) * (0.22 + inner * 0.45);
+      const vert = (h3 - 0.5) * (0.1 + inner * 0.12);
+      const inv = 1 / sr;
+      const vrad = (h2 - 0.62) * speed * (0.16 + inner * 0.55);
+      orbitScratch[0] = (tx + px * inv * pec) * speed + px * inv * vrad;
+      orbitScratch[1] = vert * speed + py * inv * vrad * 0.35;
+      orbitScratch[2] = (tz + pz * inv * pec) * speed + pz * inv * vrad;
+    }
+
+    function holeMassRef() {
+      return PHYS_RS * PHYS_RS * PHYS_RS * GRAV_BH_MASS;
     }
 
     function bhMu() {
-      const rs = schwarzschildRadius;
-      return GRAV_G * rs * rs * rs * GRAV_BH_MASS;
+      return GRAV_G * holeMass;
     }
 
     function stumpff(psi, out) {
@@ -1302,17 +1329,19 @@
         const start = pointStart[c];
         const end = start + pointCount[c];
         for (let i = start; i < end; i++) {
+          const mi = mass[i];
+          if (mi <= 0) continue;
           const ix = wx[i];
           const iy = wy[i];
           const iz = wz[i];
-          const mi = mass[i];
           for (let j = i + 1; j < end; j++) {
+            const mj = mass[j];
+            if (mj <= 0) continue;
             const dx = wx[j] - ix;
             const dy = wy[j] - iy;
             const dz = wz[j] - iz;
             const r2 = dx * dx + dy * dy + dz * dz + eps2;
             const invR3 = g / (r2 * Math.sqrt(r2));
-            const mj = mass[j];
             ax[i] += dx * invR3 * mj;
             ay[i] += dy * invR3 * mj;
             az[i] += dz * invR3 * mj;
@@ -1324,15 +1353,124 @@
       }
 
       for (let i = 0; i < n; i++) {
+        if (!starLive[i] || starJet[i]) continue;
         vx[i] += (ax[i] + interFx[i]) * h;
         vy[i] += (ay[i] + interFy[i]) * h;
         vz[i] += (az[i] + interFz[i]) * h;
       }
     }
 
-    function driftStars(dt, n, cc, mu, wx, wy, wz, vx, vy, vz, dustStride) {
+    function blandfordPayneLaunch(px, py, pz, vx, vy, vz, mu, rs) {
+      const R = Math.hypot(px, pz);
+      const invR = 1 / Math.max(R, rs * 0.25);
+      const eRx = px * invR;
+      const eRz = pz * invR;
+      const vk = Math.sqrt(mu / Math.max(R, rs));
+      const vp = vk * Math.sqrt(Math.max(0, 2 * JET_LAMBDA - 3));
+      const sign = py >= 0 ? 1 : -1;
+      const s = Math.sin(JET_LAUNCH_INC);
+      const c = Math.cos(JET_LAUNCH_INC);
+      let vphi = -vx * eRz + vz * eRx;
+      vphi = (vphi < 0 ? -1 : 1) * vk;
+      orbitScratch[0] = vp * s * eRx - vphi * eRz;
+      orbitScratch[1] = sign * vp * c;
+      orbitScratch[2] = vp * s * eRz + vphi * eRx;
+    }
+
+    function hoopCollimate(n, dt, wx, wy, wz, vx, vy, vz, rs) {
+      const rj2 = (rs * 6) * (rs * 6);
+      for (let i = 0; i < n; i++) {
+        if (!starLive[i] || !starJet[i]) continue;
+        const px = wx[i];
+        const pz = wz[i];
+        const R2 = px * px + pz * pz;
+        if (R2 < 1e-10) continue;
+        const R = Math.sqrt(R2);
+        const invR = 1 / R;
+        const vR = (vx[i] * px + vz[i] * pz) * invR;
+        const aR = -(vy[i] * vy[i] + vR * vR) * R / (R2 + rj2);
+        vx[i] += aR * px * invR * dt;
+        vz[i] += aR * pz * invR * dt;
+      }
+    }
+
+    function absorbInflow(n, dt, wx, wy, wz, vx, vy, vz, mass, mu) {
+      const rs = schwarzschildRadius;
+      const absorbR = rs * HORIZON_RS;
+      const absorbR2 = absorbR * absorbR;
+      const isco = rs * ISCO_RS;
+      const jetOuter = rs * JET_OUTER_RS;
+      const adafR = rs * ADAF_RS;
+      const adafR2 = adafR * adafR;
+      const pwR = adafR;
+      let grew = 0;
+      for (let i = 0; i < n; i++) {
+        if (!starLive[i]) continue;
+        const px = wx[i];
+        const py = wy[i];
+        const pz = wz[i];
+        const r2 = px * px + py * py + pz * pz;
+        if (r2 < absorbR2) {
+          starLive[i] = 0;
+          starJet[i] = 0;
+          grew += mass[i];
+          mass[i] = 0;
+          wx[i] = 0;
+          wy[i] = 0;
+          wz[i] = 0;
+          vx[i] = 0;
+          vy[i] = 0;
+          vz[i] = 0;
+          continue;
+        }
+        if (starJet[i]) continue;
+        const r = Math.sqrt(r2);
+        const inv = 1 / r;
+        if (r < pwR) {
+          const den = Math.max(r - rs, rs * 0.12);
+          const extra = mu * (1 / (den * den) - 1 / (r * r));
+          vx[i] -= extra * px * inv * dt;
+          vy[i] -= extra * py * inv * dt;
+          vz[i] -= extra * pz * inv * dt;
+        }
+        const R = Math.hypot(px, pz);
+        const vr = vx[i] * px + vy[i] * py + vz[i] * pz;
+        if (
+          R >= isco &&
+          R <= jetOuter &&
+          Math.abs(py) <= DISK_H_R * R &&
+          vr < 0 &&
+          (Math.imul(i + 7919, 2654435761) >>> 0) / 4294967296 < JET_ETA
+        ) {
+          blandfordPayneLaunch(px, py, pz, vx[i], vy[i], vz[i], mu, rs);
+          vx[i] = orbitScratch[0];
+          vy[i] = orbitScratch[1];
+          vz[i] = orbitScratch[2];
+          starJet[i] = 1;
+          continue;
+        }
+        if (r2 > adafR2) continue;
+        const vk = Math.sqrt(mu / r);
+        const vrHat = vr * inv;
+        const vIn = ADAF_ALPHA * vk;
+        if (vrHat > -vIn) {
+          const add = (-vIn - vrHat) * Math.min(1, dt * vk * inv);
+          vx[i] += px * inv * add;
+          vy[i] += py * inv * add;
+          vz[i] += pz * inv * add;
+        }
+      }
+      hoopCollimate(n, dt, wx, wy, wz, vx, vy, vz, rs);
+      if (grew > 0) {
+        holeMass += grew;
+        targetRadius = Math.min(maxRadius, PHYS_RS * (holeMass / holeMassRef()));
+      }
+    }
+
+    function driftStars(dt, n, cc, mu, wx, wy, wz, vx, vy, vz) {
       const out = keplerOut;
       for (let i = 0; i < n; i++) {
+        if (!starLive[i]) continue;
         if (keplerStep(wx[i], wy[i], wz[i], vx[i], vy[i], vz[i], dt, mu, out)) {
           wx[i] = out[0];
           wy[i] = out[1];
@@ -1343,30 +1481,6 @@
         } else {
           newtonBhStep(i, dt, mu, wx, wy, wz, vx, vy, vz);
         }
-      }
-      if (dustStride > 1) {
-        const dustDt = dt * dustStride;
-        for (let c = 0; c < cc; c++) {
-          if (!dustCount[c] || (c + simFrame) % dustStride !== 0) continue;
-          const next = keplerBody(dustWx[c], dustWy[c], dustWz[c], dustVx[c], dustVy[c], dustVz[c], dustDt, mu);
-          dustWx[c] = next[0];
-          dustWy[c] = next[1];
-          dustWz[c] = next[2];
-          dustVx[c] = next[3];
-          dustVy[c] = next[4];
-          dustVz[c] = next[5];
-        }
-        return;
-      }
-      for (let c = 0; c < cc; c++) {
-        if (!dustCount[c]) continue;
-        const next = keplerBody(dustWx[c], dustWy[c], dustWz[c], dustVx[c], dustVy[c], dustVz[c], dt, mu);
-        dustWx[c] = next[0];
-        dustWy[c] = next[1];
-        dustWz[c] = next[2];
-        dustVx[c] = next[3];
-        dustVy[c] = next[4];
-        dustVz[c] = next[5];
       }
     }
 
@@ -1395,7 +1509,6 @@
       const camDist = Math.hypot(camX, camY, camZ);
       const kickCap =
         camDist > GRAV_CAM_FAR ? GRAV_KICKS_FAR : camDist > GRAV_CAM_MID ? GRAV_KICKS_MID : GRAV_MAX_KICKS;
-      const dustStride = camDist > GRAV_CAM_FAR ? 2 : 1;
       const refreshBounds = (simFrame++ & 3) === 0;
 
       if (n) computeInterCluster(n, cc, wx, wy, wz, mass, GRAV_G, GRAV_SOFT2, cx, cy, cz, cm);
@@ -1405,7 +1518,7 @@
         const h = orbitDt / nKick;
         kickStars(h * 0.5, n, cc, wx, wy, wz, vx, vy, vz, mass, GRAV_G, GRAV_SOFT2, ax, ay, az);
         for (let s = 0; s < nKick; s++) {
-          driftStars(h, n, cc, mu, wx, wy, wz, vx, vy, vz, dustStride);
+          driftStars(h, n, cc, mu, wx, wy, wz, vx, vy, vz);
           kickStars(
             s + 1 === nKick ? h * 0.5 : h,
             n,
@@ -1425,9 +1538,10 @@
           );
         }
       } else {
-        driftStars(orbitDt, n, cc, mu, wx, wy, wz, vx, vy, vz, dustStride);
+        driftStars(orbitDt, n, cc, mu, wx, wy, wz, vx, vy, vz);
         if (n) {
           for (let i = 0; i < n; i++) {
+            if (!starLive[i] || starJet[i]) continue;
             vx[i] += interFx[i] * orbitDt;
             vy[i] += interFy[i] * orbitDt;
             vz[i] += interFz[i] * orbitDt;
@@ -1435,18 +1549,22 @@
         }
       }
 
+      absorbInflow(n, orbitDt, wx, wy, wz, vx, vy, vz, mass, mu);
       refreshCom(n, cc, wx, wy, wz, mass, cx, cy, cz, cm);
       for (let c = 0; c < cc; c++) {
         const m = cm[c];
         if (m <= 0) {
-          clusterOx[c] = dustWx[c];
-          clusterOy[c] = dustWy[c];
-          clusterOz[c] = dustWz[c];
+          dustCount[c] = 0;
           continue;
         }
         clusterOx[c] = cx[c];
         clusterOy[c] = cy[c];
         clusterOz[c] = cz[c];
+        if (dustCount[c] && !dustJet[c]) {
+          dustWx[c] = cx[c];
+          dustWy[c] = cy[c];
+          dustWz[c] = cz[c];
+        }
         if (!refreshBounds) continue;
         const start = pointStart[c];
         const end = start + pointCount[c];
@@ -1460,13 +1578,6 @@
         }
         clusterBound[c] = maxExt;
       }
-    }
-
-    function warmSim(seconds, timeMul) {
-      if (!clusterCount) return;
-      const frameMs = 250;
-      const steps = Math.ceil((seconds * 1000) / frameMs);
-      for (let i = 0; i < steps; i++) updateGravity(frameMs, timeMul);
     }
 
     function packScene(b, renderW, renderH, radius) {
@@ -1500,29 +1611,18 @@
         if (dustVisible) emitClusterDust(c, dustWx[c], dustWy[c], dustWz[c], b, minRes, half, holeZ);
         if (!starVisible) continue;
         const start = pointStart[c];
-        const maxSpan = clusterLineMax[c];
-        let prevPi = -1;
-        let prevAx = 0;
-        let prevAy = 0;
-        let prevWx = 0;
-        let prevWy = 0;
-        let prevWz = 0;
-        let prevZ = 0;
-        let prevBehind = false;
         for (let i = 0; i < npts; i++) {
           const pi = start + i;
+          if (!starLive[pi]) continue;
           const wx = worldX[pi];
           const wy = worldY[pi];
           const wz = worldZ[pi];
           const sr = pointR[pi];
-          const displaySr = sr * (schwarzschildRadius / RS_REF);
+          const displaySr = sr * STAR_VISUAL;
           const scr = pointCr[pi];
           const scg = pointCg[pi];
           const scb = pointCb[pi];
-          if (!starInView(b, wx, wy, wz, displaySr, half)) {
-            prevPi = -1;
-            continue;
-          }
+          if (!starInView(b, wx, wy, wz, displaySr, half)) continue;
           const dx = wx - camX;
           const dy = wy - camY;
           const dz = wz - camZ;
@@ -1533,20 +1633,6 @@
           const behind = z > Math.max(holeZ, LENS_Z_MIN);
           if (!behind) emitStarTo("starGeomFront", "front", spx, spy, z, ang, 0, scr, scg, scb);
           else emitStarQuad(spx, spy, z, ang, 0, scr, scg, scb);
-          if (prevPi >= 0 && pi === prevPi + 1 && behind === prevBehind) {
-            const span = Math.hypot(wx - prevWx, wy - prevWy, wz - prevWz);
-            if (span <= maxSpan) {
-              emitLineQuad(prevAx, prevAy, spx, spy, Math.min(prevZ, z), minRes, !behind);
-            }
-          }
-          prevPi = pi;
-          prevAx = spx;
-          prevAy = spy;
-          prevWx = wx;
-          prevWy = wy;
-          prevWz = wz;
-          prevZ = z;
-          prevBehind = behind;
         }
       }
     }
@@ -1824,16 +1910,17 @@
     let progress = 0;
     let easedProgress = 0;
     const minRadius = 0.16;
-    const maxRadius = 2.4;
+    const maxRadius = 2.8;
     let schwarzschildRadius = 0.5;
     let targetRadius = 0.5;
-    let camX = 135;
-    let camY = 135;
-    let camZ = 203;
+    let holeMass = PHYS_RS * PHYS_RS * PHYS_RS * GRAV_BH_MASS;
+    let camX = 253;
+    let camY = 253;
+    let camZ = 381;
     let camYaw = -2.553;
-    let camPitch = -0.505;
+    let camPitch = -0.508;
     let lookYaw = -2.553;
-    let lookPitch = -0.505;
+    let lookPitch = -0.508;
     let velX = 0;
     let velY = 0;
     let velZ = 0;
@@ -1869,9 +1956,9 @@
 
     function keepOut() {
       if (!Number.isFinite(camX + camY + camZ + velX + velY + velZ)) {
-        camX = 135;
-        camY = 135;
-        camZ = 203;
+        camX = 253;
+        camY = 253;
+        camZ = 381;
         velX = 0;
         velY = 0;
         velZ = 0;
@@ -1993,7 +2080,7 @@
     }
 
     function renderStars(renderWidth, renderHeight, b) {
-      if (starVertCount || lineVertCount) {
+      if (starVertCount) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, fieldFb);
         gl.viewport(0, 0, renderWidth, renderHeight);
         gl.disable(gl.BLEND);
@@ -2002,12 +2089,11 @@
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE);
         drawStarGeom(starGeom, starVertCount, renderWidth, renderHeight, b, false, false);
-        drawLineGeom(lineGeom, lineVertCount, renderWidth, renderHeight, b, false);
       }
       clearComposite(renderWidth, renderHeight);
       gl.bindFramebuffer(gl.FRAMEBUFFER, compositeFb);
       gl.viewport(0, 0, renderWidth, renderHeight);
-      if (starVertCount || lineVertCount) {
+      if (starVertCount) {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE);
         gl.useProgram(lensProgram);
@@ -2025,11 +2111,10 @@
         gl.drawArrays(gl.TRIANGLES, 0, 3);
       }
       drawHoleDisc(renderWidth, renderHeight, b);
-      if (starFrontCount || lineFrontCount) {
+      if (starFrontCount) {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE);
         drawStarGeom(starGeomFront, starFrontCount, renderWidth, renderHeight, b, false, false);
-        drawLineGeom(lineGeomFront, lineFrontCount, renderWidth, renderHeight, b, false);
       }
       gl.disable(gl.BLEND);
     }
