@@ -20,7 +20,7 @@ function init() {
   }
 
   const script = document.createElement("script");
-  script.src = "js/renderer.js?v=204";
+  script.src = "js/renderer.js?v=207";
   script.onload = () => {
     const r = self.createRenderer(canvas);
     if (!r) {
@@ -55,13 +55,14 @@ function init() {
   let moved = false;
   let cyclone = false;
   let holdTimer = 0;
+  let pen = 1;
 
   function seedMoisture(p, strength) {
     send({
       type: "impulse",
       sx: p.x,
       sy: p.y,
-      radius: 0.055,
+      radius: 0.055 * pen,
       heat: 0.04 * strength,
       moist: 0.28 * strength,
     });
@@ -72,7 +73,7 @@ function init() {
       type: "impulse",
       sx: p.x,
       sy: p.y,
-      radius: 0.08,
+      radius: 0.08 * pen,
       heat: 0.06 * strength,
       moist: 0.22 * strength,
       spin: 0.42 * strength,
@@ -105,7 +106,7 @@ function init() {
         type: "impulse",
         sx: p.x,
         sy: p.y,
-        radius: 0.07,
+        radius: 0.07 * pen,
         spin: 0.2,
         converge: 0.1,
         moist: 0.04,
@@ -117,7 +118,7 @@ function init() {
         ay: last.y,
         bx: p.x,
         by: p.y,
-        width: 0.032,
+        width: 0.032 * pen,
         cold: 0.05,
         moist: 0.09,
         along: 0.24,
@@ -139,6 +140,11 @@ function init() {
     last = null;
     window.clearInterval(holdTimer);
   }
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "1") pen = Math.max(0.4, pen - 0.2);
+    if (e.key === "2") pen = Math.min(2.8, pen + 0.2);
+  });
 
   window.addEventListener("pointerdown", onDown);
   window.addEventListener("pointermove", onMove);

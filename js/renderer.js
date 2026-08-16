@@ -121,29 +121,30 @@ void main() {
 const float SIM = ${SIM_SIZE.toFixed(1)};
 const float TEX = 1.0 / SIM;
 const float TREF = 0.60;
-const float CORIOLIS = 0.028;
-const float JET_AMP = 0.12;
-const float JET_RELAX = 0.0024;
+const float CORIOLIS = 0.003;
+const float JET_AMP = 0.0;
+const float JET_RELAX = 0.0006;
 const float VEL_MAX = 2.6;
-const float CONV_BUOY = 0.018;
-const float CONV_RAIN = 0.022;
-const float BUOY_T = 1.0;
-const float BUOY_QC = 0.85;
+const float CONV_BUOY = 0.004;
+const float CONV_RAIN = 0.006;
+const float BUOY_T = 0.4;
+const float BUOY_QC = 0.28;
 const float DIV_SCALE = 0.00045;
-const float ADIA = 0.0010;
-const float MOIST_CONV = 0.0035;
-const float COND_RATE = 0.22;
-const float REVAP_RATE = 0.08;
-const float LATENT = 0.52;
+const float ADIA = 0.00028;
+const float MOIST_CONV = 0.0009;
+const float COND_RATE = 0.055;
+const float REVAP_RATE = 0.01;
+const float LATENT = 0.18;
 const float RAIN_THRESH = 0.16;
-const float RAIN_RATE = 0.07;
+const float RAIN_RATE = 0.045;
 const float RAIN_DECAY = 0.94;
-const float RAIN_COOL = 0.0012;
-const float TRIGGER_T = 0.0014;
-const float TRIGGER_Q = 0.0012;
-const float SURF_EVAP = 0.008;
-const float SURF_RH = 0.88;
-const float RAD_RELAX = 0.006;
+const float RAIN_COOL = 0.0006;
+const float TRIGGER_T = 0.0;
+const float TRIGGER_Q = 0.0;
+const float SURF_EVAP = 0.0024;
+const float SURF_RH = 0.82;
+const float RAD_RELAX = 0.0035;
+const float CLOUD_ADV = 0.35;
 
 vec2 jetAt(vec2 uv) {
   return vec2(JET_AMP * sin(6.2831853 * uv.y), 0.0);
@@ -213,7 +214,7 @@ ${noiseLib}
 void main() {
   float t = tEquilibrium(vUv) + 0.04 * (tileFbm(vUv, 4.0, uNoise) - 0.47);
   float humid = tileFbm(vUv + 3.1, 3.5, uNoise);
-  float qv = qsat(t) * (0.58 + 0.38 * humid);
+  float qv = qsat(t) * (0.5 + 0.22 * humid);
   fragColor = vec4(qv, 0.0, t, 0.0);
 }`;
 
@@ -225,10 +226,7 @@ out vec4 fragColor;
 ${simLib}
 ${noiseLib}
 void main() {
-  float jet = 0.16 * sin(6.2831853 * vUv.y);
-  float wobble = 0.7 * (tileFbm(vUv + 7.3, 3.5, uNoise) - 0.47);
-  float wobble2 = 0.7 * (tileFbm(vUv + 19.7, 3.5, uNoise) - 0.47);
-  fragColor = vec4(jet + wobble, wobble2, 0.0, 1.0);
+  fragColor = vec4(0.0, 0.0, 0.0, 1.0);
 }`;
 
     const impulseThermFs = `#version 300 es
@@ -352,7 +350,7 @@ void main() {
   float s = sin(CORIOLIS);
   vel = vec2(c * vel.x + s * vel.y, -s * vel.x + c * vel.y);
   vel += (jetAt(vUv) - vel) * JET_RELAX;
-  vel *= 0.9992;
+  vel *= 0.988;
   float speed = length(vel);
   if (speed > VEL_MAX) vel *= VEL_MAX / speed;
   fragColor = vec4(vel, 0.0, 1.0);
@@ -369,7 +367,7 @@ out vec4 fragColor;
 ${simLib}
 ${noiseLib}
 void main() {
-  vec2 vel = texture(uVel, vUv).xy;
+  vec2 vel = texture(uVel, vUv).xy * CLOUD_ADV;
   vec2 src = vUv - vel * TEX;
   vec4 s = texture(uTherm, src);
   vec4 blur = 0.25 * (
@@ -378,15 +376,21 @@ void main() {
     texture(uTherm, src + vec2(0.0, TEX)) +
     texture(uTherm, src - vec2(0.0, TEX))
   );
-  s = mix(s, blur, 0.04);
+  s = mix(s, blur, 0.08);
 
   float qv = s.x;
   float qc = s.y;
   float t = s.z;
   float rain = s.w;
 
-  float div = divergenceAt(uVel, vUv);
-  float lift = clamp(-div / DIV_SCALE, -3.0, 3.0);
+  float div = 0.4 * divergenceAt(uVel, vUv)
+    + 0.15 * (
+      divergenceAt(uVel, vUv + vec2(TEX, 0.0)) +
+      divergenceAt(uVel, vUv - vec2(TEX, 0.0)) +
+      divergenceAt(uVel, vUv + vec2(0.0, TEX)) +
+      divergenceAt(uVel, vUv - vec2(0.0, TEX))
+    );
+  float lift = clamp(-div / DIV_SCALE, -1.6, 1.6);
   t -= ADIA * lift;
   qv += MOIST_CONV * lift * qv;
 
@@ -573,8 +577,8 @@ float cloudDensity(vec3 p, bool cheap) {
   float qc = f.y;
   float temp = f.z;
   float rain = f.w;
-  float cover = smoothstep(0.008, 0.13, qc);
-  if (cover < 0.008) return 0.0;
+  float cover = smoothstep(0.02, 0.16, qc);
+  if (cover < 0.01) return 0.0;
 
   float unstable = clamp((temp - tEquilibrium(uv)) * 5.5 + cover * 0.35, 0.0, 1.0);
   float wet = smoothstep(0.05, 0.45, rain);
@@ -592,8 +596,6 @@ float cloudDensity(vec3 p, bool cheap) {
   if (cover < 0.008) return 0.0;
 
   vec3 q = vec3(uv.x, p.y, uv.y) * vec3(3.4, 3.8, 3.4);
-  vec2 vel = texture(uVel, uv).xy;
-  q.xz += vel * (0.05 + 0.16 * h);
   vec4 s = texture(uNoise3, q);
   float base = mix(s.r, worleyFbm(s), 0.42);
   float d = remap(base * grad, edge * 0.16, 1.0);
@@ -1070,7 +1072,7 @@ void main() {
       bindQuad(accum);
       bindTex(0, rawTex, accum.u.uRaw);
       bindTex(1, accumWarm ? accumTex[histSrc] : rawTex, accum.u.uHistory);
-      gl.uniform1f(accum.u.uBlend, accumWarm ? 0.48 : 1.0);
+      gl.uniform1f(accum.u.uBlend, accumWarm ? 0.26 : 1.0);
       targetTex(accumTex[histDst], marchWidth, marchHeight);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       accumPing = histDst;
@@ -1160,7 +1162,7 @@ void main() {
           bindTex(0, inkTex[src], ink.u.uSrc);
           gl.uniform2f(ink.u.uA, a.x, a.y);
           gl.uniform2f(ink.u.uB, b.x, b.y);
-          gl.uniform1f(ink.u.uWidth, 0.01);
+          gl.uniform1f(ink.u.uWidth, Math.max(0.004, (seg.width || 0.035) * 0.32));
           gl.uniform1f(ink.u.uStrength, 0.7);
           targetTex(inkTex[dst], viewWidth, viewHeight);
           gl.drawArrays(gl.TRIANGLES, 0, 3);

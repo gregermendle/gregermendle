@@ -600,6 +600,32 @@ body {
   width: 100vw;
 }
 
+#legend {
+  pointer-events: none;
+  position: fixed;
+  right: 1rem;
+  top: 1rem;
+  z-index: 20;
+  -webkit-user-select: none;
+     -moz-user-select: none;
+          user-select: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.25rem;
+  color: rgb(255 255 255 / 0.65);
+}
+
+#legend div {
+  display: flex;
+  gap: 0.75rem;
+}
+
+#legend span {
+  width: 2.5rem;
+  flex-shrink: 0;
+  color: rgb(255 255 255 / 0.4);
+}
+
 .\!hidden {
   display: none !important;
 }

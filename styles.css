@@ -39,4 +39,16 @@
   #canvas {
     @apply fixed inset-0 w-screen h-screen z-10;
   }
+
+  #legend {
+    @apply pointer-events-none fixed right-4 top-4 z-20 select-none font-mono text-[11px] leading-5 text-white/65;
+  }
+
+  #legend div {
+    @apply flex gap-3;
+  }
+
+  #legend span {
+    @apply w-10 shrink-0 text-white/40;
+  }
 }
