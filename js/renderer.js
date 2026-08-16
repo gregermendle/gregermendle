@@ -628,28 +628,81 @@ vec2 hash22(vec2 p) {
   return vec2(hash12(p), hash12(p + 17.13));
 }
 
-const vec3 BOLT_HUE = vec3(0.58, 0.34, 1.0);
+const vec3 BOLT_CORE = vec3(1.0, 0.93, 1.0);
+const vec3 BOLT_SCAT = vec3(0.5, 0.34, 1.0);
 
-float boltGlow(vec3 pos, vec3 at, float amp, float den) {
-  if (amp < 0.008) return 0.0;
-  vec3 toL = at - pos;
-  float r2 = dot(toL, toL);
-  float geom = 1.0 / (1.0 + r2 * 100.0);
-  if (geom < 0.02) return 0.0;
-  float len = sqrt(max(r2, 1e-6));
-  vec3 dir = toL / len;
-  float tau = 0.0;
-  float s = min(len, 0.16) / 5.0;
-  vec3 p = pos;
-  for (int i = 0; i < 5; i++) {
-    p += dir * s;
-    float d = cloudDensity(p, true);
-    float qc = texture(uField, p.xz).y;
-    tau += d * s * (0.65 + 0.6 * smoothstep(0.03, 0.3, qc));
+float distSeg(vec3 p, vec3 a, vec3 b, out float u) {
+  vec3 ba = b - a;
+  u = clamp(dot(p - a, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+  return length(p - a - ba * u);
+}
+
+vec3 pathAt(vec3 a, vec3 b, vec3 c, vec3 d, float u) {
+  if (u < 0.33) return mix(a, b, u / 0.33);
+  if (u < 0.66) return mix(b, c, (u - 0.33) / 0.33);
+  return mix(c, d, (u - 0.66) / 0.34);
+}
+
+float moistDen(vec3 p) {
+  float d = cloudDensity(p, true);
+  float qc = texture(uField, p.xz).y;
+  return d * (0.55 + 0.6 * smoothstep(0.03, 0.3, qc));
+}
+
+float boltFlicker(float frame, float seed) {
+  float a = step(0.28, hash12(vec2(floor(frame * 0.55), seed)));
+  float b = step(0.42, hash12(vec2(floor(frame), seed + 2.7)));
+  float c = 0.45 + 0.55 * hash12(vec2(floor(frame * 0.28), seed + 8.1));
+  float dart = exp(-abs(fract(frame * 0.19 + seed) - 0.5) * 14.0);
+  return mix(0.35, 1.0, a) * mix(0.5, 1.0, b) * c + dart * 0.85;
+}
+
+vec3 boltLight(vec3 pos, vec3 a, vec3 b, vec3 c, vec3 d, float amp, float den, float travel) {
+  if (amp < 0.008) return vec3(0.0);
+  float u0, u1, u2;
+  float d0 = distSeg(pos, a, b, u0);
+  float d1 = distSeg(pos, b, c, u1);
+  float d2 = distSeg(pos, c, d, u2);
+  float md = d0;
+  float u = u0 * 0.33;
+  vec3 closest = mix(a, b, u0);
+  if (d1 < md) {
+    md = d1;
+    u = 0.33 + u1 * 0.33;
+    closest = mix(b, c, u1);
   }
+  if (d2 < md) {
+    md = d2;
+    u = 0.66 + u2 * 0.34;
+    closest = mix(c, d, u2);
+  }
+  if (md > 0.2) return vec3(0.0);
+  float live = 1.0 - smoothstep(travel, travel + 0.1, u);
+  float head = exp(-abs(u - travel) * 16.0) * step(u, travel + 0.06);
+  if (live < 0.02 && head < 0.02) return vec3(0.0);
+  float alongTau = 0.0;
+  for (int i = 1; i <= 4; i++) {
+    alongTau += moistDen(pathAt(a, b, c, d, min(u, travel) * float(i) / 4.0));
+  }
+  alongTau *= min(u, travel) * 0.12;
+  vec3 toC = closest - pos;
+  float clen = length(toC);
+  vec3 dir = toC / max(clen, 1e-5);
+  float s = min(clen, 0.12) / 4.0;
+  vec3 p = pos;
+  float offTau = 0.0;
+  for (int i = 0; i < 4; i++) {
+    p += dir * s;
+    offTau += moistDen(p) * s;
+  }
+  float transAlong = exp(-alongTau * 1.8);
+  float transOff = exp(-offTau * 4.2);
   float moist = texture(uField, pos.xz).y;
-  float scatter = den * (0.3 + 0.7 * smoothstep(0.03, 0.28, moist));
-  return amp * geom * exp(-tau * 9.0) * scatter * 1.7;
+  float scatter = den * (0.35 + 0.65 * smoothstep(0.03, 0.28, moist));
+  float core = (head * 2.4 + live * 1.1) * exp(-md * md * 700.0) * transAlong;
+  float fill = (head * 1.1 + live) * exp(-md / 0.065) / (1.0 + md * 5.0);
+  fill *= transOff * transAlong * scatter;
+  return amp * (core * BOLT_CORE * 4.2 + fill * BOLT_SCAT * 3.1);
 }
 
 void main() {
@@ -664,18 +717,23 @@ void main() {
   float trans = 1.0;
   float acc = 0.0;
   vec3 boltAcc = vec3(0.0);
-  vec3 boltP[4];
+  vec3 ba[4];
+  vec3 bb[4];
+  vec3 bc[4];
+  vec3 bd[4];
   float boltF[4];
+  float boltT[4];
   float tm = float(uFrame);
   for (int s = 0; s < 4; s++) {
-    boltP[s] = vec3(0.5, 0.12, 0.5);
+    ba[s] = bb[s] = bc[s] = bd[s] = vec3(0.5, 0.12, 0.5);
     boltF[s] = 0.0;
+    boltT[s] = 0.0;
     float seed = 8.3 + float(s) * 21.9;
     float period = 130.0 + hash12(vec2(seed, 1.4)) * 150.0;
     float shifted = tm + seed * 37.0;
     float cycle = floor(shifted / period);
     float phase = fract(shifted / period);
-    float env = exp(-phase * 6.5) * step(phase, 0.32);
+    float env = exp(-phase * 4.8) * step(phase, 0.4);
     if (env < 0.008) continue;
     vec2 best = hash22(vec2(cycle, seed));
     float bestCh = 0.0;
@@ -688,8 +746,22 @@ void main() {
       }
     }
     if (bestCh < 0.14) continue;
-    boltF[s] = env * smoothstep(0.14, 0.55, bestCh);
-    boltP[s] = vec3(best.x, 0.05 + hash12(vec2(cycle, seed + 11.0)) * 0.09, best.y);
+    vec2 dir = normalize(hash22(vec2(cycle, seed + 3.2)) - 0.5);
+    float reach = 0.12 + hash12(vec2(cycle, seed + 5.0)) * 0.16;
+    vec2 endp = best + dir * reach;
+    if (texture(uStorm, endp).x < 0.1) {
+      vec2 alt = hash22(vec2(cycle, seed + 14.0));
+      if (texture(uStorm, alt).x > 0.12) endp = mix(best, alt, 0.8);
+    }
+    vec2 n = vec2(-dir.y, dir.x);
+    vec2 m1 = mix(best, endp, 0.34) + n * (hash12(vec2(cycle, seed + 6.1)) * 2.0 - 1.0) * 0.055;
+    vec2 m2 = mix(best, endp, 0.67) + n * (hash12(vec2(cycle, seed + 7.4)) * 2.0 - 1.0) * 0.05;
+    ba[s] = vec3(best.x, 0.045 + hash12(vec2(cycle, seed + 11.0)) * 0.07, best.y);
+    bb[s] = vec3(m1.x, 0.07 + hash12(vec2(cycle, seed + 12.0)) * 0.16, m1.y);
+    bc[s] = vec3(m2.x, 0.06 + hash12(vec2(cycle, seed + 13.0)) * 0.18, m2.y);
+    bd[s] = vec3(endp.x, 0.08 + hash12(vec2(cycle, seed + 14.2)) * 0.2, endp.y);
+    boltF[s] = env * smoothstep(0.14, 0.55, bestCh) * boltFlicker(tm, seed + cycle);
+    boltT[s] = clamp(phase / 0.11, 0.0, 1.0);
   }
 
   for (int i = 0; i < STEPS; i++) {
@@ -703,21 +775,21 @@ void main() {
       float rain = texture(uField, pos.xz).w;
       float lit = mix(0.22, 1.05, light) * mix(0.7, 1.08, powder);
       lit *= mix(1.0, 0.62, smoothstep(0.06, 0.5, rain) * (1.0 - h));
-      float glow = 0.0;
-      for (int s = 0; s < 4; s++) glow += boltGlow(pos, boltP[s], boltF[s], den);
-      glow *= 0.45 + 0.55 * powder;
+      vec3 glow = vec3(0.0);
+      for (int s = 0; s < 4; s++) glow += boltLight(pos, ba[s], bb[s], bc[s], bd[s], boltF[s], den, boltT[s]);
+      glow *= 0.55 + 0.45 * powder;
       float alpha = 1.0 - exp(-den * dt * SIGMA);
       acc += trans * alpha * lit;
-      boltAcc += trans * alpha * glow * BOLT_HUE;
+      boltAcc += trans * alpha * glow;
       trans *= 1.0 - alpha;
     }
     t += dt;
   }
 
   float lum = acc / (1.0 + acc * 0.35);
-  vec3 flash = boltAcc / (1.0 + boltAcc * 0.1);
-  float w = clamp(flash.b * 1.5, 0.0, 0.88);
-  vec3 col = vec3(lum) * (1.0 - w * 0.75) + flash * 1.45;
+  vec3 flash = boltAcc / (1.0 + boltAcc * 0.05);
+  float w = clamp(max(flash.b, flash.r) * 1.15, 0.0, 0.92);
+  vec3 col = vec3(lum) * (1.0 - w * 0.82) + flash;
   fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }`;
 
