@@ -628,37 +628,7 @@ vec2 hash22(vec2 p) {
   return vec2(hash12(p), hash12(p + 17.13));
 }
 
-void gatherStrikes(out vec3 p0, out vec3 p1, out float f0, out float f1) {
-  p0 = p1 = vec3(0.5, 0.12, 0.5);
-  f0 = f1 = 0.0;
-  float tm = float(uFrame);
-  for (int s = 0; s < 2; s++) {
-    float seed = 8.3 + float(s) * 21.9;
-    float period = 260.0 + hash12(vec2(seed, 1.4)) * 220.0;
-    float shifted = tm + seed * 37.0;
-    float cycle = floor(shifted / period);
-    float phase = fract(shifted / period);
-    float env = exp(-phase * 6.5) * step(phase, 0.32);
-    if (env < 0.008) continue;
-    vec2 best = hash22(vec2(cycle, seed));
-    float bestCh = 0.0;
-    for (int k = 0; k < 5; k++) {
-      vec2 p = hash22(vec2(cycle + 0.13, seed + float(k) * 9.4));
-      float ch = texture(uStorm, p).x;
-      if (ch > bestCh) {
-        bestCh = ch;
-        best = p;
-      }
-    }
-    if (bestCh < 0.14) continue;
-    float amp = env * smoothstep(0.14, 0.55, bestCh);
-    vec3 at = vec3(best.x, 0.05 + hash12(vec2(cycle, seed + 11.0)) * 0.09, best.y);
-    if (s == 0) { p0 = at; f0 = amp; }
-    else { p1 = at; f1 = amp; }
-  }
-}
-
-const vec3 BOLT_HUE = vec3(0.55, 0.36, 1.0);
+const vec3 BOLT_HUE = vec3(0.58, 0.34, 1.0);
 
 float boltGlow(vec3 pos, vec3 at, float amp, float den) {
   if (amp < 0.008) return 0.0;
@@ -679,7 +649,7 @@ float boltGlow(vec3 pos, vec3 at, float amp, float den) {
   }
   float moist = texture(uField, pos.xz).y;
   float scatter = den * (0.3 + 0.7 * smoothstep(0.03, 0.28, moist));
-  return amp * geom * exp(-tau * 9.0) * scatter * 1.25;
+  return amp * geom * exp(-tau * 9.0) * scatter * 1.7;
 }
 
 void main() {
@@ -694,9 +664,33 @@ void main() {
   float trans = 1.0;
   float acc = 0.0;
   vec3 boltAcc = vec3(0.0);
-  vec3 b0, b1;
-  float f0, f1;
-  gatherStrikes(b0, b1, f0, f1);
+  vec3 boltP[4];
+  float boltF[4];
+  float tm = float(uFrame);
+  for (int s = 0; s < 4; s++) {
+    boltP[s] = vec3(0.5, 0.12, 0.5);
+    boltF[s] = 0.0;
+    float seed = 8.3 + float(s) * 21.9;
+    float period = 130.0 + hash12(vec2(seed, 1.4)) * 150.0;
+    float shifted = tm + seed * 37.0;
+    float cycle = floor(shifted / period);
+    float phase = fract(shifted / period);
+    float env = exp(-phase * 6.5) * step(phase, 0.32);
+    if (env < 0.008) continue;
+    vec2 best = hash22(vec2(cycle, seed));
+    float bestCh = 0.0;
+    for (int k = 0; k < 5; k++) {
+      vec2 p = hash22(vec2(cycle + 0.13, seed + float(k) * 9.4));
+      float ch = texture(uStorm, p).x;
+      if (ch > bestCh) {
+        bestCh = ch;
+        best = p;
+      }
+    }
+    if (bestCh < 0.14) continue;
+    boltF[s] = env * smoothstep(0.14, 0.55, bestCh);
+    boltP[s] = vec3(best.x, 0.05 + hash12(vec2(cycle, seed + 11.0)) * 0.09, best.y);
+  }
 
   for (int i = 0; i < STEPS; i++) {
     if (trans < 0.03) break;
@@ -709,7 +703,9 @@ void main() {
       float rain = texture(uField, pos.xz).w;
       float lit = mix(0.22, 1.05, light) * mix(0.7, 1.08, powder);
       lit *= mix(1.0, 0.62, smoothstep(0.06, 0.5, rain) * (1.0 - h));
-      float glow = (boltGlow(pos, b0, f0, den) + boltGlow(pos, b1, f1, den)) * (0.45 + 0.55 * powder);
+      float glow = 0.0;
+      for (int s = 0; s < 4; s++) glow += boltGlow(pos, boltP[s], boltF[s], den);
+      glow *= 0.45 + 0.55 * powder;
       float alpha = 1.0 - exp(-den * dt * SIGMA);
       acc += trans * alpha * lit;
       boltAcc += trans * alpha * glow * BOLT_HUE;
@@ -719,8 +715,10 @@ void main() {
   }
 
   float lum = acc / (1.0 + acc * 0.35);
-  vec3 flash = boltAcc / (1.0 + boltAcc * 0.22);
-  fragColor = vec4(clamp(vec3(lum) + flash, 0.0, 1.0), 1.0);
+  vec3 flash = boltAcc / (1.0 + boltAcc * 0.1);
+  float w = clamp(flash.b * 1.5, 0.0, 0.88);
+  vec3 col = vec3(lum) * (1.0 - w * 0.75) + flash * 1.45;
+  fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }`;
 
     const stormFs = `#version 300 es
@@ -856,7 +854,11 @@ uniform float uBlend;
 in vec2 vUv;
 out vec4 fragColor;
 void main() {
-  fragColor = vec4(mix(texture(uHistory, vUv).rgb, texture(uRaw, vUv).rgb, uBlend), 1.0);
+  vec3 raw = texture(uRaw, vUv).rgb;
+  vec3 hist = texture(uHistory, vUv).rgb;
+  float rawFlash = max(raw.b - raw.r, 0.0);
+  float k = mix(uBlend, max(uBlend, 0.78), smoothstep(0.012, 0.07, rawFlash));
+  fragColor = vec4(mix(hist, raw, k), 1.0);
 }`, ["uRaw", "uHistory", "uBlend"]);
     const ink = makeProgram(blitVs, inkFs, ["uSrc", "uA", "uB", "uWidth", "uStrength"]);
     const fade = makeProgram(blitVs, fadeFs, ["uSrc", "uFade"]);
