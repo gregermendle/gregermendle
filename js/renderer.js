@@ -566,6 +566,24 @@ float remap(float v, float lo, float hi) {
   return clamp((v - lo) / max(hi - lo, 1e-4), 0.0, 1.0);
 }
 
+float lobe(vec3 p, vec2 uv, float yMid, float thick, float cov, float nOff, float nScale, float settle, bool cheap) {
+  if (cov < 0.02) return 0.0;
+  float vh = (p.y - yMid) / max(thick, 1e-4);
+  if (abs(vh) > 1.05) return 0.0;
+  float vert = smoothstep(0.0, 0.2, 1.0 - vh * vh);
+  vec4 n = texture(uNoise3, vec3(uv.x, yMid * 0.4 + nOff, uv.y) * nScale);
+  vec2 shift = (n.gb - 0.5) * (0.018 + nOff * 0.04);
+  vec4 n2 = texture(uNoise3, vec3(uv.x + shift.x, yMid * 0.4 + nOff, uv.y + shift.y) * nScale);
+  float shape = mix(n2.r, worleyFbm(n2), mix(0.2, 0.38, settle));
+  float rim = mix(0.1, 0.3, nOff) + (1.0 - cov) * 0.22;
+  float d = remap(shape * vert, rim, 1.0);
+  if (!cheap && d > 0.0) {
+    vec4 t = texture(uNoise3, vec3(uv.x, p.y, uv.y) * nScale * 2.0 + 0.28);
+    d = remap(d, worleyFbm(t) * mix(0.05, 0.12, settle) * (0.35 + 0.4 * abs(vh)), 1.0);
+  }
+  return d * mix(1.6, 2.35, cov);
+}
+
 float cloudDensity(vec3 p, bool cheap) {
   if (p.y < 0.0 || p.y > 1.42) return 0.0;
   vec4 n0 = texture(uNoise3, vec3(p.x, p.y * 0.7, p.z) * 3.2);
@@ -598,33 +616,16 @@ float cloudDensity(vec3 p, bool cheap) {
   top = mix(top, 0.96, tower * 0.8 + unstable * 0.26);
   top = mix(top, 1.34, overshoot);
   vec4 bump0 = texture(uNoise3, vec3(uv.x, 0.12, uv.y) * 2.8);
-  vec4 bump1 = texture(uNoise3, vec3(uv.x, 0.3, uv.y) * 5.2);
-  vec4 bump2 = texture(uNoise3, vec3(uv.x, 0.48, uv.y) * 8.6);
-  top *= mix(1.0, mix(0.7, 1.1, worleyFbm(bump0)), settle);
-  top *= mix(1.0, mix(0.62, 1.24, worleyFbm(bump1)), tower * settle);
-  top *= mix(1.0, mix(0.72, 1.2, worleyFbm(bump2)), overshoot * settle);
+  top *= mix(1.0, mix(0.84, 1.08, worleyFbm(bump0)), settle);
   top *= 1.0 - 0.14 * wet * (1.0 - overshoot);
-  float h = p.y / max(top, 1e-4);
-  if (h > 1.0) return 0.0;
+  if (p.y > top) return 0.0;
 
-  float grad = smoothstep(0.0, 0.16, h) * smoothstep(1.0, mix(0.7, 0.8, tower), h);
-  float edge = 1.0 - cover;
-  float mid = smoothstep(0.06, 0.26, h) * smoothstep(0.94, 0.52, h);
-  float puff = mix(n0.r, worleyFbm(n0), 0.55);
-  cover *= mix(1.0, puff, edge * (0.4 + 0.35 * mid) * settle);
-  if (cover < 0.008) return 0.0;
-
-  vec3 q = vec3(uv.x, p.y, uv.y) * vec3(3.4, 3.8, 3.4);
-  vec4 s = texture(uNoise3, q);
-  float base = mix(s.r, worleyFbm(s), mix(0.18, 0.42, settle));
-  float d = remap(base * grad, edge * 0.16, 1.0);
-  if (!cheap && d > 0.0) {
-    vec4 t = texture(uNoise3, q * 2.8 + 0.31);
-    float carve = worleyFbm(t) * mix(0.08, 0.18, h) * (0.35 + 0.65 * edge);
-    carve += worleyFbm(t) * 0.14 * tower * smoothstep(0.55, 0.92, h);
-    d = remap(d, carve * settle, 1.0);
-  }
-  return clamp(d, 0.0, 1.0) * mix(2.0, 2.7, cover);
+  float d0 = lobe(p, uv, top * 0.18, top * 0.24, cover, 0.0, 2.5, settle, cheap);
+  float d1 = lobe(p, uv, top * 0.42, top * 0.2, cover * mix(0.45, 0.92, mass), 0.16, 3.3, settle, cheap);
+  float d2 = lobe(p, uv, top * 0.68, top * 0.16, cover * mix(0.0, 0.88, tower), 0.32, 4.1, settle, cheap);
+  float d3 = lobe(p, uv, top * 0.9, top * 0.12, cover * mix(0.0, 0.82, overshoot), 0.5, 5.2, settle, cheap);
+  float d = max(max(d0, d1), max(d2, d3));
+  return clamp(d, 0.0, 1.0);
 }
 
 float peakShade(vec2 uv, float tower, float overshoot) {

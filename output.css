@@ -626,6 +626,10 @@ body {
   color: rgb(255 255 255 / 0.4);
 }
 
+.block {
+  display: block;
+}
+
 .\!hidden {
   display: none !important;
 }
