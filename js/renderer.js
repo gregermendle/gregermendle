@@ -11,6 +11,9 @@
   const PARTICLE_SIZE = 512;
   const PARTICLE_COUNT = PARTICLE_SIZE * PARTICLE_SIZE;
   const PARTICLE_DT = 0.0045;
+  const PARTICLE_STRIDE = 10;
+  const PARTICLE_DRAW_COUNT = PARTICLE_COUNT / PARTICLE_STRIDE;
+  const TRAIL_SCALE = 0.48;
 
   const CAM_Y = 22.0;
   const SPREAD = 0.42;
@@ -727,26 +730,136 @@ void main() {
     const particleDrawVs = `#version 300 es
 uniform sampler2D uParticles;
 uniform vec2 uPartSize;
-out float vBright;
+out float vGain;
+float hash(float n) {
+  return fract(sin(n) * 43758.5453123);
+}
 void main() {
   int w = int(uPartSize.x);
-  ivec2 ij = ivec2(gl_VertexID % w, gl_VertexID / w);
+  int id = gl_VertexID * ${PARTICLE_STRIDE};
+  ivec2 ij = ivec2(id % w, id / w);
   vec4 p = texelFetch(uParticles, ij, 0);
+  float activity = clamp(p.w, 0.0, 1.0);
+  float s0 = hash(float(id) + 0.5);
+  vGain = mix(0.18, 0.32, s0) * mix(0.55, 1.0, activity);
   gl_Position = vec4(p.xy * 2.0 - 1.0, 0.0, 1.0);
-  vBright = 0.22 + 0.78 * clamp(p.w, 0.0, 1.0);
-  gl_PointSize = mix(1.15, 2.6, clamp(p.w, 0.0, 1.0));
+  gl_PointSize = mix(32.0, 52.0, s0);
 }`;
 
     const particleDrawFs = `#version 300 es
 precision highp float;
-in float vBright;
+in float vGain;
 out vec4 fragColor;
 void main() {
   vec2 pc = gl_PointCoord * 2.0 - 1.0;
-  float d = dot(pc, pc);
-  if (d > 1.0) discard;
-  float a = 1.0 - d;
-  fragColor = vec4(vec3(vBright * a), 1.0);
+  float a2 = dot(pc, pc);
+  if (a2 > 1.0) discard;
+  float a4 = a2 * a2;
+  float a6 = a4 * a2;
+  float fall = 1.0 - (22.0 / 9.0) * a2 + (17.0 / 9.0) * a4 - (4.0 / 9.0) * a6;
+  fragColor = vec4(vec3(vGain * max(fall, 0.0)), 1.0);
+}`;
+
+    const blurFs = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  vec2 px = 1.0 / vec2(textureSize(uSrc, 0));
+  vec3 acc = vec3(0.0);
+  for (int y = -2; y <= 2; y++) {
+    for (int x = -2; x <= 2; x++) {
+      acc += texture(uSrc, vUv + vec2(float(x), float(y)) * px).rgb;
+    }
+  }
+  fragColor = vec4(acc / 25.0, 1.0);
+}`;
+
+    const particleDisplayFs = `#version 300 es
+precision highp float;
+uniform sampler2D uDensity;
+uniform sampler2D uNoise;
+uniform vec2 uResolution;
+in vec2 vUv;
+out vec4 fragColor;
+
+#define STEPS 12
+#define LIGHT_STEPS 4
+
+const vec3 SUN_DIR = normalize(vec3(0.42, 0.82, 0.36));
+const vec3 LIGHT_COL = vec3(1.0);
+const vec3 SHADE_COL = vec3(0.28, 0.30, 0.34);
+const float PARALLAX = 0.12;
+const float DENSITY_CUTOFF = 0.055;
+const float DENSITY_FACTOR = 0.42;
+const float ATTEN_FACTOR = 0.16;
+const float COLOR_MUL = 1.35;
+
+float wyvill(float a) {
+  float a2 = a * a;
+  float a4 = a2 * a2;
+  return max(1.0 - (22.0 / 9.0) * a2 + (17.0 / 9.0) * a4 - (4.0 / 9.0) * a4 * a2, 0.0);
+}
+
+float heightAt(vec2 uv) {
+  float h = texture(uDensity, uv).r;
+  float n = texture(uNoise, uv * 4.2).r;
+  return h * mix(0.88, 1.06, n);
+}
+
+float cloudDen(float h, float y) {
+  if (h < DENSITY_CUTOFF) return 0.0;
+  float mid = h * 0.48;
+  float rad = max(h * 0.52, 1e-4);
+  float a = abs(y - mid) / rad;
+  if (a >= 1.0) return 0.0;
+  return wyvill(a) * smoothstep(DENSITY_CUTOFF, 0.18, h) * DENSITY_FACTOR;
+}
+
+float lightAtten(vec2 uv, float y) {
+  float att = 1.0;
+  float s = 0.12;
+  for (int j = 0; j < LIGHT_STEPS; j++) {
+    y += SUN_DIR.y * s;
+    uv += SUN_DIR.xz * s * PARALLAX;
+    float den = cloudDen(heightAt(uv), y);
+    att *= 1.0 - den * ATTEN_FACTOR * (1.0 - float(j) / float(LIGHT_STEPS));
+    s *= 1.25;
+  }
+  return clamp(att, 0.0, 1.0);
+}
+
+void main() {
+  if (heightAt(vUv) < DENSITY_CUTOFF * 0.7) {
+    fragColor = vec4(0.0);
+    return;
+  }
+
+  vec2 p = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
+  vec3 rd = normalize(vec3(p.x * 0.3, -1.0, p.y * 0.3));
+  float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+  float dt = 1.0 / float(STEPS);
+  float y = 1.0 - dt * jitter;
+  float trans = 1.0;
+  vec3 acc = vec3(0.0);
+
+  for (int i = 0; i < STEPS; i++) {
+    if (trans < 0.04) break;
+    vec2 uv = vUv + rd.xz * (1.0 - y) * PARALLAX;
+    float den = cloudDen(heightAt(uv), y);
+    if (den > 0.001) {
+      float att = lightAtten(uv, y);
+      vec3 col = mix(SHADE_COL, LIGHT_COL, att);
+      float alpha = 1.0 - exp(-den * dt * 9.0);
+      alpha = min(alpha * COLOR_MUL, 1.0);
+      acc += trans * alpha * col;
+      trans *= 1.0 - alpha;
+    }
+    y -= dt;
+  }
+
+  fragColor = vec4(acc, 1.0);
 }`;
 
     const accumFs = `#version 300 es
@@ -860,9 +973,15 @@ void main() {
       "uTime",
     ]);
     const fade = makeProgram(blitVs, fadeFs, ["uSrc", "uFade"]);
+    const blur = makeProgram(blitVs, blurFs, ["uSrc"]);
     const particleDraw = makeProgram(particleDrawVs, particleDrawFs, [
       "uParticles",
       "uPartSize",
+    ]);
+    const particleDisplay = makeProgram(blitVs, particleDisplayFs, [
+      "uDensity",
+      "uNoise",
+      "uResolution",
     ]);
     const accum = makeProgram(blitVs, accumFs, ["uRaw", "uHistory", "uBlend"]);
     const display = makeProgram(blitVs, bicubicFs, ["uCloud", "uBlueNoise"]);
@@ -884,7 +1003,9 @@ void main() {
       particleInit,
       particleAdvect,
       fade,
+      blur,
       particleDraw,
+      particleDisplay,
       accum,
       display,
     ];
@@ -1057,11 +1178,13 @@ void main() {
     }
 
     function ensureTrail(w, h) {
-      if (w === trailWidth && h === trailHeight && trailTex[0]) return;
-      trailWidth = w;
-      trailHeight = h;
+      const tw = Math.max(1, (w * TRAIL_SCALE) | 0);
+      const th = Math.max(1, (h * TRAIL_SCALE) | 0);
+      if (tw === trailWidth && th === trailHeight && trailTex[0]) return;
+      trailWidth = tw;
+      trailHeight = th;
       for (const tex of trailTex) if (tex) gl.deleteTexture(tex);
-      trailTex = [makeTex(w, h, false, null, false), makeTex(w, h, false, null, false)];
+      trailTex = [makeTex(tw, th, false, null, false), makeTex(tw, th, false, null, false)];
       trailWarm = false;
     }
 
@@ -1170,8 +1293,8 @@ void main() {
       const dst = 1 - trailPing;
       bindQuad(fade);
       bindTex(0, trailWarm ? trailTex[src] : particleTex[particlePing], fade.u.uSrc);
-      gl.uniform1f(fade.u.uFade, trailWarm ? 0.93 : 0.0);
-      targetTex(trailTex[dst], displayWidth, displayHeight);
+      gl.uniform1f(fade.u.uFade, 0.0);
+      targetTex(trailTex[dst], trailWidth, trailHeight);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
 
       gl.enable(gl.BLEND);
@@ -1180,9 +1303,21 @@ void main() {
       gl.useProgram(particleDraw.p);
       bindTex(0, particleTex[particlePing], particleDraw.u.uParticles);
       gl.uniform2f(particleDraw.u.uPartSize, PARTICLE_SIZE, PARTICLE_SIZE);
-      gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
+      gl.drawArrays(gl.POINTS, 0, PARTICLE_DRAW_COUNT);
       gl.bindVertexArray(null);
       gl.disable(gl.BLEND);
+
+      bindQuad(blur);
+      bindTex(0, trailTex[dst], blur.u.uSrc);
+      targetTex(trailTex[src], trailWidth, trailHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      bindQuad(particleDisplay);
+      bindTex(0, trailTex[src], particleDisplay.u.uDensity);
+      bindTex(1, noiseTex, particleDisplay.u.uNoise);
+      gl.uniform2f(particleDisplay.u.uResolution, trailWidth, trailHeight);
+      targetTex(trailTex[dst], trailWidth, trailHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
       trailPing = dst;
       trailWarm = true;
 
