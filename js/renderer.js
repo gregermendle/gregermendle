@@ -167,9 +167,7 @@ float divergenceAt(sampler2D vel, vec2 uv) {
 }
 
 vec2 wrapTo(vec2 p, vec2 a) {
-  vec2 d = p - a;
-  d -= round(d);
-  return d;
+  return p - a;
 }
 `;
 
@@ -557,9 +555,9 @@ ${simLib}
 #define STEPS 40
 #define LIGHT_STEPS 4
 
-const vec3 SUN_DIR = normalize(vec3(0.42, 0.78, 0.46));
+const vec3 SUN_DIR = normalize(vec3(0.52, 0.64, 0.44));
 const float SIGMA = 14.0;
-const float SIGMA_L = 7.5;
+const float SIGMA_L = 8.8;
 
 float worleyFbm(vec4 n) {
   return n.g * 0.6 + n.b * 0.28 + n.a * 0.12;
@@ -569,10 +567,10 @@ float remap(float v, float lo, float hi) {
 }
 
 float cloudDensity(vec3 p, bool cheap) {
-  if (p.y < 0.0 || p.y > 1.05) return 0.0;
+  if (p.y < 0.0 || p.y > 1.42) return 0.0;
   vec4 n0 = texture(uNoise3, vec3(p.x, p.y * 0.7, p.z) * 3.2);
   vec4 n1 = texture(uNoise3, vec3(p.x, p.y * 0.95, p.z) * 5.6 + 0.19);
-  vec2 warp = (n0.gb - 0.5) * mix(0.018, 0.068, p.y) + (n1.ba - 0.5) * mix(0.01, 0.038, p.y);
+  vec2 warp = (n0.gb - 0.5) * mix(0.018, 0.068, min(p.y, 1.0)) + (n1.ba - 0.5) * mix(0.01, 0.038, min(p.y, 1.0));
   vec2 uv = p.xz + warp;
   vec4 f = texture(uField, uv);
   float qc = f.y;
@@ -581,30 +579,62 @@ float cloudDensity(vec3 p, bool cheap) {
   float cover = smoothstep(0.02, 0.16, qc);
   if (cover < 0.01) return 0.0;
 
+  float qcN = 0.25 * (
+    texture(uField, uv + vec2(TEX, 0.0)).y +
+    texture(uField, uv - vec2(TEX, 0.0)).y +
+    texture(uField, uv + vec2(0.0, TEX)).y +
+    texture(uField, uv - vec2(0.0, TEX)).y
+  );
+  float fresh = smoothstep(0.035, 0.16, abs(qc - qcN) * 7.0);
+  float qcSoft = mix(qc, qcN, 0.4);
+  float settle = 1.0 - 0.78 * fresh;
+
   float unstable = clamp((temp - tEquilibrium(uv)) * 5.5 + cover * 0.35, 0.0, 1.0);
   float wet = smoothstep(0.05, 0.45, rain);
-  vec4 bump = texture(uNoise3, vec3(uv.x, 0.15, uv.y) * 3.6);
-  float top = mix(0.28, 1.0, unstable * 0.75 + cover * 0.25) * mix(0.5, 1.08, worleyFbm(bump));
-  top *= 1.0 - 0.35 * wet;
+  float mass = smoothstep(0.05, 0.2, qcSoft);
+  float tower = smoothstep(0.14, 0.42, qcSoft);
+  float overshoot = smoothstep(0.28, 0.65, qcSoft);
+  float top = mix(0.26, 0.5, mass);
+  top = mix(top, 0.96, tower * 0.8 + unstable * 0.26);
+  top = mix(top, 1.34, overshoot);
+  vec4 bump0 = texture(uNoise3, vec3(uv.x, 0.12, uv.y) * 2.8);
+  vec4 bump1 = texture(uNoise3, vec3(uv.x, 0.3, uv.y) * 5.2);
+  vec4 bump2 = texture(uNoise3, vec3(uv.x, 0.48, uv.y) * 8.6);
+  top *= mix(1.0, mix(0.7, 1.1, worleyFbm(bump0)), settle);
+  top *= mix(1.0, mix(0.62, 1.24, worleyFbm(bump1)), tower * settle);
+  top *= mix(1.0, mix(0.72, 1.2, worleyFbm(bump2)), overshoot * settle);
+  top *= 1.0 - 0.14 * wet * (1.0 - overshoot);
   float h = p.y / max(top, 1e-4);
   if (h > 1.0) return 0.0;
 
-  float grad = smoothstep(0.0, 0.16, h) * smoothstep(1.0, 0.7, h);
+  float grad = smoothstep(0.0, 0.16, h) * smoothstep(1.0, mix(0.7, 0.8, tower), h);
   float edge = 1.0 - cover;
   float mid = smoothstep(0.06, 0.26, h) * smoothstep(0.94, 0.52, h);
   float puff = mix(n0.r, worleyFbm(n0), 0.55);
-  cover *= mix(1.0, puff, edge * (0.4 + 0.35 * mid));
+  cover *= mix(1.0, puff, edge * (0.4 + 0.35 * mid) * settle);
   if (cover < 0.008) return 0.0;
 
   vec3 q = vec3(uv.x, p.y, uv.y) * vec3(3.4, 3.8, 3.4);
   vec4 s = texture(uNoise3, q);
-  float base = mix(s.r, worleyFbm(s), 0.42);
+  float base = mix(s.r, worleyFbm(s), mix(0.18, 0.42, settle));
   float d = remap(base * grad, edge * 0.16, 1.0);
   if (!cheap && d > 0.0) {
     vec4 t = texture(uNoise3, q * 2.8 + 0.31);
-    d = remap(d, worleyFbm(t) * mix(0.08, 0.18, h) * (0.35 + 0.65 * edge), 1.0);
+    float carve = worleyFbm(t) * mix(0.08, 0.18, h) * (0.35 + 0.65 * edge);
+    carve += worleyFbm(t) * 0.14 * tower * smoothstep(0.55, 0.92, h);
+    d = remap(d, carve * settle, 1.0);
   }
   return clamp(d, 0.0, 1.0) * mix(2.0, 2.7, cover);
+}
+
+float peakShade(vec2 uv, float tower, float overshoot) {
+  vec2 sd = normalize(SUN_DIR.xz) * 0.016;
+  float h0 = worleyFbm(texture(uNoise3, vec3(uv.x, 0.3, uv.y) * 5.2));
+  float h1 = worleyFbm(texture(uNoise3, vec3(uv.x + sd.x, 0.3, uv.y + sd.y) * 5.2));
+  float t0 = worleyFbm(texture(uNoise3, vec3(uv.x, 0.48, uv.y) * 8.6));
+  float t1 = worleyFbm(texture(uNoise3, vec3(uv.x + sd.x, 0.48, uv.y + sd.y) * 8.6));
+  float block = max(h1 - h0, 0.0) * tower + max(t1 - t0, 0.0) * overshoot;
+  return exp(-block * 2.1);
 }
 
 float lightTau(vec3 p, float jitter) {
@@ -707,9 +737,11 @@ vec3 boltLight(vec3 pos, vec3 a, vec3 b, vec3 c, vec3 d, float amp, float den, f
 
 void main() {
   vec2 nd = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
-  vec3 ro = vec3(vUv.x, 1.55, vUv.y);
-  vec3 rd = normalize(vec3(nd.x * 0.2, -1.0, nd.y * 0.2));
-  float t0 = (1.05 - ro.y) / rd.y;
+  vec3 rd = normalize(vec3(nd.x * 0.22, -1.0, nd.y * 0.22));
+  vec3 ro = vec3(vUv.x, 1.74, vUv.y);
+  float tAim = (0.45 - ro.y) / rd.y;
+  ro.xz -= rd.xz * tAim;
+  float t0 = (1.42 - ro.y) / rd.y;
   float t1 = (0.0 - ro.y) / rd.y;
   float dt = (t1 - t0) / float(STEPS);
   float jitter = fract(texture(uBlueNoise, gl_FragCoord.xy / 128.0).r + float(uFrame % 24) * 0.618034);
@@ -772,8 +804,14 @@ void main() {
       float light = exp(-lightTau(pos, jitter) * SIGMA_L);
       float powder = 1.0 - exp(-den * 4.2);
       float h = clamp(pos.y, 0.0, 1.0);
-      float rain = texture(uField, pos.xz).w;
-      float lit = mix(0.22, 1.05, light) * mix(0.7, 1.08, powder);
+      vec4 fld = texture(uField, pos.xz);
+      float rain = fld.w;
+      float tower = smoothstep(0.14, 0.42, fld.y);
+      float overshoot = smoothstep(0.28, 0.65, fld.y);
+      light *= peakShade(pos.xz, tower, overshoot);
+      float crest = smoothstep(0.6, 1.1, pos.y) * mix(0.1, 0.7, tower);
+      float lit = mix(0.18, 1.08, light) * mix(0.7, 1.08, powder);
+      lit *= mix(1.0, 1.08, crest * light);
       lit *= mix(1.0, 0.62, smoothstep(0.06, 0.5, rain) * (1.0 - h));
       vec3 glow = vec3(0.0);
       for (int s = 0; s < 4; s++) glow += boltLight(pos, ba[s], bb[s], bc[s], bd[s], boltF[s], den, boltT[s]);
@@ -1003,7 +1041,7 @@ void main() {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
-    const simTex = () => makeTex(SIM_SIZE, SIM_SIZE, true, null, true);
+    const simTex = () => makeTex(SIM_SIZE, SIM_SIZE, false, null, true);
     const thermTex = [simTex(), simTex()];
     const velTex = [simTex(), simTex()];
     const stormTex = [simTex(), simTex()];
