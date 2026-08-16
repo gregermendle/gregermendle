@@ -547,6 +547,7 @@ uniform highp sampler3D uNoise3;
 uniform sampler2D uField;
 uniform sampler2D uVel;
 uniform sampler2D uBlueNoise;
+uniform sampler2D uStorm;
 uniform vec2 uResolution;
 uniform int uFrame;
 in vec2 vUv;
@@ -618,6 +619,69 @@ float lightTau(vec3 p, float jitter) {
   return tau;
 }
 
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 hash22(vec2 p) {
+  return vec2(hash12(p), hash12(p + 17.13));
+}
+
+void gatherStrikes(out vec3 p0, out vec3 p1, out float f0, out float f1) {
+  p0 = p1 = vec3(0.5, 0.12, 0.5);
+  f0 = f1 = 0.0;
+  float tm = float(uFrame);
+  for (int s = 0; s < 2; s++) {
+    float seed = 8.3 + float(s) * 21.9;
+    float period = 260.0 + hash12(vec2(seed, 1.4)) * 220.0;
+    float shifted = tm + seed * 37.0;
+    float cycle = floor(shifted / period);
+    float phase = fract(shifted / period);
+    float env = exp(-phase * 6.5) * step(phase, 0.32);
+    if (env < 0.008) continue;
+    vec2 best = hash22(vec2(cycle, seed));
+    float bestCh = 0.0;
+    for (int k = 0; k < 5; k++) {
+      vec2 p = hash22(vec2(cycle + 0.13, seed + float(k) * 9.4));
+      float ch = texture(uStorm, p).x;
+      if (ch > bestCh) {
+        bestCh = ch;
+        best = p;
+      }
+    }
+    if (bestCh < 0.14) continue;
+    float amp = env * smoothstep(0.14, 0.55, bestCh);
+    vec3 at = vec3(best.x, 0.05 + hash12(vec2(cycle, seed + 11.0)) * 0.09, best.y);
+    if (s == 0) { p0 = at; f0 = amp; }
+    else { p1 = at; f1 = amp; }
+  }
+}
+
+const vec3 BOLT_HUE = vec3(0.55, 0.36, 1.0);
+
+float boltGlow(vec3 pos, vec3 at, float amp, float den) {
+  if (amp < 0.008) return 0.0;
+  vec3 toL = at - pos;
+  float r2 = dot(toL, toL);
+  float geom = 1.0 / (1.0 + r2 * 100.0);
+  if (geom < 0.02) return 0.0;
+  float len = sqrt(max(r2, 1e-6));
+  vec3 dir = toL / len;
+  float tau = 0.0;
+  float s = min(len, 0.16) / 5.0;
+  vec3 p = pos;
+  for (int i = 0; i < 5; i++) {
+    p += dir * s;
+    float d = cloudDensity(p, true);
+    float qc = texture(uField, p.xz).y;
+    tau += d * s * (0.65 + 0.6 * smoothstep(0.03, 0.3, qc));
+  }
+  float moist = texture(uField, pos.xz).y;
+  float scatter = den * (0.3 + 0.7 * smoothstep(0.03, 0.28, moist));
+  return amp * geom * exp(-tau * 9.0) * scatter * 1.25;
+}
+
 void main() {
   vec2 nd = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
   vec3 ro = vec3(vUv.x, 1.55, vUv.y);
@@ -629,6 +693,10 @@ void main() {
   float t = t0 + dt * jitter;
   float trans = 1.0;
   float acc = 0.0;
+  vec3 boltAcc = vec3(0.0);
+  vec3 b0, b1;
+  float f0, f1;
+  gatherStrikes(b0, b1, f0, f1);
 
   for (int i = 0; i < STEPS; i++) {
     if (trans < 0.03) break;
@@ -641,15 +709,43 @@ void main() {
       float rain = texture(uField, pos.xz).w;
       float lit = mix(0.22, 1.05, light) * mix(0.7, 1.08, powder);
       lit *= mix(1.0, 0.62, smoothstep(0.06, 0.5, rain) * (1.0 - h));
+      float glow = (boltGlow(pos, b0, f0, den) + boltGlow(pos, b1, f1, den)) * (0.45 + 0.55 * powder);
       float alpha = 1.0 - exp(-den * dt * SIGMA);
       acc += trans * alpha * lit;
+      boltAcc += trans * alpha * glow * BOLT_HUE;
       trans *= 1.0 - alpha;
     }
     t += dt;
   }
 
   float lum = acc / (1.0 + acc * 0.35);
-  fragColor = vec4(vec3(clamp(lum, 0.0, 1.0)), 1.0);
+  vec3 flash = boltAcc / (1.0 + boltAcc * 0.22);
+  fragColor = vec4(clamp(vec3(lum) + flash, 0.0, 1.0), 1.0);
+}`;
+
+    const stormFs = `#version 300 es
+precision highp float;
+uniform sampler2D uStorm;
+uniform sampler2D uTherm;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec4 f = texture(uTherm, vUv);
+  float moist = f.y + f.w * 0.28;
+  float prev = texture(uStorm, vUv).x;
+  float blur = 0.25 * (
+    texture(uStorm, vUv + vec2(TEX, 0.0)).x +
+    texture(uStorm, vUv - vec2(TEX, 0.0)).x +
+    texture(uStorm, vUv + vec2(0.0, TEX)).x +
+    texture(uStorm, vUv - vec2(0.0, TEX)).x
+  );
+  prev = mix(prev, blur, 0.18);
+  float charge = prev;
+  if (moist > 0.11) charge = min(1.0, charge + 0.018 + (moist - 0.11) * 0.05);
+  else if (moist < 0.055) charge = max(0.0, charge - 0.005);
+  else charge = max(0.0, charge - 0.0012);
+  fragColor = vec4(charge, 0.0, 0.0, 1.0);
 }`;
 
     const inkFs = `#version 300 es
@@ -690,10 +786,9 @@ uniform sampler2D uInk;
 in vec2 vUv;
 out vec4 fragColor;
 void main() {
-  float cloud = texture(uWeather, vUv).r;
+  vec3 cloud = texture(uWeather, vUv).rgb;
   float ink = texture(uInk, vUv).r;
-  float lum = max(cloud, ink * 0.55);
-  fragColor = vec4(vec3(lum), 1.0);
+  fragColor = vec4(max(cloud, vec3(ink * 0.55)), 1.0);
 }`;
 
     const thermInit = makeProgram(blitVs, thermInitFs, ["uNoise"]);
@@ -748,9 +843,11 @@ void main() {
       "uField",
       "uVel",
       "uBlueNoise",
+      "uStorm",
       "uResolution",
       "uFrame",
     ]);
+    const stormCharge = makeProgram(blitVs, stormFs, ["uStorm", "uTherm"]);
     const accum = makeProgram(blitVs, `#version 300 es
 precision highp float;
 uniform sampler2D uRaw;
@@ -780,6 +877,7 @@ void main() {
       jacobi,
       project,
       weather,
+      stormCharge,
       accum,
       ink,
       fade,
@@ -834,6 +932,7 @@ void main() {
     const simTex = () => makeTex(SIM_SIZE, SIM_SIZE, true, null, true);
     const thermTex = [simTex(), simTex()];
     const velTex = [simTex(), simTex()];
+    const stormTex = [simTex(), simTex()];
     const prsTex = [simTex(), simTex()];
     const divTex = simTex();
     const meanTex = simTex();
@@ -882,10 +981,16 @@ void main() {
     bindQuad(velInit);
     bindTex(0, noiseTex, velInit.u.uNoise);
     drawSim(velTex[0]);
+    gl.clearColor(0, 0, 0, 1);
+    targetTex(stormTex[0], SIM_SIZE, SIM_SIZE);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    targetTex(stormTex[1], SIM_SIZE, SIM_SIZE);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
     let thermPing = 0;
     let velPing = 0;
+    let stormPing = 0;
     let prsPing = 0;
     let weatherTex = null;
     let rawTex = null;
@@ -1039,6 +1144,12 @@ void main() {
       bindTex(1, prsTex[prsPing], project.u.uPressure);
       drawSim(velTex[1 - velPing]);
       velPing = 1 - velPing;
+
+      bindQuad(stormCharge);
+      bindTex(0, stormTex[stormPing], stormCharge.u.uStorm);
+      bindTex(1, thermTex[thermPing], stormCharge.u.uTherm);
+      drawSim(stormTex[1 - stormPing]);
+      stormPing = 1 - stormPing;
     }
 
     function fadeInk() {
@@ -1062,6 +1173,7 @@ void main() {
       bindTex(0, thermTex[thermPing], weather.u.uField);
       bindTex(1, velTex[velPing], weather.u.uVel);
       bindTex(2, blueTex, weather.u.uBlueNoise);
+      bindTex(4, stormTex[stormPing], weather.u.uStorm);
       gl.uniform2f(weather.u.uResolution, marchWidth, marchHeight);
       gl.uniform1i(weather.u.uFrame, frame);
       targetTex(rawTex, marchWidth, marchHeight);
