@@ -51,4 +51,20 @@
   #legend span {
     @apply w-10 shrink-0 text-white/40;
   }
+
+  #legend .march {
+    @apply items-center;
+  }
+
+  #legend .stepper {
+    @apply pointer-events-auto flex items-center gap-1.5;
+  }
+
+  #legend button {
+    @apply flex h-5 w-5 items-center justify-center text-white/40 hover:text-white/85 active:text-white;
+  }
+
+  #legend em {
+    @apply w-6 text-center not-italic text-white/65;
+  }
 }

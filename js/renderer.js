@@ -548,11 +548,12 @@ uniform sampler2D uBlueNoise;
 uniform sampler2D uStorm;
 uniform vec2 uResolution;
 uniform int uFrame;
+uniform int uSteps;
 in vec2 vUv;
 out vec4 fragColor;
 ${simLib}
 
-#define STEPS 40
+#define MAX_STEPS 96
 #define LIGHT_STEPS 4
 
 const vec3 SUN_DIR = normalize(vec3(0.52, 0.64, 0.44));
@@ -570,32 +571,45 @@ float lobe(vec3 p, vec2 uv, float yMid, float thick, float cov, float nOff, floa
   if (cov < 0.02) return 0.0;
   float vh = (p.y - yMid) / max(thick, 1e-4);
   if (abs(vh) > 1.05) return 0.0;
-  float vert = smoothstep(0.0, 0.2, 1.0 - vh * vh);
+  float vert = smoothstep(0.0, 0.28, 1.0 - vh * vh);
   vec4 n = texture(uNoise3, vec3(uv.x, yMid * 0.4 + nOff, uv.y) * nScale);
-  vec2 shift = (n.gb - 0.5) * (0.018 + nOff * 0.04);
+  vec2 shift = (n.gb - 0.5) * (0.028 + nOff * 0.05);
   vec4 n2 = texture(uNoise3, vec3(uv.x + shift.x, yMid * 0.4 + nOff, uv.y + shift.y) * nScale);
-  float shape = mix(n2.r, worleyFbm(n2), mix(0.2, 0.38, settle));
-  float rim = mix(0.1, 0.3, nOff) + (1.0 - cov) * 0.22;
+  float cell = mix(0.06, 0.14, settle) * mix(1.0, 0.4, cov);
+  float shape = mix(n2.r, worleyFbm(n2), cell);
+  float rim = mix(0.04, 0.14, nOff) + (1.0 - cov) * 0.32;
   float d = remap(shape * vert, rim, 1.0);
   if (!cheap && d > 0.0) {
-    vec4 t = texture(uNoise3, vec3(uv.x, p.y, uv.y) * nScale * 2.0 + 0.28);
-    d = remap(d, worleyFbm(t) * mix(0.05, 0.12, settle) * (0.35 + 0.4 * abs(vh)), 1.0);
+    vec4 t = texture(uNoise3, vec3(uv.x, p.y, uv.y) * nScale * 1.45 + 0.28);
+    d = remap(d, worleyFbm(t) * mix(0.01, 0.04, settle) * (0.2 + 0.25 * abs(vh)), 1.0);
   }
-  return d * mix(1.6, 2.35, cov);
+  return d * mix(1.25, 1.7, cov);
 }
 
 float cloudDensity(vec3 p, bool cheap) {
   if (p.y < 0.0 || p.y > 1.42) return 0.0;
-  vec4 n0 = texture(uNoise3, vec3(p.x, p.y * 0.7, p.z) * 3.2);
-  vec4 n1 = texture(uNoise3, vec3(p.x, p.y * 0.95, p.z) * 5.6 + 0.19);
-  vec2 warp = (n0.gb - 0.5) * mix(0.018, 0.068, min(p.y, 1.0)) + (n1.ba - 0.5) * mix(0.01, 0.038, min(p.y, 1.0));
+  float h = min(p.y, 1.0);
+  vec2 vel = texture(uVel, p.xz).xy;
+  vec4 n0 = texture(uNoise3, vec3(p.x, p.y * 0.55, p.z) * 2.4);
+  vec4 n1 = texture(uNoise3, vec3(p.x, p.y * 0.8, p.z) * 4.0 + 0.19);
+  vec4 f0 = texture(uField, p.xz);
+  float qcN0 = 0.25 * (
+    texture(uField, p.xz + vec2(TEX, 0.0)).y +
+    texture(uField, p.xz - vec2(TEX, 0.0)).y +
+    texture(uField, p.xz + vec2(0.0, TEX)).y +
+    texture(uField, p.xz - vec2(0.0, TEX)).y
+  );
+  float fresh0 = smoothstep(0.03, 0.14, abs(f0.y - qcN0) * 7.0);
+  vec2 warp = (n0.gb - 0.5) * mix(0.03, 0.11, h) + (n1.ba - 0.5) * mix(0.016, 0.06, h);
+  warp += vel * CLOUD_ADV * h * 0.045;
+  warp += (n0.ra - 0.5) * fresh0 * mix(0.02, 0.09, h);
   vec2 uv = p.xz + warp;
   vec4 f = texture(uField, uv);
   float qc = f.y;
   float temp = f.z;
   float rain = f.w;
-  float cover = smoothstep(0.02, 0.16, qc);
-  if (cover < 0.01) return 0.0;
+  float cover = smoothstep(0.012, 0.2, qc);
+  if (cover < 0.008) return 0.0;
 
   float qcN = 0.25 * (
     texture(uField, uv + vec2(TEX, 0.0)).y +
@@ -603,9 +617,9 @@ float cloudDensity(vec3 p, bool cheap) {
     texture(uField, uv + vec2(0.0, TEX)).y +
     texture(uField, uv - vec2(0.0, TEX)).y
   );
-  float fresh = smoothstep(0.035, 0.16, abs(qc - qcN) * 7.0);
-  float qcSoft = mix(qc, qcN, 0.4);
-  float settle = 1.0 - 0.78 * fresh;
+  float fresh = max(fresh0, smoothstep(0.03, 0.14, abs(qc - qcN) * 7.0));
+  float qcSoft = mix(qc, qcN, 0.48);
+  float settle = 1.0 - 0.86 * fresh;
 
   float unstable = clamp((temp - tEquilibrium(uv)) * 5.5 + cover * 0.35, 0.0, 1.0);
   float wet = smoothstep(0.05, 0.45, rain);
@@ -615,27 +629,29 @@ float cloudDensity(vec3 p, bool cheap) {
   float top = mix(0.26, 0.5, mass);
   top = mix(top, 0.96, tower * 0.8 + unstable * 0.26);
   top = mix(top, 1.34, overshoot);
-  vec4 bump0 = texture(uNoise3, vec3(uv.x, 0.12, uv.y) * 2.8);
-  top *= mix(1.0, mix(0.84, 1.08, worleyFbm(bump0)), settle);
+  vec4 bump0 = texture(uNoise3, vec3(uv.x, 0.12, uv.y) * 1.8);
+  top *= mix(1.0, mix(0.93, 1.04, bump0.r), settle * (1.0 - cover * 0.35));
   top *= 1.0 - 0.14 * wet * (1.0 - overshoot);
   if (p.y > top) return 0.0;
 
-  float d0 = lobe(p, uv, top * 0.18, top * 0.24, cover, 0.0, 2.5, settle, cheap);
-  float d1 = lobe(p, uv, top * 0.42, top * 0.2, cover * mix(0.45, 0.92, mass), 0.16, 3.3, settle, cheap);
-  float d2 = lobe(p, uv, top * 0.68, top * 0.16, cover * mix(0.0, 0.88, tower), 0.32, 4.1, settle, cheap);
-  float d3 = lobe(p, uv, top * 0.9, top * 0.12, cover * mix(0.0, 0.82, overshoot), 0.5, 5.2, settle, cheap);
+  float d0 = lobe(p, uv, top * 0.18, top * 0.26, cover, 0.0, 1.8, settle, cheap);
+  float d1 = lobe(p, uv, top * 0.42, top * 0.22, cover * mix(0.45, 0.92, mass), 0.16, 2.2, settle, cheap);
+  float d2 = lobe(p, uv, top * 0.68, top * 0.18, cover * mix(0.0, 0.88, tower), 0.32, 2.6, settle, cheap);
+  float d3 = lobe(p, uv, top * 0.9, top * 0.14, cover * mix(0.0, 0.82, overshoot), 0.5, 3.0, settle, cheap);
   float d = max(max(d0, d1), max(d2, d3));
+  float wisp = remap(n0.r, mix(0.18, 0.42, cover), 0.78);
+  d *= mix(wisp, 1.0, settle * cover);
   return clamp(d, 0.0, 1.0);
 }
 
 float peakShade(vec2 uv, float tower, float overshoot) {
-  vec2 sd = normalize(SUN_DIR.xz) * 0.016;
-  float h0 = worleyFbm(texture(uNoise3, vec3(uv.x, 0.3, uv.y) * 5.2));
-  float h1 = worleyFbm(texture(uNoise3, vec3(uv.x + sd.x, 0.3, uv.y + sd.y) * 5.2));
-  float t0 = worleyFbm(texture(uNoise3, vec3(uv.x, 0.48, uv.y) * 8.6));
-  float t1 = worleyFbm(texture(uNoise3, vec3(uv.x + sd.x, 0.48, uv.y + sd.y) * 8.6));
+  vec2 sd = normalize(SUN_DIR.xz) * 0.02;
+  float h0 = texture(uNoise3, vec3(uv.x, 0.3, uv.y) * 2.4).r;
+  float h1 = texture(uNoise3, vec3(uv.x + sd.x, 0.3, uv.y + sd.y) * 2.4).r;
+  float t0 = texture(uNoise3, vec3(uv.x, 0.48, uv.y) * 3.6).r;
+  float t1 = texture(uNoise3, vec3(uv.x + sd.x, 0.48, uv.y + sd.y) * 3.6).r;
   float block = max(h1 - h0, 0.0) * tower + max(t1 - t0, 0.0) * overshoot;
-  return exp(-block * 2.1);
+  return exp(-block * 1.15);
 }
 
 float lightTau(vec3 p, float jitter) {
@@ -737,14 +753,13 @@ vec3 boltLight(vec3 pos, vec3 a, vec3 b, vec3 c, vec3 d, float amp, float den, f
 }
 
 void main() {
-  vec2 nd = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
-  vec3 rd = normalize(vec3(nd.x * 0.22, -1.0, nd.y * 0.22));
+  vec3 rd = normalize(vec3(0.1, -1.0, 0.07));
   vec3 ro = vec3(vUv.x, 1.74, vUv.y);
-  float tAim = (0.45 - ro.y) / rd.y;
+  float tAim = (0.42 - ro.y) / rd.y;
   ro.xz -= rd.xz * tAim;
   float t0 = (1.42 - ro.y) / rd.y;
   float t1 = (0.0 - ro.y) / rd.y;
-  float dt = (t1 - t0) / float(STEPS);
+  float dt = (t1 - t0) / float(max(uSteps, 1));
   float jitter = fract(texture(uBlueNoise, gl_FragCoord.xy / 128.0).r + float(uFrame % 24) * 0.618034);
   float t = t0 + dt * jitter;
   float trans = 1.0;
@@ -797,8 +812,8 @@ void main() {
     boltT[s] = clamp(phase / 0.11, 0.0, 1.0);
   }
 
-  for (int i = 0; i < STEPS; i++) {
-    if (trans < 0.03) break;
+  for (int i = 0; i < MAX_STEPS; i++) {
+    if (i >= uSteps || trans < 0.03) break;
     vec3 pos = ro + rd * t;
     float den = cloudDensity(pos, false);
     if (den > 0.004) {
@@ -955,6 +970,7 @@ void main() {
       "uStorm",
       "uResolution",
       "uFrame",
+      "uSteps",
     ]);
     const stormCharge = makeProgram(blitVs, stormFs, ["uStorm", "uTherm"]);
     const accum = makeProgram(blitVs, `#version 300 es
@@ -1118,10 +1134,14 @@ void main() {
     let marchHeight = 0;
     let displayWidth = 0;
     let displayHeight = 0;
+    let marchSteps = 40;
     let running = false;
     let hidden = false;
     let raf = 0;
     let frame = 0;
+    let fpsFrames = 0;
+    let fpsLast = 0;
+    let onFps = null;
     const impulses = [];
     const fronts = [];
 
@@ -1289,6 +1309,7 @@ void main() {
       bindTex(4, stormTex[stormPing], weather.u.uStorm);
       gl.uniform2f(weather.u.uResolution, marchWidth, marchHeight);
       gl.uniform1i(weather.u.uFrame, frame);
+      gl.uniform1i(weather.u.uSteps, marchSteps);
       targetTex(rawTex, marchWidth, marchHeight);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
 
@@ -1328,6 +1349,14 @@ void main() {
       stepSim();
       frame++;
       drawWeather();
+      fpsFrames++;
+      const now = performance.now();
+      if (!fpsLast) fpsLast = now;
+      if (now - fpsLast >= 500) {
+        if (onFps) onFps((fpsFrames * 1000) / (now - fpsLast));
+        fpsFrames = 0;
+        fpsLast = now;
+      }
     }
 
     function start() {
@@ -1346,6 +1375,12 @@ void main() {
       setRunning(value) {
         running = value;
         start();
+      },
+      setSteps(value) {
+        marchSteps = Math.max(16, Math.min(96, value | 0));
+      },
+      setOnFps(fn) {
+        onFps = fn;
       },
       addImpulse(imp) {
         const at = screenToSim(imp.sx, imp.sy);

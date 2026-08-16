@@ -12,6 +12,7 @@ function init() {
       if (msg.type === "size") renderer.setSize(msg.w, msg.h);
       else if (msg.type === "running") renderer.setRunning(msg.v);
       else if (msg.type === "hidden") renderer.setHidden(msg.v);
+      else if (msg.type === "steps") renderer.setSteps(msg.v);
       else if (msg.type === "impulse") renderer.addImpulse(msg);
       else if (msg.type === "front") renderer.addFront(msg);
       return;
@@ -20,7 +21,7 @@ function init() {
   }
 
   const script = document.createElement("script");
-  script.src = "js/renderer.js?v=223";
+  script.src = "js/renderer.js?v=227";
   script.onload = () => {
     const r = self.createRenderer(canvas);
     if (!r) {
@@ -28,6 +29,10 @@ function init() {
       return;
     }
     renderer = r;
+    const fpsValue = document.getElementById("fps-value");
+    r.setOnFps((fps) => {
+      if (fpsValue) fpsValue.textContent = String(Math.round(fps));
+    });
     for (const msg of pending) send(msg);
     pending.length = 0;
   };
@@ -56,6 +61,17 @@ function init() {
   let cyclone = false;
   let holdTimer = 0;
   let pen = 1;
+  let steps = 40;
+  const stepMin = 16;
+  const stepMax = 96;
+  const stepNudge = 8;
+  const marchValue = document.getElementById("march-value");
+
+  function setSteps(next) {
+    steps = Math.max(stepMin, Math.min(stepMax, next));
+    if (marchValue) marchValue.textContent = String(steps);
+    send({ type: "steps", v: steps });
+  }
 
   function seedMoisture(p, strength) {
     send({
@@ -82,6 +98,7 @@ function init() {
   }
 
   function onDown(e) {
+    if (e.target.closest("#legend")) return;
     down = true;
     moved = false;
     cyclone = e.shiftKey;
@@ -144,6 +161,15 @@ function init() {
   window.addEventListener("keydown", (e) => {
     if (e.key === "1") pen = Math.max(0.4, pen - 0.2);
     if (e.key === "2") pen = Math.min(2.8, pen + 0.2);
+    if (e.key === "[") setSteps(steps - stepNudge);
+    if (e.key === "]") setSteps(steps + stepNudge);
+  });
+
+  document.getElementById("march-down")?.addEventListener("click", () => {
+    setSteps(steps - stepNudge);
+  });
+  document.getElementById("march-up")?.addEventListener("click", () => {
+    setSteps(steps + stepNudge);
   });
 
   window.addEventListener("pointerdown", onDown);
