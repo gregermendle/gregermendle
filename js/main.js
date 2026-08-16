@@ -20,7 +20,7 @@ function init() {
   }
 
   const script = document.createElement("script");
-  script.src = "js/renderer.js?v=113";
+  script.src = "js/renderer.js?v=123";
   script.onload = () => {
     const r = self.createRenderer(canvas);
     if (!r) {

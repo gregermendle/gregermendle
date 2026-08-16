@@ -506,27 +506,30 @@ precision highp float;
 uniform highp sampler3D uNoise3;
 uniform sampler2D uBlueNoise;
 uniform sampler2D uField;
+uniform sampler2D uVel;
 uniform vec2 uResolution;
 uniform int uFrame;
+uniform float uTime;
 in vec2 vUv;
 out vec4 fragColor;
 
-#define STEPS 56
-#define LIGHT_STEPS 6
+#define STEPS 40
+#define LIGHT_STEPS 5
 
 const float CAM_Y = ${CAM_Y.toFixed(4)};
 const float SPREAD = ${SPREAD.toFixed(4)};
 const float BOT = ${CLOUD_BOT.toFixed(4)};
 const float TOP = ${CLOUD_TOP.toFixed(4)};
 const float DOMAIN = ${DOMAIN.toFixed(4)};
-const float SIGMA = 22.0;
-const float SIGMA_L = 11.0;
-const float SHAPE_TILE = 1.7;
-const float DETAIL_TILE = 0.52;
-const vec3 SUN_DIR = normalize(vec3(0.66, 0.32, -0.46));
-const vec3 SUN_COL = vec3(1.0);
-const vec3 AMB_COL = vec3(0.56);
+const float SIGMA = 11.0;
+const float SIGMA_L = 7.0;
+const float SHAPE_TILE = 2.5;
+const float DETAIL_TILE = 0.9;
+const vec3 SUN_DIR = normalize(vec3(0.55, 0.72, 0.4));
+const vec3 SUN_COL = vec3(1.0, 0.98, 0.95);
+const vec3 AMB_COL = vec3(0.42, 0.46, 0.55);
 const float PI = 3.14159265;
+${simLib}
 
 float worleyFbm(vec4 n) {
   return n.g * 0.625 + n.b * 0.25 + n.a * 0.125;
@@ -536,46 +539,96 @@ float remap(float v, float lo, float hi) {
   return clamp((v - lo) / max(hi - lo, 1e-4), 0.0, 1.0);
 }
 
+vec2 simUv(vec3 p) {
+  return p.xz / DOMAIN + 0.5;
+}
+
 vec4 fieldAt(vec3 p) {
-  return texture(uField, p.xz / DOMAIN);
+  return texture(uField, simUv(p));
+}
+
+vec4 fieldSoft(vec2 uv) {
+  vec2 px = vec2(TEX * 1.8);
+  return (
+    texture(uField, uv) * 4.0 +
+    texture(uField, uv + vec2(px.x, 0.0)) +
+    texture(uField, uv - vec2(px.x, 0.0)) +
+    texture(uField, uv + vec2(0.0, px.y)) +
+    texture(uField, uv - vec2(0.0, px.y))
+  ) * 0.125;
+}
+
+float liftSoft(vec2 uv) {
+  float t = TEX * 2.8;
+  float l = texture(uVel, uv - vec2(t, 0.0)).x;
+  float r = texture(uVel, uv + vec2(t, 0.0)).x;
+  float b = texture(uVel, uv - vec2(0.0, t)).y;
+  float tp = texture(uVel, uv + vec2(0.0, t)).y;
+  float w = clamp(-0.5 * ((r - l) + (tp - b)) / DIV_SCALE, -3.0, 3.0);
+  return w;
+}
+
+vec3 weatherP(vec3 p, vec2 vel) {
+  float hn = clamp((p.y - BOT) / (TOP - BOT), 0.0, 1.0);
+  vec2 shear = vel * (0.08 + 0.4 * hn * hn);
+  return p + vec3(shear.x, 0.0, shear.y);
 }
 
 float topBumps(vec2 xz) {
-  float b = 0.52 * texture(uNoise3, vec3(xz.x, 0.0, xz.y) / 2.5).r;
-  b += 0.30 * texture(uNoise3, vec3(xz.x, 3.7, xz.y) / 0.95).r;
-  b += 0.18 * texture(uNoise3, vec3(xz.x, 8.1, xz.y) / 0.38).r;
-  return clamp((b - 0.5) * 3.0 + 0.5, 0.0, 1.0);
+  float b = 0.72 * texture(uNoise3, vec3(xz.x, 0.0, xz.y) / 4.2).r;
+  b += 0.28 * texture(uNoise3, vec3(xz.x, 2.2, xz.y) / 1.8).r;
+  return clamp((b - 0.3) * 1.35, 0.0, 1.0);
 }
 
 float cloudDensity(vec3 p, bool cheap) {
   if (p.y < BOT || p.y > TOP) return 0.0;
 
-  vec4 f = fieldAt(p);
+  vec2 uv = simUv(p);
+  vec4 f = fieldSoft(uv);
+  float qv = f.x;
   float qc = f.y;
-  float breakup = texture(uNoise3, vec3(p.x, 5.3, p.z) / 1.2).r;
-  float cover = smoothstep(0.030, 0.175, qc * (0.72 + 0.58 * breakup));
-  if (cover < 0.01) return 0.0;
+  float temp = f.z;
+  float rain = f.w;
+  vec2 vel = texture(uVel, uv).xy;
+  float w = liftSoft(uv);
 
-  float bump = topBumps(p.xz);
-  float tower = smoothstep(0.05, 0.30, qc);
-  float topH = mix(0.12, 1.0, tower) * mix(0.22, 1.0, bump);
-  float h = (p.y - BOT) / ((TOP - BOT) * topH);
+  float qs = max(qsat(temp), 1e-4);
+  float rh = qv / qs;
+  float condensate = smoothstep(0.004, 0.16, qc);
+  float sat = smoothstep(0.78, 1.08, rh);
+  float lift = mix(0.78, 1.12, smoothstep(-1.0, 1.8, w));
+  float sink = smoothstep(0.9, 2.4, -w) * 0.22;
+  float cover = (condensate * 0.88 + sat * 0.22) * lift * (1.0 - sink);
+  cover = clamp(cover, 0.0, 1.0);
+  if (cover < 0.008) return 0.0;
+
+  float unstable = clamp((temp - tEquilibrium(uv)) * 5.0 + condensate * 0.4, 0.0, 1.0);
+  float wet = smoothstep(0.05, 0.5, rain);
+  float tower = mix(0.34, 1.06, unstable) * mix(0.9, 1.08, smoothstep(-0.6, 1.4, w));
+  tower *= 1.0 - 0.4 * wet;
+
+  vec3 q = weatherP(p, vel);
+  float bump = topBumps(q.xz);
+  float topH = tower * mix(0.55, 1.0, bump);
+  float h = (p.y - BOT) / ((TOP - BOT) * max(topH, 1e-4));
   if (h > 1.0) return 0.0;
 
-  float grad = smoothstep(0.0, 0.28, h) * smoothstep(1.0, 0.62, h);
-  if (grad < 0.01) return 0.0;
+  float grad = smoothstep(0.0, 0.28, h) * smoothstep(1.0, 0.66, h);
+  if (grad < 0.008) return 0.0;
 
-  vec4 s = texture(uNoise3, p / SHAPE_TILE);
-  float base = mix(s.r, worleyFbm(s), 0.4);
-  float d = remap(base * grad, (1.0 - cover) * 0.8, 1.0);
+  vec4 s = texture(uNoise3, q / SHAPE_TILE);
+  float base = mix(s.r, worleyFbm(s), 0.26);
+  float d = remap(base * grad, (1.0 - cover) * 0.18, 1.0);
+  d *= smoothstep(0.008, 0.14, cover);
 
   if (!cheap && d > 0.0) {
-    vec4 t = texture(uNoise3, p / DETAIL_TILE + 0.37);
-    float amp = 0.18 * (1.0 - h * 0.55) * smoothstep(0.02, 0.30, d);
+    vec4 t = texture(uNoise3, q / DETAIL_TILE + 0.37);
+    float amp = 0.07 * (1.0 - h * 0.28) * smoothstep(0.02, 0.32, d);
     d = remap(d, worleyFbm(t) * amp, 1.0);
   }
 
-  return clamp(d, 0.0, 1.0) * 2.6;
+  d *= mix(1.0, 0.75, wet * (1.0 - h));
+  return clamp(d, 0.0, 1.0) * 2.05;
 }
 
 float lightTau(vec3 p, float jitter) {
@@ -713,7 +766,7 @@ void main() {
     p.xy = spawn;
     p.z = 0.0;
   }
-  p.w = clamp(length(vel) * 0.35 + (f.z - 0.5) * 1.4, 0.0, 1.5);
+  p.w = clamp(f.y * 2.4 + max(f.z - 0.58, 0.0) * 0.8, 0.0, 1.5);
   fragColor = p;
 }`;
 
@@ -729,8 +782,13 @@ void main() {
 
     const particleDrawVs = `#version 300 es
 uniform sampler2D uParticles;
+uniform sampler2D uField;
+uniform sampler2D uVel;
 uniform vec2 uPartSize;
 out float vGain;
+out vec2 vDir;
+out float vStretch;
+out vec2 vSeed;
 float hash(float n) {
   return fract(sin(n) * 43758.5453123);
 }
@@ -739,25 +797,56 @@ void main() {
   int id = gl_VertexID * ${PARTICLE_STRIDE};
   ivec2 ij = ivec2(id % w, id / w);
   vec4 p = texelFetch(uParticles, ij, 0);
-  float activity = clamp(p.w, 0.0, 1.0);
+  vec4 f = texture(uField, p.xy);
+  vec2 vel = texture(uVel, p.xy).xy;
+  float cover = smoothstep(0.0, 0.26, f.y) * 0.7 + smoothstep(0.0, 0.2, p.w) * 0.3;
   float s0 = hash(float(id) + 0.5);
-  vGain = mix(0.18, 0.32, s0) * mix(0.55, 1.0, activity);
+  float s1 = hash(float(id) + 8.3);
+  if (cover < 0.01) {
+    gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
+    gl_PointSize = 0.0;
+    vGain = 0.0;
+    vDir = vec2(1.0, 0.0);
+    vStretch = 0.0;
+    vSeed = vec2(0.0);
+    return;
+  }
+  vSeed = vec2(s0, s1);
+  vGain = mix(0.08, 0.16, s0) * mix(0.4, 1.0, cover);
+  vDir = normalize(vel + vec2(1e-5, 0.0));
+  vStretch = clamp(length(vel) * 0.22, 0.0, 0.85);
   gl_Position = vec4(p.xy * 2.0 - 1.0, 0.0, 1.0);
-  gl_PointSize = mix(32.0, 52.0, s0);
+  gl_PointSize = mix(28.0, 46.0, s0) * mix(0.8, 1.25, cover);
 }`;
 
     const particleDrawFs = `#version 300 es
 precision highp float;
 in float vGain;
+in vec2 vDir;
+in float vStretch;
+in vec2 vSeed;
 out vec4 fragColor;
+
+float wyvill2(vec2 p, vec2 c, float s) {
+  vec2 d = (p - c) / s;
+  float a2 = dot(d, d);
+  if (a2 > 1.0) return 0.0;
+  float a4 = a2 * a2;
+  return max(1.0 - (22.0 / 9.0) * a2 + (17.0 / 9.0) * a4 - (4.0 / 9.0) * a4 * a2, 0.0);
+}
+
 void main() {
   vec2 pc = gl_PointCoord * 2.0 - 1.0;
-  float a2 = dot(pc, pc);
-  if (a2 > 1.0) discard;
-  float a4 = a2 * a2;
-  float a6 = a4 * a2;
-  float fall = 1.0 - (22.0 / 9.0) * a2 + (17.0 / 9.0) * a4 - (4.0 / 9.0) * a6;
-  fragColor = vec4(vec3(vGain * max(fall, 0.0)), 1.0);
+  vec2 t = vDir;
+  vec2 n = vec2(-vDir.y, vDir.x);
+  vec2 q = vec2(dot(pc, t) / mix(1.0, 1.55, vStretch), dot(pc, n) * mix(1.0, 1.12, vStretch));
+  vec2 o0 = (vSeed - 0.5) * 0.52;
+  vec2 o1 = vec2(vSeed.y - 0.5, 0.5 - vSeed.x) * 0.44;
+  float fall = wyvill2(q, vec2(0.0), 0.92) * 0.48
+    + wyvill2(q, o0, 0.7) * 0.34
+    + wyvill2(q, o1, 0.58) * 0.28;
+  if (fall < 0.008) discard;
+  fragColor = vec4(vec3(vGain * fall), 1.0);
 }`;
 
     const blurFs = `#version 300 es
@@ -767,34 +856,35 @@ in vec2 vUv;
 out vec4 fragColor;
 void main() {
   vec2 px = 1.0 / vec2(textureSize(uSrc, 0));
-  vec3 acc = vec3(0.0);
-  for (int y = -2; y <= 2; y++) {
-    for (int x = -2; x <= 2; x++) {
-      acc += texture(uSrc, vUv + vec2(float(x), float(y)) * px).rgb;
-    }
-  }
-  fragColor = vec4(acc / 25.0, 1.0);
+  vec3 acc = texture(uSrc, vUv).rgb * 4.0;
+  acc += texture(uSrc, vUv + vec2(px.x, 0.0)).rgb;
+  acc += texture(uSrc, vUv - vec2(px.x, 0.0)).rgb;
+  acc += texture(uSrc, vUv + vec2(0.0, px.y)).rgb;
+  acc += texture(uSrc, vUv - vec2(0.0, px.y)).rgb;
+  fragColor = vec4(acc / 8.0, 1.0);
 }`;
 
     const particleDisplayFs = `#version 300 es
 precision highp float;
 uniform sampler2D uDensity;
+uniform sampler2D uField;
 uniform sampler2D uNoise;
+uniform highp sampler3D uNoise3;
 uniform vec2 uResolution;
 in vec2 vUv;
 out vec4 fragColor;
 
-#define STEPS 12
+#define STEPS 14
 #define LIGHT_STEPS 4
 
-const vec3 SUN_DIR = normalize(vec3(0.42, 0.82, 0.36));
-const vec3 LIGHT_COL = vec3(1.0);
-const vec3 SHADE_COL = vec3(0.28, 0.30, 0.34);
-const float PARALLAX = 0.12;
-const float DENSITY_CUTOFF = 0.055;
-const float DENSITY_FACTOR = 0.42;
-const float ATTEN_FACTOR = 0.16;
-const float COLOR_MUL = 1.35;
+const vec3 SUN_DIR = normalize(vec3(0.48, 0.76, 0.42));
+const vec3 LIGHT_COL = vec3(1.0, 0.98, 0.95);
+const vec3 SHADE_COL = vec3(0.40, 0.44, 0.52);
+const float PARALLAX = 0.14;
+const float DENSITY_CUTOFF = 0.02;
+const float DENSITY_FACTOR = 0.3;
+const float ATTEN_FACTOR = 0.09;
+const float COLOR_MUL = 1.05;
 
 float wyvill(float a) {
   float a2 = a * a;
@@ -802,42 +892,78 @@ float wyvill(float a) {
   return max(1.0 - (22.0 / 9.0) * a2 + (17.0 / 9.0) * a4 - (4.0 / 9.0) * a4 * a2, 0.0);
 }
 
-float heightAt(vec2 uv) {
-  float h = texture(uDensity, uv).r;
-  float n = texture(uNoise, uv * 4.2).r;
-  return h * mix(0.88, 1.06, n);
+float worleyFbm(vec4 s) {
+  return s.g * 0.55 + s.b * 0.3 + s.a * 0.15;
 }
 
-float cloudDen(float h, float y) {
+float topHeight(vec2 uv) {
+  float h = texture(uDensity, uv).r * mix(0.45, 1.0, smoothstep(0.0, 0.28, texture(uField, uv).y));
   if (h < DENSITY_CUTOFF) return 0.0;
-  float mid = h * 0.48;
-  float rad = max(h * 0.52, 1e-4);
-  float a = abs(y - mid) / rad;
-  if (a >= 1.0) return 0.0;
-  return wyvill(a) * smoothstep(DENSITY_CUTOFF, 0.18, h) * DENSITY_FACTOR;
+  vec4 s1 = texture(uNoise3, vec3(uv * 1.15, 0.1));
+  vec4 s2 = texture(uNoise3, vec3(uv * 2.8, 0.27));
+  vec4 s3 = texture(uNoise3, vec3(uv * 6.2, 0.49));
+  float bump = worleyFbm(s1) * 0.48 + worleyFbm(s2) * 0.34 + s3.b * 0.18;
+  bump = smoothstep(0.12, 0.92, bump);
+  float tower = smoothstep(0.04, 0.24, h);
+  return h * mix(0.2, 1.3, tower) * mix(0.14, 1.32, bump);
+}
+
+float lobe(float y, float mid, float rad) {
+  float a = abs(y - mid) / max(rad, 1e-4);
+  return a < 1.0 ? wyvill(a) : 0.0;
+}
+
+float cloudDen(vec2 uv, float y) {
+  float top = topHeight(uv);
+  if (top < DENSITY_CUTOFF || y > top + 0.02) return 0.0;
+  vec4 s = texture(uNoise3, vec3(uv * 3.1, y * 0.62 + 0.2));
+  float d = 0.0;
+  d += lobe(y, top * 0.3, top * 0.34) * 0.42;
+  d += lobe(y, top * 0.52, top * 0.3) * 0.58;
+  d += lobe(y, top * mix(0.68, 0.88, s.g), top * mix(0.16, 0.26, s.r)) * 0.95;
+  d += lobe(y, top * mix(0.8, 0.97, s.b), top * mix(0.1, 0.18, s.g)) * 0.8;
+  d += lobe(y, top * mix(0.88, 1.02, s.a), top * 0.11) * 0.55;
+  float hn = clamp(y / max(top, 1e-4), 0.0, 1.0);
+  float carve = (1.0 - worleyFbm(s)) * mix(0.04, 0.55, pow(hn, 1.6));
+  d = max(d - carve, 0.0);
+  return d * smoothstep(DENSITY_CUTOFF, 0.1, top) * DENSITY_FACTOR;
 }
 
 float lightAtten(vec2 uv, float y) {
   float att = 1.0;
-  float s = 0.12;
+  float s = 0.11;
   for (int j = 0; j < LIGHT_STEPS; j++) {
     y += SUN_DIR.y * s;
     uv += SUN_DIR.xz * s * PARALLAX;
-    float den = cloudDen(heightAt(uv), y);
-    att *= 1.0 - den * ATTEN_FACTOR * (1.0 - float(j) / float(LIGHT_STEPS));
+    att *= 1.0 - cloudDen(uv, y) * ATTEN_FACTOR * (1.0 - float(j) / float(LIGHT_STEPS));
     s *= 1.25;
   }
   return clamp(att, 0.0, 1.0);
 }
 
+float capRelief(vec2 uv, float y, float top) {
+  float hn = clamp(y / max(top, 1e-4), 0.0, 1.0);
+  float amp = smoothstep(0.45, 0.88, hn);
+  vec2 px = vec2(0.01);
+  float c = worleyFbm(texture(uNoise3, vec3(uv * 2.8, 0.27)));
+  float r = worleyFbm(texture(uNoise3, vec3((uv + vec2(px.x, 0.0)) * 2.8, 0.27)));
+  float u = worleyFbm(texture(uNoise3, vec3((uv + vec2(0.0, px.y)) * 2.8, 0.27)));
+  vec3 n = normalize(vec3(c - r, 0.055, c - u));
+  float ndl = max(dot(n, SUN_DIR), 0.0);
+  float peak = smoothstep(0.22, 0.78, c);
+  float body = 0.62;
+  float cap = mix(0.38, 1.12, ndl) * mix(0.68, 1.0, peak);
+  return mix(body, cap, amp);
+}
+
 void main() {
-  if (heightAt(vUv) < DENSITY_CUTOFF * 0.7) {
+  if (topHeight(vUv) < DENSITY_CUTOFF * 0.4) {
     fragColor = vec4(0.0);
     return;
   }
 
   vec2 p = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
-  vec3 rd = normalize(vec3(p.x * 0.3, -1.0, p.y * 0.3));
+  vec3 rd = normalize(vec3(p.x * 0.32, -1.0, p.y * 0.32));
   float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
   float dt = 1.0 / float(STEPS);
   float y = 1.0 - dt * jitter;
@@ -845,13 +971,18 @@ void main() {
   vec3 acc = vec3(0.0);
 
   for (int i = 0; i < STEPS; i++) {
-    if (trans < 0.04) break;
+    if (trans < 0.05) break;
     vec2 uv = vUv + rd.xz * (1.0 - y) * PARALLAX;
-    float den = cloudDen(heightAt(uv), y);
+    float den = cloudDen(uv, y);
     if (den > 0.001) {
+      float top = topHeight(uv);
       float att = lightAtten(uv, y);
-      vec3 col = mix(SHADE_COL, LIGHT_COL, att);
-      float alpha = 1.0 - exp(-den * dt * 9.0);
+      float wrap = capRelief(uv, y, top);
+      float powder = 1.0 - exp(-den * 4.8);
+      float lit = wrap * mix(0.55, 1.0, att);
+      vec3 col = mix(SHADE_COL, LIGHT_COL, lit);
+      col *= mix(0.78, 1.1, powder);
+      float alpha = 1.0 - exp(-den * dt * 5.4);
       alpha = min(alpha * COLOR_MUL, 1.0);
       acc += trans * alpha * col;
       trans *= 1.0 - alpha;
@@ -961,8 +1092,10 @@ void main() {
       "uNoise3",
       "uBlueNoise",
       "uField",
+      "uVel",
       "uResolution",
       "uFrame",
+      "uTime",
     ]);
     const fieldView = makeProgram(blitVs, fieldViewFs, ["uField", "uVel"]);
     const particleInit = makeProgram(blitVs, particleInitFs, []);
@@ -976,11 +1109,15 @@ void main() {
     const blur = makeProgram(blitVs, blurFs, ["uSrc"]);
     const particleDraw = makeProgram(particleDrawVs, particleDrawFs, [
       "uParticles",
+      "uField",
+      "uVel",
       "uPartSize",
     ]);
     const particleDisplay = makeProgram(blitVs, particleDisplayFs, [
       "uDensity",
+      "uField",
       "uNoise",
+      "uNoise3",
       "uResolution",
     ]);
     const accum = makeProgram(blitVs, accumFs, ["uRaw", "uHistory", "uBlend"]);
@@ -1287,44 +1424,36 @@ void main() {
       particlePing = 1 - particlePing;
     }
 
+    function marchClouds() {
+      bindQuad(march);
+      bindTex3(3, noise3Tex, march.u.uNoise3);
+      bindTex(1, blueTex, march.u.uBlueNoise);
+      bindTex(2, thermTex[thermPing], march.u.uField);
+      bindTex(4, velTex[velPing], march.u.uVel);
+      gl.uniform2f(march.u.uResolution, marchWidth, marchHeight);
+      gl.uniform1i(march.u.uFrame, frame);
+      gl.uniform1f(march.u.uTime, frame * 0.016);
+      targetTex(rawTex, marchWidth, marchHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      const histSrc = accumPing;
+      const histDst = 1 - accumPing;
+      bindQuad(accum);
+      bindTex(0, rawTex, accum.u.uRaw);
+      bindTex(1, accumWarm ? accumTex[histSrc] : rawTex, accum.u.uHistory);
+      gl.uniform1f(accum.u.uBlend, accumWarm ? 0.28 : 1.0);
+      targetTex(accumTex[histDst], marchWidth, marchHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      accumPing = histDst;
+      accumWarm = true;
+    }
+
     function drawParticles() {
-      ensureTrail(displayWidth, displayHeight);
-      const src = trailPing;
-      const dst = 1 - trailPing;
-      bindQuad(fade);
-      bindTex(0, trailWarm ? trailTex[src] : particleTex[particlePing], fade.u.uSrc);
-      gl.uniform1f(fade.u.uFade, 0.0);
-      targetTex(trailTex[dst], trailWidth, trailHeight);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.ONE, gl.ONE);
-      gl.bindVertexArray(particleVao);
-      gl.useProgram(particleDraw.p);
-      bindTex(0, particleTex[particlePing], particleDraw.u.uParticles);
-      gl.uniform2f(particleDraw.u.uPartSize, PARTICLE_SIZE, PARTICLE_SIZE);
-      gl.drawArrays(gl.POINTS, 0, PARTICLE_DRAW_COUNT);
-      gl.bindVertexArray(null);
-      gl.disable(gl.BLEND);
-
-      bindQuad(blur);
-      bindTex(0, trailTex[dst], blur.u.uSrc);
-      targetTex(trailTex[src], trailWidth, trailHeight);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-      bindQuad(particleDisplay);
-      bindTex(0, trailTex[src], particleDisplay.u.uDensity);
-      bindTex(1, noiseTex, particleDisplay.u.uNoise);
-      gl.uniform2f(particleDisplay.u.uResolution, trailWidth, trailHeight);
-      targetTex(trailTex[dst], trailWidth, trailHeight);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-      trailPing = dst;
-      trailWarm = true;
-
+      marchClouds();
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, displayWidth, displayHeight);
       bindQuad(copy);
-      bindTex(0, trailTex[trailPing], copy.u.uSrc);
+      bindTex(0, accumTex[accumPing], copy.u.uSrc);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
@@ -1358,25 +1487,7 @@ void main() {
         return;
       }
 
-      bindQuad(march);
-      bindTex3(3, noise3Tex, march.u.uNoise3);
-      bindTex(1, blueTex, march.u.uBlueNoise);
-      bindTex(2, thermTex[thermPing], march.u.uField);
-      gl.uniform2f(march.u.uResolution, marchWidth, marchHeight);
-      gl.uniform1i(march.u.uFrame, frame++);
-      targetTex(rawTex, marchWidth, marchHeight);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-      const histSrc = accumPing;
-      const histDst = 1 - accumPing;
-      bindQuad(accum);
-      bindTex(0, rawTex, accum.u.uRaw);
-      bindTex(1, accumWarm ? accumTex[histSrc] : rawTex, accum.u.uHistory);
-      gl.uniform1f(accum.u.uBlend, accumWarm ? 0.45 : 1.0);
-      targetTex(accumTex[histDst], marchWidth, marchHeight);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-      accumPing = histDst;
-      accumWarm = true;
+      marchClouds();
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, displayWidth, displayHeight);
