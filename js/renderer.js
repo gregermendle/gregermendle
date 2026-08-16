@@ -10,6 +10,7 @@
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(shader) || "shader compile failed");
       gl.deleteShader(shader);
       return null;
     }
@@ -20,6 +21,7 @@
     const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
     const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
     const program = gl.createProgram();
+    if (!vertexShader || !fragmentShader) return null;
     gl.attachShader(program, vertexShader);
     gl.attachShader(program, fragmentShader);
     gl.linkProgram(program);
@@ -55,11 +57,12 @@
   const LENS_FADE_FRONT = 0.6;
   const LENS_FAR_START = 80;
   const LENS_FAR_END = 320;
-  const GRAV_G = 0.0011;
-  const GRAV_SOFT2 = 2.25;
+  const GRAV_G = 1;
+  const GRAV_SOFT2 = 0.025;
   const GRAV_STEP = 8.5;
-  const GRAV_BH_MASS = 280000;
-  const GRAV_STAR_MASS = 420;
+  const BH_MU0 = 38.5;
+  const STAR_COMPACT = 2.12e-6;
+  const TDE_ACCRETE = 0.5;
   const GRAV_NEAR2 = 36 * 36;
   const GRAV_KICK_DT = 0.42;
   const GRAV_MAX_KICKS = 8;
@@ -76,15 +79,28 @@
   const STAR_VISUAL = 0.95;
   const DUST_SIZE_MUL = 0.72;
   const PHYS_RS = 0.5;
-  const HORIZON_RS = 1.08;
-  const ISCO_RS = 3;
-  const ADAF_RS = 42;
-  const ADAF_ALPHA = 0.1;
-  const JET_OUTER_RS = 12;
-  const DISK_H_R = 0.1;
-  const JET_ETA = 0.08;
-  const JET_LAMBDA = 4;
-  const JET_LAUNCH_INC = 0.61;
+  const C_LIGHT2 = (2 * BH_MU0) / PHYS_RS;
+  const PW_RS = 20;
+  const BH_SPIN = 0.92;
+  const DISC_MAX = 768;
+  const DISC_FRAGS = 12;
+  const DISC_ALPHA = 0.1;
+  const DISC_OUTER = 72;
+  const SHADOW_RS = 2.59807621135;
+  const GEO_STEPS = 96;
+
+  function kerrIscoOverRs(chi) {
+    const z1 = 1 + Math.cbrt(1 - chi * chi) * (Math.cbrt(1 + chi) + Math.cbrt(1 - chi));
+    const z2 = Math.sqrt(3 * chi * chi + z1 * z1);
+    return 0.5 * (3 + z2 - Math.sqrt((3 - z1) * (3 + z1 + 2 * z2)));
+  }
+
+  function kerrOmegaEquatorial(r, rs, chi) {
+    const M = rs * 0.5;
+    const a = chi * M;
+    const u = Math.sqrt(Math.max(1e-12, M / (r * r * r)));
+    return u / (1 + a * u);
+  }
 
   function getShaders(webgl2) {
     const ver = webgl2 ? "#version 300 es\n" : "";
@@ -110,23 +126,26 @@
 
     const maskCh = webgl2 ? "g" : "a";
     const lensLib = `
-    float lensFade(float holeZ) {
-      return 1.0;
-    }
-    float holeTe2Of(float mass, float holeZ, float z) {
-      float fade = lensFade(holeZ);
-      if (fade <= 0.0 || z <= 0.0) return 0.0;
-      float zL = max(holeZ, ${LENS_Z_MIN.toFixed(2)});
-      float dls = z - zL;
-      if (dls <= 0.0) return 0.0;
-      return fade * 2.0 * mass * dls / max(zL * z, 1e-8);
-    }
-    float lensMassOf(float rs) {
-      return rs * rs / ${RS_REF.toFixed(2)};
-    }
     vec2 holePos(vec3 ro) {
       float zProj = max(dot(-ro, camFwd), ${LENS_Z_MIN.toFixed(2)});
       return vec2(dot(-ro, camRight), dot(-ro, camUp)) / zProj;
+    }
+    float einstein2(float rs, float holeZ, float z) {
+      if (z <= 0.0) return 0.0;
+      float zL = max(holeZ, ${LENS_Z_MIN.toFixed(2)});
+      float dls = z - zL;
+      if (dls <= 0.0) return 0.0;
+      return 2.0 * rs * dls / max(zL * z, 1e-8);
+    }
+    float shadowAng(float rs, float holeZ) {
+      return ${SHADOW_RS.toFixed(8)} * rs / max(holeZ, ${LENS_Z_MIN.toFixed(2)});
+    }
+    vec2 lensPull(vec2 uv, vec2 lp, float te2, float bc2) {
+      if (te2 <= 0.0) return vec2(0.0);
+      vec2 d = uv - lp;
+      float b2 = dot(d, d);
+      if (b2 <= bc2) return vec2(0.0);
+      return d * (te2 / b2);
     }`;
     const starVs = `${ver}${attr} vec2 aCorner;
     ${attr} vec4 aStar;
@@ -150,10 +169,9 @@
       vec3 ro = camPos;
       float radius = schwarzschildRadius * progress;
       float holeZ = dot(-ro, camFwd);
-      vec2 holeP = holePos(ro);
       float z = aStar.z;
       float ang = aStar.w;
-      float holeTe2 = uUseLens > 0.5 ? holeTe2Of(lensMassOf(radius), holeZ, z) : 0.0;
+      float holeTe2 = uUseLens > 0.5 ? einstein2(radius, holeZ, z) : 0.0;
       if (holeTe2 < px * px) holeTe2 = 0.0;
       float ring = sqrt(holeTe2);
       float glowR = max(ang * 5.5, px * 3.4);
@@ -161,8 +179,7 @@
         ? max(ang * 2.2, px * 3.0)
         : max(max(ang * ${STAR_GLOW_PAD.toFixed(1)}, px * ${STAR_PX_PAD.toFixed(1)}), glowR * 6.0);
       if (uUseLens > 0.5 && aKind < 1.5) pad = max(pad, ring * 2.4);
-      vec2 center = (uUseLens > 0.5 && aKind > 0.5 && aKind < 1.5) ? holeP : aStar.xy;
-      vec2 uv = center + aCorner * pad;
+      vec2 uv = aStar.xy + aCorner * pad;
       gl_Position = vec4(uv.x * (2.0 * minRes / resolution.x), uv.y * (2.0 * minRes / resolution.y), 0.0, 1.0);
       vStar = aStar;
       vColor = aColor;
@@ -186,12 +203,6 @@
     ${varyIn} float vKind;
     ${fragOut}
     ${lensLib}
-    vec2 lensPull(vec2 uv, vec2 lp, float te2) {
-      if (te2 <= 0.0) return vec2(0.0);
-      vec2 d = uv - lp;
-      float b2 = dot(d, d);
-      return d * (te2 / max(b2, te2 * 0.08));
-    }
     void main() {
       float minRes = min(resolution.x, resolution.y);
       vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
@@ -208,10 +219,15 @@
       }
       vec2 sp = vStar.xy;
       float ang = vStar.w;
-      float holeTe2 = uUseLens > 0.5 ? holeTe2Of(lensMassOf(radius), holeZ, z) : 0.0;
+      float holeTe2 = uUseLens > 0.5 ? einstein2(radius, holeZ, z) : 0.0;
       if (holeTe2 < px * px) holeTe2 = 0.0;
+      float bc = shadowAng(radius, holeZ);
+      if (holeTe2 > 0.0 && dot(uv - holeP, uv - holeP) <= bc * bc) {
+        ${writeColor} = vec4(0.0);
+        return;
+      }
       vec2 src = uv;
-      if (holeTe2 > 0.0) src -= lensPull(uv, holeP, holeTe2);
+      if (holeTe2 > 0.0) src -= lensPull(uv, holeP, holeTe2, bc * bc);
       float d = length(src - sp);
       float glow;
       if (vKind > 1.5) {
@@ -311,32 +327,10 @@
     const colorLensFs = `${ver}precision highp float;
     uniform sampler2D uField;
     uniform vec2 resolution;
-    uniform float progress;
-    uniform float schwarzschildRadius;
-    uniform vec3 camPos;
-    uniform vec3 camFwd;
-    uniform vec3 camRight;
-    uniform vec3 camUp;
     ${varyIn} vec2 vTexCoord;
     ${fragOut}
-    ${lensLib}
-    vec2 lensPull(vec2 uv, vec2 lp, float te2) {
-      if (te2 <= 0.0) return vec2(0.0);
-      vec2 d = uv - lp;
-      float b2 = dot(d, d);
-      return d * (te2 / max(b2, te2 * 0.08));
-    }
     void main() {
-      float minRes = min(resolution.x, resolution.y);
-      vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
-      vec3 ro = camPos;
-      float holeZ = dot(-ro, camFwd);
-      float rs = schwarzschildRadius * progress;
-      float te2 = holeTe2Of(lensMassOf(rs), holeZ, 1.0e6);
-      vec2 src = uv;
-      if (te2 > 0.0) src -= lensPull(uv, holePos(ro), te2);
-      vec2 srcTex = clamp(src * minRes / resolution + 0.5, 0.0, 1.0);
-      ${writeColor} = ${tex}(uField, srcTex);
+      ${writeColor} = ${tex}(uField, vTexCoord);
     }`;
 
     const holeDiscVs = `${ver}${attr} vec2 aCorner;
@@ -347,7 +341,7 @@
     uniform vec3 camFwd;
     uniform vec3 camRight;
     uniform vec3 camUp;
-    ${varyOut} vec2 vLocal;
+    ${varyOut} vec2 vUv;
     ${lensLib}
     void main() {
       float minRes = min(resolution.x, resolution.y);
@@ -356,55 +350,116 @@
       float holeZ = dot(-ro, camFwd);
       if (holeZ <= ${LENS_Z_MIN.toFixed(2)}) {
         gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
-        vLocal = vec2(2.0);
+        vUv = vec2(2.0);
         return;
       }
       vec2 holeP = holePos(ro);
-      float ang = schwarzschildRadius * progress / holeZ;
-      float pad = max(ang, px * 2.0);
-      vec2 uv = holeP + aCorner * pad;
-      gl_Position = vec4(uv.x * (2.0 * minRes / resolution.x), uv.y * (2.0 * minRes / resolution.y), 0.0, 1.0);
-      vLocal = aCorner;
+      float rs = schwarzschildRadius * progress;
+      float pad = max(${DISC_OUTER.toFixed(1)} * 1.8 / holeZ, shadowAng(rs, holeZ) * 6.0);
+      pad = max(pad, px * 16.0);
+      vUv = holeP + aCorner * pad;
+      gl_Position = vec4(vUv.x * (2.0 * minRes / resolution.x), vUv.y * (2.0 * minRes / resolution.y), 0.0, 1.0);
     }`;
 
     const holeDiscFs = `${ver}precision highp float;
-    ${varyIn} vec2 vLocal;
+    uniform vec2 resolution;
+    uniform float progress;
+    uniform float schwarzschildRadius;
+    uniform float bhSpin;
+    uniform float uDiscMass;
+    uniform float uPass;
+    uniform vec3 camPos;
+    uniform vec3 camFwd;
+    uniform vec3 camRight;
+    uniform vec3 camUp;
+    ${varyIn} vec2 vUv;
     ${fragOut}
+    ${lensLib}
+    float kerrIscoRs(float chi) {
+      float z1 = 1.0 + pow(max(0.0, 1.0 - chi * chi), 0.333333) * (pow(1.0 + chi, 0.333333) + pow(1.0 - chi, 0.333333));
+      float z2 = sqrt(3.0 * chi * chi + z1 * z1);
+      return 0.5 * (3.0 + z2 - sqrt(max(0.0, (3.0 - z1) * (3.0 + z1 + 2.0 * z2))));
+    }
+    float discI(vec3 hit, vec3 vel, float rs, float chi) {
+      float rho = length(hit.xz);
+      float isco = max(kerrIscoRs(chi) * rs, rs * 1.2);
+      float rout = ${DISC_OUTER.toFixed(1)};
+      if (rho < isco || rho > rout) return 0.0;
+      float M = 0.5 * rs;
+      float a = chi * M;
+      float u = sqrt(M / max(rho * rho * rho, 1e-8));
+      float omega = u / (1.0 + a * u);
+      vec3 vphi = vec3(-hit.z, 0.0, hit.x) * omega;
+      float grav = sqrt(max(0.03, 1.0 - rs / rho));
+      float doppler = 1.0 / max(0.16, 1.0 - dot(normalize(-vel), vphi));
+      float nt = max(0.0, 1.0 - sqrt(isco / rho));
+      float flux = nt * pow(isco / rho, 0.85) * smoothstep(rout, rout * 0.55, rho);
+      float g = grav * doppler;
+      return flux * g * g * g * 18.0;
+    }
     void main() {
-      float d = length(vLocal);
-      float a = 1.0 - smoothstep(0.94, 1.0, d);
-      if (a <= 0.001) discard;
-      ${writeColor} = vec4(a);
+      float rs = schwarzschildRadius * progress;
+      if (rs < 1e-5) {
+        ${writeColor} = vec4(0.0);
+        return;
+      }
+      vec3 ro = camPos;
+      vec3 vel = normalize(camFwd + camRight * vUv.x + camUp * vUv.y);
+      float bound = ${DISC_OUTER.toFixed(1)} + 12.0;
+      float b = dot(ro, vel);
+      float c = dot(ro, ro) - bound * bound;
+      float h2 = b * b - c;
+      if (h2 < 0.0 && length(ro) > bound) {
+        ${writeColor} = vec4(0.0);
+        return;
+      }
+      float t0 = 0.0;
+      if (h2 >= 0.0 && length(ro) > bound) t0 = max(0.0, -b - sqrt(h2));
+      vec3 pos = ro + vel * t0;
+      vec3 prev = pos;
+      float glow = 0.0;
+      float shadow = 0.0;
+      float step = max(rs * 0.08, bound * 0.035);
+      for (int i = 0; i < ${GEO_STEPS}; i++) {
+        float r = length(pos);
+        if (r <= rs) {
+          shadow = 1.0;
+          break;
+        }
+        if (i > 0 && prev.y * pos.y <= 0.0) {
+          float den = pos.y - prev.y;
+          float f = abs(den) > 1e-8 ? prev.y / den : 0.0;
+          vec3 hit = prev - (pos - prev) * f;
+          glow += discI(hit, vel, rs, bhSpin);
+        }
+        float r5 = r * r * r * r * r;
+        vec3 acc = -1.5 * rs * dot(pos, vel) / max(r5, 1e-8) * pos;
+        vel = normalize(vel + acc * step);
+        prev = pos;
+        pos += vel * step;
+        step = clamp(r * 0.14, rs * 0.05, bound * 0.06);
+        if (r > bound * 1.2 && dot(pos, vel) > 0.0) break;
+      }
+      glow *= 0.85 + 1.1 * (1.0 - exp(-uDiscMass * 80.0));
+      if (uPass > 0.5) {
+        if (shadow < 0.5) discard;
+        ${writeColor} = vec4(1.0);
+        return;
+      }
+      if (glow <= 1e-5) discard;
+      float I = glow / (1.0 + glow);
+      ${writeColor} = vec4(vec3(I), 1.0);
     }`;
 
     const lensFs = `${ver}precision highp float;
     uniform sampler2D uField;
     uniform vec2 resolution;
-    uniform float progress;
-    uniform float schwarzschildRadius;
-    uniform vec3 camPos;
-    uniform vec3 camFwd;
-    uniform vec3 camRight;
-    uniform vec3 camUp;
     ${varyIn} vec2 vTexCoord;
     ${fragOut}
-    ${lensLib}
-    vec2 lensPull(vec2 uv, vec2 lp, float te2) {
-      if (te2 <= 0.0) return vec2(0.0);
-      vec2 d = uv - lp;
-      float b2 = dot(d, d);
-      return d * (te2 / max(b2, te2 * 0.08));
-    }
     void main() {
       float minRes = min(resolution.x, resolution.y);
       vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
-      vec3 ro = camPos;
-      float holeZ = dot(-ro, camFwd);
-      float rs = schwarzschildRadius * progress;
-      float te2 = holeTe2Of(lensMassOf(rs), holeZ, 1.0e6);
-      vec2 src = uv;
-      if (te2 > 0.0) src -= lensPull(uv, holePos(ro), te2);
-      vec2 srcTex = clamp(src * minRes / resolution + 0.5, 0.0, 1.0);
+      vec2 srcTex = uv * minRes / resolution + 0.5;
       float glow = ${tex}(uField, srcTex).r;
       ${writeColor} = vec4(vec3(glow), 1.0);
     }`;
@@ -679,10 +734,111 @@
     let dustBakeUp = new Float32Array(0);
     let dustBakePuff = new Float32Array(0);
     let dustBakeGain = new Float32Array(0);
+    let discPx = new Float32Array(DISC_MAX);
+    let discPy = new Float32Array(DISC_MAX);
+    let discPz = new Float32Array(DISC_MAX);
+    let discVx = new Float32Array(DISC_MAX);
+    let discVy = new Float32Array(DISC_MAX);
+    let discVz = new Float32Array(DISC_MAX);
+    let discPm = new Float32Array(DISC_MAX);
+    let discCount = 0;
+
+    function removeDiscAt(i) {
+      const last = discCount - 1;
+      if (i < last) {
+        discPx[i] = discPx[last];
+        discPy[i] = discPy[last];
+        discPz[i] = discPz[last];
+        discVx[i] = discVx[last];
+        discVy[i] = discVy[last];
+        discVz[i] = discVz[last];
+        discPm[i] = discPm[last];
+      }
+      discCount = last;
+    }
+
+    function addDiscParticle(x, y, z, vx, vy, vz, m) {
+      let slot = discCount;
+      if (discCount >= DISC_MAX) {
+        let minI = 0;
+        let minM = discPm[0];
+        for (let j = 1; j < DISC_MAX; j++) {
+          if (discPm[j] < minM) {
+            minM = discPm[j];
+            minI = j;
+          }
+        }
+        if (m <= minM) return;
+        slot = minI;
+      } else {
+        discCount++;
+      }
+      discPx[slot] = x;
+      discPy[slot] = y;
+      discPz[slot] = z;
+      discVx[slot] = vx;
+      discVy[slot] = vy;
+      discVz[slot] = vz;
+      discPm[slot] = m;
+    }
+
+    function shredStar(px, py, pz, vx, vy, vz, m, mu) {
+      const r = Math.hypot(px, py, pz) || 1;
+      const inv = 1 / r;
+      const tx = -pz * inv;
+      const tz = px * inv;
+      const piece = m / DISC_FRAGS;
+      for (let k = 0; k < DISC_FRAGS; k++) {
+        const u = (k + 0.5) / DISC_FRAGS;
+        const kick = (u - 0.5) * 0.55 * Math.sqrt(mu / r);
+        addDiscParticle(
+          px + tx * kick * 0.02,
+          py * 0.15,
+          pz + tz * kick * 0.02,
+          vx + tx * kick,
+          vy * 0.2,
+          vz + tz * kick,
+          piece
+        );
+      }
+    }
+
+    function updateDiscParticles(dt, rs, mu) {
+      const isco = kerrIscoOverRs(BH_SPIN) * rs;
+      const out = keplerOut;
+      for (let i = discCount - 1; i >= 0; i--) {
+        const r = Math.hypot(discPx[i], discPy[i], discPz[i]);
+        if (r <= rs || r < isco) {
+          holeMass += discPm[i] * TDE_ACCRETE;
+          targetRadius = Math.min(maxRadius, rsOfMass(holeMass));
+          removeDiscAt(i);
+          continue;
+        }
+        if (keplerStep(discPx[i], discPy[i], discPz[i], discVx[i], discVy[i], discVz[i], dt, mu, out)) {
+          discPx[i] = out[0];
+          discPy[i] = out[1];
+          discPz[i] = out[2];
+          discVx[i] = out[3];
+          discVy[i] = out[4];
+          discVz[i] = out[5];
+        }
+        const rho = Math.hypot(discPx[i], discPz[i]);
+        const omega = kerrOmegaEquatorial(Math.max(rho, isco), rs, BH_SPIN);
+        const vk = Math.sqrt(mu / Math.max(rho, isco));
+        const vr = -DISC_ALPHA * vk * (0.5 * rs / Math.max(rho, isco));
+        const inv = 1 / Math.max(rho, 1e-8);
+        discVx[i] += (-omega * discPz[i] + discPx[i] * inv * vr - discVx[i]) * Math.min(1, dt * 0.35);
+        discVz[i] += (omega * discPx[i] + discPz[i] * inv * vr - discVz[i]) * Math.min(1, dt * 0.35);
+        discVy[i] *= 1 - 0.08 * dt;
+        discPy[i] *= 1 - 0.08 * dt;
+      }
+    }
+
     function setClusters(next) {
-      holeMass = PHYS_RS * PHYS_RS * PHYS_RS * GRAV_BH_MASS;
+      holeMass = BH_MU0 / GRAV_G;
       targetRadius = PHYS_RS;
       schwarzschildRadius = PHYS_RS;
+      discCount = 0;
       const src = Array.isArray(next) ? next : [];
       clusterCount = src.length;
       clusterOx = new Float32Array(clusterCount);
@@ -754,7 +910,7 @@
       clusterLineMax = new Float32Array(clusterCount);
       hashNext = new Int32Array(clusterCount);
       totalStars = totalPts;
-      const bhMassRef = PHYS_RS * PHYS_RS * PHYS_RS * GRAV_BH_MASS;
+      const bhMassRef = BH_MU0 / GRAV_G;
       let p = 0;
       for (let c = 0; c < clusterCount; c++) {
         const cluster = src[c] || {};
@@ -788,8 +944,7 @@
           worldY[p] = wy;
           worldZ[p] = wz;
           starCluster[p] = c;
-          const rm = r * r * r;
-          pointMass[p] = rm * GRAV_STAR_MASS;
+          pointMass[p] = (STAR_COMPACT * C_LIGHT2 * Math.max(r, 1e-6)) / GRAV_G;
           starLive[p] = 1;
           const ext = Math.hypot(x, y, z) + r;
           if (ext > maxExt) maxExt = ext;
@@ -1057,25 +1212,32 @@
       const h1 = (Math.imul(hash, 2654435761) >>> 0) / 4294967296;
       const h2 = (Math.imul(hash, 1597334677) >>> 0) / 4294967296;
       const h3 = (Math.imul(hash, 2246822519) >>> 0) / 4294967296;
-      const inner = Math.max(0, 1 - sr / 140);
-      const spin = 0.72 + h1 * 0.38 - inner * 0.18;
-      const speed = Math.sqrt(Math.max(1e-8, mu / sr)) * spin;
       let tx = -pz;
       let tz = px;
       const tLen = Math.hypot(tx, tz) || 1;
       tx /= tLen;
       tz /= tLen;
-      const pec = (h2 - 0.5) * (0.22 + inner * 0.45);
-      const vert = (h3 - 0.5) * (0.1 + inner * 0.12);
+      const inner = sr < 90;
+      const e = inner ? Math.sqrt(Math.max(1e-6, h1)) * 0.94 : 0.04 * h1;
+      const f = h2 * Math.PI * 2;
+      const cf = Math.cos(f);
+      const sf = Math.sin(f);
+      const p = sr * (1 + e * cf);
+      const n = Math.sqrt(Math.max(1e-8, mu / p));
+      const vr = n * e * sf;
+      const vt = n * (1 + e * cf);
       const inv = 1 / sr;
-      const vrad = (h2 - 0.62) * speed * (0.16 + inner * 0.55);
-      orbitScratch[0] = (tx + px * inv * pec) * speed + px * inv * vrad;
-      orbitScratch[1] = vert * speed + py * inv * vrad * 0.35;
-      orbitScratch[2] = (tz + pz * inv * pec) * speed + pz * inv * vrad;
+      orbitScratch[0] = tx * vt + px * inv * vr;
+      orbitScratch[1] = (h3 - 0.5) * 0.08 * n;
+      orbitScratch[2] = tz * vt + pz * inv * vr;
     }
 
-    function holeMassRef() {
-      return PHYS_RS * PHYS_RS * PHYS_RS * GRAV_BH_MASS;
+    function rsOfMass(m) {
+      return (2 * GRAV_G * m) / C_LIGHT2;
+    }
+
+    function massOfRs(rs) {
+      return (rs * C_LIGHT2) / (2 * GRAV_G);
     }
 
     function bhMu() {
@@ -1360,110 +1522,59 @@
       }
     }
 
-    function blandfordPayneLaunch(px, py, pz, vx, vy, vz, mu, rs) {
-      const R = Math.hypot(px, pz);
-      const invR = 1 / Math.max(R, rs * 0.25);
-      const eRx = px * invR;
-      const eRz = pz * invR;
-      const vk = Math.sqrt(mu / Math.max(R, rs));
-      const vp = vk * Math.sqrt(Math.max(0, 2 * JET_LAMBDA - 3));
-      const sign = py >= 0 ? 1 : -1;
-      const s = Math.sin(JET_LAUNCH_INC);
-      const c = Math.cos(JET_LAUNCH_INC);
-      let vphi = -vx * eRz + vz * eRx;
-      vphi = (vphi < 0 ? -1 : 1) * vk;
-      orbitScratch[0] = vp * s * eRx - vphi * eRz;
-      orbitScratch[1] = sign * vp * c;
-      orbitScratch[2] = vp * s * eRz + vphi * eRx;
-    }
-
-    function hoopCollimate(n, dt, wx, wy, wz, vx, vy, vz, rs) {
-      const rj2 = (rs * 6) * (rs * 6);
-      for (let i = 0; i < n; i++) {
-        if (!starLive[i] || !starJet[i]) continue;
-        const px = wx[i];
-        const pz = wz[i];
-        const R2 = px * px + pz * pz;
-        if (R2 < 1e-10) continue;
-        const R = Math.sqrt(R2);
-        const invR = 1 / R;
-        const vR = (vx[i] * px + vz[i] * pz) * invR;
-        const aR = -(vy[i] * vy[i] + vR * vR) * R / (R2 + rj2);
-        vx[i] += aR * px * invR * dt;
-        vz[i] += aR * pz * invR * dt;
-      }
+    function killStar(i, wx, wy, wz, vx, vy, vz, mass) {
+      starLive[i] = 0;
+      starJet[i] = 0;
+      mass[i] = 0;
+      wx[i] = 0;
+      wy[i] = 0;
+      wz[i] = 0;
+      vx[i] = 0;
+      vy[i] = 0;
+      vz[i] = 0;
     }
 
     function absorbInflow(n, dt, wx, wy, wz, vx, vy, vz, mass, mu) {
       const rs = schwarzschildRadius;
-      const absorbR = rs * HORIZON_RS;
-      const absorbR2 = absorbR * absorbR;
-      const isco = rs * ISCO_RS;
-      const jetOuter = rs * JET_OUTER_RS;
-      const adafR = rs * ADAF_RS;
-      const adafR2 = adafR * adafR;
-      const pwR = adafR;
+      const pwR = rs * PW_RS;
+      const isco = kerrIscoOverRs(BH_SPIN) * rs;
       let grew = 0;
       for (let i = 0; i < n; i++) {
         if (!starLive[i]) continue;
         const px = wx[i];
         const py = wy[i];
         const pz = wz[i];
-        const r2 = px * px + py * py + pz * pz;
-        if (r2 < absorbR2) {
-          starLive[i] = 0;
-          starJet[i] = 0;
+        const r = Math.hypot(px, py, pz);
+        const Rstar = pointR[i];
+        if (r <= rs + Rstar) {
           grew += mass[i];
-          mass[i] = 0;
-          wx[i] = 0;
-          wy[i] = 0;
-          wz[i] = 0;
-          vx[i] = 0;
-          vy[i] = 0;
-          vz[i] = 0;
+          killStar(i, wx, wy, wz, vx, vy, vz, mass);
           continue;
         }
-        if (starJet[i]) continue;
-        const r = Math.sqrt(r2);
+        const m = mass[i];
+        const rt = Rstar * Math.cbrt(holeMass / Math.max(m, 1e-30));
+        const lx = py * vz[i] - pz * vy[i];
+        const ly = pz * vx[i] - px * vz[i];
+        const lz = px * vy[i] - py * vx[i];
+        const L = Math.hypot(lx, ly, lz);
+        const Lisco = Math.sqrt(mu * isco);
+        if (r < rt || (r < isco && L < Lisco)) {
+          shredStar(px, py, pz, vx[i], vy[i], vz[i], m, mu);
+          killStar(i, wx, wy, wz, vx, vy, vz, mass);
+          continue;
+        }
+        if (r >= pwR) continue;
         const inv = 1 / r;
-        if (r < pwR) {
-          const den = Math.max(r - rs, rs * 0.12);
-          const extra = mu * (1 / (den * den) - 1 / (r * r));
-          vx[i] -= extra * px * inv * dt;
-          vy[i] -= extra * py * inv * dt;
-          vz[i] -= extra * pz * inv * dt;
-        }
-        const R = Math.hypot(px, pz);
-        const vr = vx[i] * px + vy[i] * py + vz[i] * pz;
-        if (
-          R >= isco &&
-          R <= jetOuter &&
-          Math.abs(py) <= DISK_H_R * R &&
-          vr < 0 &&
-          (Math.imul(i + 7919, 2654435761) >>> 0) / 4294967296 < JET_ETA
-        ) {
-          blandfordPayneLaunch(px, py, pz, vx[i], vy[i], vz[i], mu, rs);
-          vx[i] = orbitScratch[0];
-          vy[i] = orbitScratch[1];
-          vz[i] = orbitScratch[2];
-          starJet[i] = 1;
-          continue;
-        }
-        if (r2 > adafR2) continue;
-        const vk = Math.sqrt(mu / r);
-        const vrHat = vr * inv;
-        const vIn = ADAF_ALPHA * vk;
-        if (vrHat > -vIn) {
-          const add = (-vIn - vrHat) * Math.min(1, dt * vk * inv);
-          vx[i] += px * inv * add;
-          vy[i] += py * inv * add;
-          vz[i] += pz * inv * add;
-        }
+        const den = Math.max(r - rs, rs * 0.12);
+        const extra = mu * (1 / (den * den) - 1 / (r * r));
+        vx[i] -= extra * px * inv * dt;
+        vy[i] -= extra * py * inv * dt;
+        vz[i] -= extra * pz * inv * dt;
       }
-      hoopCollimate(n, dt, wx, wy, wz, vx, vy, vz, rs);
+      updateDiscParticles(dt, rs, mu);
       if (grew > 0) {
         holeMass += grew;
-        targetRadius = Math.min(maxRadius, PHYS_RS * (holeMass / holeMassRef()));
+        targetRadius = Math.min(maxRadius, rsOfMass(holeMass));
       }
     }
 
@@ -1635,6 +1746,24 @@
           else emitStarQuad(spx, spy, z, ang, 0, scr, scg, scb);
         }
       }
+      for (let i = 0; i < discCount; i++) {
+        const wx = discPx[i];
+        const wy = discPy[i];
+        const wz = discPz[i];
+        const sr = 0.04;
+        if (!starInView(b, wx, wy, wz, sr, half)) continue;
+        const dx = wx - camX;
+        const dy = wy - camY;
+        const dz = wz - camZ;
+        const z = dx * b.fx + dy * b.fy + dz * b.fz;
+        const spx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
+        const spy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
+        const ang = sr / Math.max(z, sr * 0.35);
+        const behind = z > Math.max(holeZ, LENS_Z_MIN);
+        const g = 0.55;
+        if (!behind) emitStarTo("starGeomFront", "front", spx, spy, z, ang, 0, g, g, g);
+        else emitStarQuad(spx, spy, z, ang, 0, g, g, g);
+      }
     }
 
     const readbackCaps = webgl2 ? probeSingleChannelTarget(gl, true) : { single: false, pbo: false };
@@ -1689,16 +1818,19 @@
       camUp: gl.getUniformLocation(lensProgram, "camUp"),
     };
     const holeDiscAttribs = {
-      corner: gl.getAttribLocation(holeDiscProgram, "aCorner"),
+      corner: holeDiscProgram ? gl.getAttribLocation(holeDiscProgram, "aCorner") : -1,
     };
     const holeDiscUniforms = {
-      resolution: gl.getUniformLocation(holeDiscProgram, "resolution"),
-      progress: gl.getUniformLocation(holeDiscProgram, "progress"),
-      schwarzschildRadius: gl.getUniformLocation(holeDiscProgram, "schwarzschildRadius"),
-      camPos: gl.getUniformLocation(holeDiscProgram, "camPos"),
-      camFwd: gl.getUniformLocation(holeDiscProgram, "camFwd"),
-      camRight: gl.getUniformLocation(holeDiscProgram, "camRight"),
-      camUp: gl.getUniformLocation(holeDiscProgram, "camUp"),
+      resolution: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "resolution") : null,
+      progress: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "progress") : null,
+      schwarzschildRadius: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "schwarzschildRadius") : null,
+      camPos: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "camPos") : null,
+      camFwd: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "camFwd") : null,
+      camRight: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "camRight") : null,
+      camUp: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "camUp") : null,
+      spin: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "bhSpin") : null,
+      discMass: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "uDiscMass") : null,
+      pass: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "uPass") : null,
     };
     const dustAttribs = {
       corner: gl.getAttribLocation(dustProgram, "aCorner"),
@@ -1913,7 +2045,7 @@
     const maxRadius = 2.8;
     let schwarzschildRadius = 0.5;
     let targetRadius = 0.5;
-    let holeMass = PHYS_RS * PHYS_RS * PHYS_RS * GRAV_BH_MASS;
+    let holeMass = BH_MU0 / GRAV_G;
     let camX = 253;
     let camY = 253;
     let camZ = 381;
@@ -2053,7 +2185,7 @@
     }
 
     function drawHoleDisc(renderWidth, renderHeight, b) {
-      if (easedProgress <= 0) return;
+      if (easedProgress <= 0 || !holeDiscProgram) return;
       disableAttrib(starAttribs.corner);
       disableAttrib(starAttribs.star);
       disableAttrib(starAttribs.color);
@@ -2071,44 +2203,30 @@
       gl.uniform3f(holeDiscUniforms.camFwd, b.fx, b.fy, b.fz);
       gl.uniform3f(holeDiscUniforms.camRight, b.rx, b.ry, b.rz);
       gl.uniform3f(holeDiscUniforms.camUp, b.ux, b.uy, b.uz);
+      gl.uniform1f(holeDiscUniforms.spin, BH_SPIN);
+      let dm = 0;
+      for (let i = 0; i < discCount; i++) dm += discPm[i];
+      gl.uniform1f(holeDiscUniforms.discMass, dm / Math.max(holeMass, 1e-8));
       gl.bindBuffer(gl.ARRAY_BUFFER, holeDiscBuffer);
       gl.vertexAttribPointer(holeDiscAttribs.corner, 2, gl.FLOAT, false, 0, 0);
       gl.enableVertexAttribArray(holeDiscAttribs.corner);
       gl.enable(gl.BLEND);
+      gl.uniform1f(holeDiscUniforms.pass, 0);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.uniform1f(holeDiscUniforms.pass, 1);
       gl.blendFunc(gl.ZERO, gl.ONE_MINUS_SRC_COLOR);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
 
     function renderStars(renderWidth, renderHeight, b) {
-      if (starVertCount) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, fieldFb);
-        gl.viewport(0, 0, renderWidth, renderHeight);
-        gl.disable(gl.BLEND);
-        gl.clearColor(0, 0, 0, 1);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.ONE, gl.ONE);
-        drawStarGeom(starGeom, starVertCount, renderWidth, renderHeight, b, false, false);
-      }
       clearComposite(renderWidth, renderHeight);
       gl.bindFramebuffer(gl.FRAMEBUFFER, compositeFb);
       gl.viewport(0, 0, renderWidth, renderHeight);
       if (starVertCount) {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE);
-        gl.useProgram(lensProgram);
-        bindFullscreen();
-        gl.uniform2f(lensUniforms.resolution, renderWidth, renderHeight);
-        gl.uniform1f(lensUniforms.progress, easedProgress);
-        gl.uniform1f(lensUniforms.schwarzschildRadius, schwarzschildRadius);
-        gl.uniform3f(lensUniforms.camPos, camX, camY, camZ);
-        gl.uniform3f(lensUniforms.camFwd, b.fx, b.fy, b.fz);
-        gl.uniform3f(lensUniforms.camRight, b.rx, b.ry, b.rz);
-        gl.uniform3f(lensUniforms.camUp, b.ux, b.uy, b.uz);
-        gl.uniform1i(lensUniforms.field, 0);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, fieldTexture);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        drawStarGeom(starGeom, starVertCount, renderWidth, renderHeight, b, true, false);
       }
       drawHoleDisc(renderWidth, renderHeight, b);
       if (starFrontCount) {
@@ -2346,6 +2464,7 @@
       },
       adjustRadius(delta) {
         targetRadius = Math.max(minRadius, Math.min(maxRadius, targetRadius + delta));
+        holeMass = massOfRs(targetRadius);
       },
       adjustTimeScale(factor) {
         simTimeScale = Math.max(SIM_TIME_MIN, Math.min(SIM_TIME_MAX, simTimeScale * factor));
