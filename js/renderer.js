@@ -7,12 +7,13 @@
   const JACOBI_STEPS = 40;
   const MARCH_SCALE = 0.7;
   const MAX_MARCH = 900;
+  const DITHER_LEVELS = 2;
 
   const CAM_Y = 22.0;
   const SPREAD = 0.42;
   const CLOUD_BOT = 0.0;
-  const CLOUD_TOP = 2.2;
-  const DOMAIN = 20.0;
+  const CLOUD_TOP = 1.1;
+  const DOMAIN = 13.0;
 
   function loadShader(gl, type, source) {
     const shader = gl.createShader(type);
@@ -79,7 +80,7 @@
     const data = new Uint8Array(n * 4);
     for (let r = 0; r < n; r++) {
       const i = ranked[r][1] * 4;
-      const v = (r / (n - 1)) * 255;
+      const v = r < 8 ? 255 : (r / (n - 1)) * 255;
       data[i] = data[i + 1] = data[i + 2] = v;
       data[i + 3] = 255;
     }
@@ -129,8 +130,8 @@ const float TEX = 1.0 / SIM;
 
 const float TREF = 0.60;
 const float CORIOLIS = 0.030;
-const float JET_AMP = 0.25;
-const float JET_RELAX = 0.0035;
+const float JET_AMP = 0.10;
+const float JET_RELAX = 0.0030;
 const float VEL_MAX = 3.0;
 
 const float CONV_BUOY = 0.024;
@@ -166,7 +167,7 @@ float qsat(float t) {
 }
 
 float tEquilibrium(vec2 uv) {
-  return 0.58 + 0.16 * cos(6.2831853 * uv.y);
+  return 0.615 + 0.035 * cos(6.2831853 * uv.y);
 }
 
 float divergenceAt(sampler2D vel, vec2 uv) {
@@ -298,7 +299,7 @@ out vec4 fragColor;
 ${simLib}
 ${noiseLib}
 void main() {
-  float jet = 0.45 * sin(6.2831853 * vUv.y);
+  float jet = 0.18 * sin(6.2831853 * vUv.y);
   float wobble = 1.1 * (tileFbm(vUv + 7.3, 4.0, uNoise) - 0.47);
   float wobble2 = 1.1 * (tileFbm(vUv + 19.7, 4.0, uNoise) - 0.47);
   fragColor = vec4(jet + wobble, wobble2, 0.0, 1.0);
@@ -512,14 +513,13 @@ const float SPREAD = ${SPREAD.toFixed(4)};
 const float BOT = ${CLOUD_BOT.toFixed(4)};
 const float TOP = ${CLOUD_TOP.toFixed(4)};
 const float DOMAIN = ${DOMAIN.toFixed(4)};
-const float SIGMA = 13.0;
-const float SIGMA_L = 6.0;
-const float SHAPE_TILE = 6.0;
-const float HEIGHT_TILE = 7.0;
-const float DETAIL_TILE = 1.8;
+const float SIGMA = 22.0;
+const float SIGMA_L = 11.0;
+const float SHAPE_TILE = 1.7;
+const float DETAIL_TILE = 0.52;
 const vec3 SUN_DIR = normalize(vec3(0.66, 0.32, -0.46));
-const vec3 SUN_COL = vec3(1.0, 0.96, 0.90);
-const vec3 AMB_COL = vec3(0.42, 0.55, 0.74);
+const vec3 SUN_COL = vec3(1.0);
+const vec3 AMB_COL = vec3(0.56);
 const float PI = 3.14159265;
 
 float worleyFbm(vec4 n) {
@@ -535,9 +535,9 @@ vec4 fieldAt(vec3 p) {
 }
 
 float topBumps(vec2 xz) {
-  float b = 0.52 * texture(uNoise3, vec3(xz.x, 0.0, xz.y) / 9.0).r;
-  b += 0.30 * texture(uNoise3, vec3(xz.x, 3.7, xz.y) / 3.4).r;
-  b += 0.18 * texture(uNoise3, vec3(xz.x, 8.1, xz.y) / 1.3).r;
+  float b = 0.52 * texture(uNoise3, vec3(xz.x, 0.0, xz.y) / 2.5).r;
+  b += 0.30 * texture(uNoise3, vec3(xz.x, 3.7, xz.y) / 0.95).r;
+  b += 0.18 * texture(uNoise3, vec3(xz.x, 8.1, xz.y) / 0.38).r;
   return clamp((b - 0.5) * 3.0 + 0.5, 0.0, 1.0);
 }
 
@@ -546,13 +546,13 @@ float cloudDensity(vec3 p, bool cheap) {
 
   vec4 f = fieldAt(p);
   float qc = f.y;
-  float breakup = texture(uNoise3, vec3(p.x, 5.3, p.z) / 4.0).r;
-  float cover = smoothstep(0.040, 0.125, qc * (0.72 + 0.58 * breakup));
+  float breakup = texture(uNoise3, vec3(p.x, 5.3, p.z) / 1.2).r;
+  float cover = smoothstep(0.030, 0.175, qc * (0.72 + 0.58 * breakup));
   if (cover < 0.01) return 0.0;
 
   float bump = topBumps(p.xz);
-  float tower = smoothstep(0.06, 0.25, qc);
-  float topH = mix(0.16, 1.0, tower) * mix(0.28, 1.0, bump);
+  float tower = smoothstep(0.05, 0.30, qc);
+  float topH = mix(0.12, 1.0, tower) * mix(0.22, 1.0, bump);
   float h = (p.y - BOT) / ((TOP - BOT) * topH);
   if (h > 1.0) return 0.0;
 
@@ -574,7 +574,7 @@ float cloudDensity(vec3 p, bool cheap) {
 
 float lightTau(vec3 p, float jitter) {
   float tau = 0.0;
-  float s = 0.07;
+  float s = 0.032;
   p += SUN_DIR * s * jitter;
   for (int i = 0; i < LIGHT_STEPS; i++) {
     p += SUN_DIR * s;
@@ -631,8 +631,8 @@ void main() {
       float powder = 1.0 - exp(-den * 6.0);
       float rain = fieldAt(pos).w;
 
-      vec3 lit = SUN_COL * (light * phase * 20.0);
-      lit += AMB_COL * mix(0.07, 0.28, h);
+      vec3 lit = SUN_COL * (light * phase * 21.0);
+      lit += AMB_COL * mix(0.04, 0.18, h);
       lit *= mix(0.40, 1.0, powder);
       lit *= 1.0 - 0.55 * smoothstep(0.05, 0.9, rain) * (1.0 - h);
 
@@ -644,12 +644,10 @@ void main() {
     t += stepLen;
   }
 
-  vec3 sea = mix(vec3(0.03, 0.08, 0.19), vec3(0.07, 0.15, 0.31), smoothstep(-1.0, -0.45, rd.y));
-  vec3 col = acc + sea * trans;
+  vec3 col = acc;
   col = col / (1.0 + col * 0.55);
   col = max(col, 0.0);
-  col = mix(col, col * col * (3.0 - 2.0 * col), 0.35);
-  col = pow(col, vec3(0.95));
+  col = mix(col, col * col * (3.0 - 2.0 * col), 0.15);
   fragColor = vec4(col, 1.0);
 }`;
 
@@ -687,8 +685,14 @@ void main() {
     const bicubicFs = `#version 300 es
 precision highp float;
 uniform sampler2D uCloud;
+uniform sampler2D uBlueNoise;
 in vec2 vUv;
 out vec4 fragColor;
+
+const float LEVELS = ${DITHER_LEVELS.toFixed(1)};
+const float BLACK_POINT = 0.03;
+const float WHITE_POINT = 0.95;
+const float CONTRAST = 1.10;
 vec4 cubic(float v) {
   vec4 n = vec4(1.0, 2.0, 3.0, 4.0) - v;
   vec4 s = n * n * n;
@@ -719,7 +723,15 @@ vec4 textureBicubic(sampler2D tex, vec2 uv) {
   return mix(mix(s3, s2, sx), mix(s1, s0, sx), sy);
 }
 void main() {
-  fragColor = textureBicubic(uCloud, vUv);
+  vec3 col = textureBicubic(uCloud, vUv).rgb;
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  lum = clamp((lum - BLACK_POINT) / (WHITE_POINT - BLACK_POINT), 0.0, 1.0);
+  lum = pow(lum, CONTRAST);
+
+  float threshold = texture(uBlueNoise, gl_FragCoord.xy / 128.0).r;
+  float steps = LEVELS - 1.0;
+  float v = floor(lum * steps + threshold) / steps;
+  fragColor = vec4(vec3(clamp(v, 0.0, 1.0)), 1.0);
 }`;
 
     const noiseGen = makeProgram(blitVs, noiseGenFs, ["uZ"]);
@@ -761,7 +773,7 @@ void main() {
     ]);
     const fieldView = makeProgram(blitVs, fieldViewFs, ["uField", "uVel"]);
     const accum = makeProgram(blitVs, accumFs, ["uRaw", "uHistory", "uBlend"]);
-    const display = makeProgram(blitVs, bicubicFs, ["uCloud"]);
+    const display = makeProgram(blitVs, bicubicFs, ["uCloud", "uBlueNoise"]);
 
     const programs = [
       noiseGen,
@@ -1065,6 +1077,7 @@ void main() {
       gl.viewport(0, 0, displayWidth, displayHeight);
       bindQuad(display);
       bindTex(0, accumTex[accumPing], display.u.uCloud);
+      bindTex(1, blueTex, display.u.uBlueNoise);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 

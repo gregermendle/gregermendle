@@ -20,7 +20,7 @@ function init() {
   }
 
   const script = document.createElement("script");
-  script.src = "js/renderer.js?v=77";
+  script.src = "js/renderer.js?v=96";
   script.onload = () => {
     const r = self.createRenderer(canvas);
     if (!r) {
@@ -61,11 +61,11 @@ function init() {
       type: "impulse",
       sx: p.x,
       sy: p.y,
-      radius: 0.09,
-      heat: 0.16 * strength,
-      moist: 0.3 * strength,
-      spin: 0.25 * strength,
-      converge: 0.5 * strength,
+      radius: 0.045,
+      heat: 0.18 * strength,
+      moist: 0.34 * strength,
+      spin: 0.16 * strength,
+      converge: 0.3 * strength,
     });
   }
 
@@ -75,7 +75,7 @@ function init() {
     spinning = e.shiftKey;
     last = toScreen(e);
     if (spinning) {
-      send({ type: "impulse", sx: last.x, sy: last.y, radius: 0.13, spin: 0.8 });
+      send({ type: "impulse", sx: last.x, sy: last.y, radius: 0.07, spin: 0.5 });
     } else {
       seed(last, 1);
       holdTimer = window.setInterval(() => {
@@ -92,9 +92,9 @@ function init() {
     if (dx * dx + dy * dy < 2e-6) return;
     moved = true;
     if (spinning) {
-      send({ type: "impulse", sx: p.x, sy: p.y, radius: 0.13, spin: 0.35 });
+      send({ type: "impulse", sx: p.x, sy: p.y, radius: 0.07, spin: 0.22 });
     } else {
-      send({ type: "impulse", sx: p.x, sy: p.y, dx, dy, radius: 0.05 });
+      send({ type: "impulse", sx: p.x, sy: p.y, dx, dy, radius: 0.03 });
     }
     last = p;
   }
