@@ -8,6 +8,9 @@
   const MARCH_SCALE = 0.7;
   const MAX_MARCH = 900;
   const DITHER_LEVELS = 2;
+  const PARTICLE_SIZE = 512;
+  const PARTICLE_COUNT = PARTICLE_SIZE * PARTICLE_SIZE;
+  const PARTICLE_DT = 0.0045;
 
   const CAM_Y = 22.0;
   const SPREAD = 0.42;
@@ -669,6 +672,83 @@ void main() {
   fragColor = vec4(col, 1.0);
 }`;
 
+    const particleInitFs = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+void main() {
+  float x = hash(vUv);
+  float y = hash(vUv + 19.13);
+  float age = hash(vUv + 71.7);
+  fragColor = vec4(x, y, age, 1.0);
+}`;
+
+    const particleAdvectFs = `#version 300 es
+precision highp float;
+uniform sampler2D uParticles;
+uniform sampler2D uVel;
+uniform sampler2D uField;
+uniform float uTime;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+void main() {
+  vec4 p = texture(uParticles, vUv);
+  vec2 vel = texture(uVel, p.xy).xy;
+  p.xy = fract(p.xy + vel * ${PARTICLE_DT.toFixed(4)});
+  p.z += 0.0018;
+  vec4 f = texture(uField, p.xy);
+  if (p.z > 1.0 || hash(p.xy + uTime) > 0.997) {
+    vec2 spawn = vec2(hash(vUv + uTime), hash(vUv + uTime + 4.7));
+    spawn.x = mix(spawn.x, p.xy.x, 0.15);
+    p.xy = spawn;
+    p.z = 0.0;
+  }
+  p.w = clamp(length(vel) * 0.35 + (f.z - 0.5) * 1.4, 0.0, 1.5);
+  fragColor = p;
+}`;
+
+    const fadeFs = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc;
+uniform float uFade;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(texture(uSrc, vUv).rgb * uFade, 1.0);
+}`;
+
+    const particleDrawVs = `#version 300 es
+uniform sampler2D uParticles;
+uniform vec2 uPartSize;
+out float vBright;
+void main() {
+  int w = int(uPartSize.x);
+  ivec2 ij = ivec2(gl_VertexID % w, gl_VertexID / w);
+  vec4 p = texelFetch(uParticles, ij, 0);
+  gl_Position = vec4(p.xy * 2.0 - 1.0, 0.0, 1.0);
+  vBright = 0.22 + 0.78 * clamp(p.w, 0.0, 1.0);
+  gl_PointSize = mix(1.15, 2.6, clamp(p.w, 0.0, 1.0));
+}`;
+
+    const particleDrawFs = `#version 300 es
+precision highp float;
+in float vBright;
+out vec4 fragColor;
+void main() {
+  vec2 pc = gl_PointCoord * 2.0 - 1.0;
+  float d = dot(pc, pc);
+  if (d > 1.0) discard;
+  float a = 1.0 - d;
+  fragColor = vec4(vec3(vBright * a), 1.0);
+}`;
+
     const accumFs = `#version 300 es
 precision highp float;
 uniform sampler2D uRaw;
@@ -772,6 +852,18 @@ void main() {
       "uFrame",
     ]);
     const fieldView = makeProgram(blitVs, fieldViewFs, ["uField", "uVel"]);
+    const particleInit = makeProgram(blitVs, particleInitFs, []);
+    const particleAdvect = makeProgram(blitVs, particleAdvectFs, [
+      "uParticles",
+      "uVel",
+      "uField",
+      "uTime",
+    ]);
+    const fade = makeProgram(blitVs, fadeFs, ["uSrc", "uFade"]);
+    const particleDraw = makeProgram(particleDrawVs, particleDrawFs, [
+      "uParticles",
+      "uPartSize",
+    ]);
     const accum = makeProgram(blitVs, accumFs, ["uRaw", "uHistory", "uBlend"]);
     const display = makeProgram(blitVs, bicubicFs, ["uCloud", "uBlueNoise"]);
 
@@ -789,6 +881,10 @@ void main() {
       project,
       march,
       fieldView,
+      particleInit,
+      particleAdvect,
+      fade,
+      particleDraw,
       accum,
       display,
     ];
@@ -852,6 +948,16 @@ void main() {
     gl.bindTexture(gl.TEXTURE_2D, meanTex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
 
+    function makeParticleTex() {
+      const tex = makeTex(PARTICLE_SIZE, PARTICLE_SIZE, false, null, true);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      return tex;
+    }
+    const particleTex = [makeParticleTex(), makeParticleTex()];
+    let particlePing = 0;
+
     const simFb = gl.createFramebuffer();
 
     function bindQuad(prog) {
@@ -900,7 +1006,13 @@ void main() {
     bindQuad(velInit);
     bindTex(0, noiseTex, velInit.u.uNoise);
     drawSim(velTex[0]);
+
+    bindQuad(particleInit);
+    targetTex(particleTex[0], PARTICLE_SIZE, PARTICLE_SIZE);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    const particleVao = gl.createVertexArray();
 
     let thermPing = 0;
     let velPing = 0;
@@ -917,7 +1029,12 @@ void main() {
     let hidden = false;
     let raf = 0;
     let frame = 0;
-    let viewMode = "field";
+    let viewMode = "particles";
+    let trailTex = [null, null];
+    let trailPing = 0;
+    let trailWarm = false;
+    let trailWidth = 0;
+    let trailHeight = 0;
     const impulses = [];
 
     function ensureTarget(w, h) {
@@ -937,6 +1054,15 @@ void main() {
       rawTex = makeTex(mw, mh, false, null, false);
       accumTex = [makeTex(mw, mh, false, null, false), makeTex(mw, mh, false, null, false)];
       accumWarm = false;
+    }
+
+    function ensureTrail(w, h) {
+      if (w === trailWidth && h === trailHeight && trailTex[0]) return;
+      trailWidth = w;
+      trailHeight = h;
+      for (const tex of trailTex) if (tex) gl.deleteTexture(tex);
+      trailTex = [makeTex(w, h, false, null, false), makeTex(w, h, false, null, false)];
+      trailWarm = false;
     }
 
     function screenToSim(sx, sy) {
@@ -1027,6 +1153,44 @@ void main() {
       bindTex(1, prsTex[prsPing], project.u.uPressure);
       drawSim(velTex[1 - velPing]);
       velPing = 1 - velPing;
+
+      bindQuad(particleAdvect);
+      bindTex(0, particleTex[particlePing], particleAdvect.u.uParticles);
+      bindTex(1, velTex[velPing], particleAdvect.u.uVel);
+      bindTex(2, thermTex[thermPing], particleAdvect.u.uField);
+      gl.uniform1f(particleAdvect.u.uTime, frame * 0.016);
+      targetTex(particleTex[1 - particlePing], PARTICLE_SIZE, PARTICLE_SIZE);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      particlePing = 1 - particlePing;
+    }
+
+    function drawParticles() {
+      ensureTrail(displayWidth, displayHeight);
+      const src = trailPing;
+      const dst = 1 - trailPing;
+      bindQuad(fade);
+      bindTex(0, trailWarm ? trailTex[src] : particleTex[particlePing], fade.u.uSrc);
+      gl.uniform1f(fade.u.uFade, trailWarm ? 0.93 : 0.0);
+      targetTex(trailTex[dst], displayWidth, displayHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      gl.bindVertexArray(particleVao);
+      gl.useProgram(particleDraw.p);
+      bindTex(0, particleTex[particlePing], particleDraw.u.uParticles);
+      gl.uniform2f(particleDraw.u.uPartSize, PARTICLE_SIZE, PARTICLE_SIZE);
+      gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
+      gl.bindVertexArray(null);
+      gl.disable(gl.BLEND);
+      trailPing = dst;
+      trailWarm = true;
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, displayWidth, displayHeight);
+      bindQuad(copy);
+      bindTex(0, trailTex[trailPing], copy.u.uSrc);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
     function render() {
@@ -1042,6 +1206,7 @@ void main() {
       }
 
       stepSim();
+      frame++;
 
       if (viewMode === "field") {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -1050,6 +1215,11 @@ void main() {
         bindTex(0, thermTex[thermPing], fieldView.u.uField);
         bindTex(1, velTex[velPing], fieldView.u.uVel);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+        return;
+      }
+
+      if (viewMode !== "clouds") {
+        drawParticles();
         return;
       }
 
@@ -1099,8 +1269,9 @@ void main() {
         start();
       },
       setView(mode) {
-        viewMode = mode === "field" ? "field" : "clouds";
+        viewMode = mode === "field" ? "field" : mode === "clouds" ? "clouds" : "particles";
         accumWarm = false;
+        trailWarm = false;
       },
       stats() {
         const size = 64;
