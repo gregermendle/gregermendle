@@ -917,7 +917,7 @@ void main() {
     let hidden = false;
     let raf = 0;
     let frame = 0;
-    let viewMode = "clouds";
+    let viewMode = "field";
     const impulses = [];
 
     function ensureTarget(w, h) {
