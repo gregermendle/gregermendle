@@ -1434,3 +1434,252 @@ void main() {
 
   scope.createRenderer = createRenderer;
 })(typeof self !== "undefined" ? self : window);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   for (const s of systems) {
+        const segs = s.segs;
+        if (!segs.length) continue;
+        if (segs.length <= 16) {
+          for (const seg of segs) stampInk(seg.ax, seg.ay, seg.bx, seg.by, 0.0038, 0.28);
+          continue;
+        }
+        const pts = [{ x: segs[0].ax, y: segs[0].ay }];
+        for (const seg of segs) pts.push({ x: seg.bx, y: seg.by });
+        const step = (pts.length - 1) / 16;
+        for (let i = 0; i < 16; i++) {
+          const a = pts[Math.round(i * step)];
+          const b = pts[Math.round((i + 1) * step)];
+          stampInk(a.x, a.y, b.x, b.y, 0.0038, 0.28);
+        }
+      }
+    }
+
+    function stepSim() {
+      applyWarms();
+      applyImpulses();
+
+      bindQuad(advectVel);
+      bindTex(0, velTex[velPing], advectVel.u.uVel);
+      bindTex(1, thermTex[thermPing], advectVel.u.uTherm);
+      drawSim(velTex[1 - velPing]);
+      velPing = 1 - velPing;
+
+      bindQuad(advectTherm);
+      bindTex(0, thermTex[thermPing], advectTherm.u.uTherm);
+      bindTex(1, velTex[velPing], advectTherm.u.uVel);
+      bindTex(2, noiseTex, advectTherm.u.uNoise);
+      bindTex(3, sstTex[sstPing], advectTherm.u.uSst);
+      gl.uniform1f(advectTherm.u.uTime, frame * 0.016);
+      drawSim(thermTex[1 - thermPing]);
+      thermPing = 1 - thermPing;
+
+      bindQuad(copy);
+      bindTex(0, thermTex[thermPing], copy.u.uSrc);
+      drawSim(meanTex);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, meanTex);
+      gl.generateMipmap(gl.TEXTURE_2D);
+
+      bindQuad(divergence);
+      bindTex(0, velTex[velPing], divergence.u.uVel);
+      bindTex(1, thermTex[thermPing], divergence.u.uTherm);
+      bindTex(2, meanTex, divergence.u.uMean);
+      bindSeeds();
+      drawSim(divTex);
+
+      bindQuad(jacobi);
+      bindTex(1, divTex, jacobi.u.uDiv);
+      for (let i = 0; i < JACOBI_STEPS; i++) {
+        bindTex(0, prsTex[prsPing], jacobi.u.uPressure);
+        drawSim(prsTex[1 - prsPing]);
+        prsPing = 1 - prsPing;
+      }
+
+      bindQuad(project);
+      bindTex(0, velTex[velPing], project.u.uVel);
+      bindTex(1, prsTex[prsPing], project.u.uPressure);
+      drawSim(velTex[1 - velPing]);
+      velPing = 1 - velPing;
+
+      applySystems();
+
+      bindQuad(stormCharge);
+      bindTex(0, stormTex[stormPing], stormCharge.u.uStorm);
+      bindTex(1, thermTex[thermPing], stormCharge.u.uTherm);
+      drawSim(stormTex[1 - stormPing]);
+      stormPing = 1 - stormPing;
+
+      relaxSst();
+    }
+
+    function fadeInk() {
+      if (!inkTex[0]) return;
+      const src = inkPing;
+      const dst = 1 - inkPing;
+      bindQuad(fade);
+      bindTex(0, inkTex[src], fade.u.uSrc);
+      gl.uniform1f(fade.u.uFade, 0.94);
+      targetTex(inkTex[dst], viewWidth, viewHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      inkPing = dst;
+    }
+
+    function drawWeather() {
+      ensureView(displayWidth, displayHeight);
+      fadeInk();
+      drawSystemInk();
+
+      bindQuad(weather);
+      bindTex3(3, noise3Tex, weather.u.uNoise3);
+      bindTex(0, thermTex[thermPing], weather.u.uField);
+      bindTex(1, velTex[velPing], weather.u.uVel);
+      bindTex(2, blueTex, weather.u.uBlueNoise);
+      bindTex(4, stormTex[stormPing], weather.u.uStorm);
+      gl.uniform2f(weather.u.uResolution, marchWidth, marchHeight);
+      gl.uniform1i(weather.u.uFrame, frame);
+      gl.uniform1i(weather.u.uSteps, marchSteps);
+      targetTex(rawTex, marchWidth, marchHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      const histSrc = accumPing;
+      const histDst = 1 - accumPing;
+      bindQuad(accum);
+      bindTex(0, rawTex, accum.u.uRaw);
+      bindTex(1, accumWarm ? accumTex[histSrc] : rawTex, accum.u.uHistory);
+      gl.uniform1f(accum.u.uBlend, accumWarm ? 0.28 : 1.0);
+      targetTex(accumTex[histDst], marchWidth, marchHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      accumPing = histDst;
+      accumWarm = true;
+
+      bindQuad(copy);
+      bindTex(0, accumTex[accumPing], copy.u.uSrc);
+      targetTex(weatherTex, viewWidth, viewHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, displayWidth, displayHeight);
+      bindQuad(composite);
+      bindTex(0, weatherTex, composite.u.uWeather);
+      bindTex(1, inkTex[inkPing], composite.u.uInk);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    function render() {
+      raf = 0;
+      if (!running || hidden) return;
+      raf = requestAnimationFrame(render);
+      if (displayWidth <= 0 || displayHeight <= 0) return;
+      if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+        canvas.width = displayWidth;
+        canvas.height = displayHeight;
+      }
+      stepSim();
+      frame++;
+      drawWeather();
+      fpsFrames++;
+      const now = performance.now();
+      if (!fpsLast) fpsLast = now;
+      if (now - fpsLast >= 500) {
+        if (onFps) onFps((fpsFrames * 1000) / (now - fpsLast));
+        fpsFrames = 0;
+        fpsLast = now;
+      }
+    }
+
+    function start() {
+      if (!raf && running && !hidden) raf = requestAnimationFrame(render);
+    }
+
+    return {
+      setSize(width, height) {
+        displayWidth = width | 0;
+        displayHeight = height | 0;
+      },
+      setHidden(value) {
+        hidden = value;
+        start();
+      },
+      setRunning(value) {
+        running = value;
+        start();
+      },
+      setSteps(value) {
+        marchSteps = Math.max(16, Math.min(96, value | 0));
+      },
+      setOnFps(fn) {
+        onFps = fn;
+      },
+      setSystems(list) {
+        systems = (list || []).map((s) => {
+          const at = screenToSim(s.sx, s.sy);
+          const kind = s.kind === "H" || s.kind < 0 ? -1 : 1;
+          return {
+            kind,
+            x: at.x,
+            y: at.y,
+            radius: s.radius || 0.22,
+            spin: (s.spin || 1.55) * kind,
+            born: s.born || 0,
+            segs: (s.segs || []).map((seg) => {
+              const a = screenToSim(seg.ax, seg.ay);
+              const b = screenToSim(seg.bx, seg.by);
+              return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
+            }),
+          };
+        });
+      },
+      addWarm(w) {
+        const at = screenToSim(w.sx, w.sy);
+        warms.push({
+          x: at.x,
+          y: at.y,
+          radius: w.radius || 0.22,
+          amount: w.amount || 0.45,
+        });
+      },
+      addImpulse(imp) {
+        const at = screenToSim(imp.sx, imp.sy);
+        const dx = imp.dx || 0;
+        const dy = imp.dy || 0;
+        const len = Math.hypot(dx, dy);
+        impulses.push({
+          x: at.x,
+          y: at.y,
+          dx: len > 1e-6 ? dx / len : 0,
+          dy: len > 1e-6 ? dy / len : 0,
+          radius: imp.radius || 0.06,
+          force: len > 1e-6 ? Math.min(len * 70, 2.2) : 0,
+          spin: imp.spin || 0,
+          converge: imp.converge || 0,
+          heat: imp.heat || 0,
+          moist: imp.moist || 0,
+        });
+      },
+      addFront(seg) {
+        const a = screenToSim(seg.ax, seg.ay);
+        const b = screenToSim(seg.bx, seg.by);
+        fronts.push({
+          ax: a.x,
+          ay: a.y,
+          bx: b.x,
+          by: b.y,
+          width: seg.width || 0.035,
+          cold: seg.cold || 0.045,
+          moist: seg.moist || 0.08,
+          along: seg.along || 0.22,
+          converge: seg.converge || 0.16,
+          spin: seg.spin || 0.12,
+        });
+        stampInk(
+          a.x,
+          a.y,
+          b.x,
+          b.y,
+          Math.max(0.004, (seg.width || 0.035) * 0.32),
+          0.7
+        );
+      },
+    };
+  }
+
+  scope.createRenderer = createRenderer;
+})(typeof self !== "undefined" ? self : window);

@@ -67,4 +67,17 @@
   #legend em {
     @apply w-6 text-center not-italic text-white/65;
   }
+
+  #legend .on,
+  #legend .on span {
+    @apply text-white/85;
+  }
+
+  #marks {
+    @apply pointer-events-none fixed inset-0 z-[15];
+  }
+
+  .mark {
+    @apply absolute -translate-x-1/2 -translate-y-1/2 font-mono text-[13px] font-light tracking-wide text-white/35;
+  }
 }
