@@ -1,25 +1,12 @@
 (function (scope) {
   const NOISE_SIZE = 256;
-  const NOISE3_SIZE = 128;
+  const NOISE3_SIZE = 96;
   const BLUE_SIZE = 128;
   const SIM_SIZE = 256;
   const SIM_MIP = 8;
   const JACOBI_STEPS = 40;
-  const MARCH_SCALE = 0.7;
-  const MAX_MARCH = 900;
-  const DITHER_LEVELS = 2;
-  const PARTICLE_SIZE = 512;
-  const PARTICLE_COUNT = PARTICLE_SIZE * PARTICLE_SIZE;
-  const PARTICLE_DT = 0.0045;
-  const PARTICLE_STRIDE = 10;
-  const PARTICLE_DRAW_COUNT = PARTICLE_COUNT / PARTICLE_STRIDE;
-  const TRAIL_SCALE = 0.48;
-
-  const CAM_Y = 22.0;
-  const SPREAD = 0.42;
-  const CLOUD_BOT = 0.0;
-  const CLOUD_TOP = 1.1;
-  const DOMAIN = 13.0;
+  const MARCH_SCALE = 0.72;
+  const MAX_MARCH = 720;
 
   function loadShader(gl, type, source) {
     const shader = gl.createShader(type);
@@ -86,7 +73,7 @@
     const data = new Uint8Array(n * 4);
     for (let r = 0; r < n; r++) {
       const i = ranked[r][1] * 4;
-      const v = r < 8 ? 255 : (r / (n - 1)) * 255;
+      const v = (r / (n - 1)) * 255;
       data[i] = data[i + 1] = data[i + 2] = v;
       data[i + 3] = 255;
     }
@@ -133,36 +120,30 @@ void main() {
     const simLib = `
 const float SIM = ${SIM_SIZE.toFixed(1)};
 const float TEX = 1.0 / SIM;
-
 const float TREF = 0.60;
-const float CORIOLIS = 0.030;
-const float JET_AMP = 0.10;
-const float JET_RELAX = 0.0030;
-const float VEL_MAX = 3.0;
-
-const float CONV_BUOY = 0.024;
-const float CONV_RAIN = 0.028;
+const float CORIOLIS = 0.028;
+const float JET_AMP = 0.12;
+const float JET_RELAX = 0.0024;
+const float VEL_MAX = 2.6;
+const float CONV_BUOY = 0.018;
+const float CONV_RAIN = 0.022;
 const float BUOY_T = 1.0;
-const float BUOY_QC = 0.9;
-
-const float DIV_SCALE = 0.0004;
-const float ADIA = 0.0012;
-const float MOIST_CONV = 0.004;
-const float COND_RATE = 0.30;
-const float REVAP_RATE = 0.10;
-const float LATENT = 0.45;
-
-const float RAIN_THRESH = 0.18;
-const float RAIN_RATE = 0.09;
-const float RAIN_DECAY = 0.92;
-const float RAIN_COOL = 0.0016;
-
-const float TRIGGER_T = 0.0026;
-const float TRIGGER_Q = 0.0020;
-
-const float SURF_EVAP = 0.010;
-const float SURF_RH = 0.90;
-const float RAD_RELAX = 0.008;
+const float BUOY_QC = 0.85;
+const float DIV_SCALE = 0.00045;
+const float ADIA = 0.0010;
+const float MOIST_CONV = 0.0035;
+const float COND_RATE = 0.22;
+const float REVAP_RATE = 0.08;
+const float LATENT = 0.52;
+const float RAIN_THRESH = 0.16;
+const float RAIN_RATE = 0.07;
+const float RAIN_DECAY = 0.94;
+const float RAIN_COOL = 0.0012;
+const float TRIGGER_T = 0.0014;
+const float TRIGGER_Q = 0.0012;
+const float SURF_EVAP = 0.008;
+const float SURF_RH = 0.88;
+const float RAD_RELAX = 0.006;
 
 vec2 jetAt(vec2 uv) {
   return vec2(JET_AMP * sin(6.2831853 * uv.y), 0.0);
@@ -183,6 +164,12 @@ float divergenceAt(sampler2D vel, vec2 uv) {
   float t = texture(vel, uv + vec2(0.0, TEX)).y;
   return 0.5 * ((r - l) + (t - b));
 }
+
+vec2 wrapTo(vec2 p, vec2 a) {
+  vec2 d = p - a;
+  d -= round(d);
+  return d;
+}
 `;
 
     const noiseLib = `
@@ -190,7 +177,6 @@ float lattice(vec2 cell, float period, vec2 off, sampler2D tex) {
   vec2 c = mod(cell, period) + off;
   return textureLod(tex, (c + 0.5) / 256.0, 0.0).x;
 }
-
 float tileNoise(vec2 uv, float period, vec2 off, sampler2D tex) {
   vec2 p = uv * period;
   vec2 i = floor(p);
@@ -202,7 +188,6 @@ float tileNoise(vec2 uv, float period, vec2 off, sampler2D tex) {
   float s11 = lattice(i + vec2(1.0, 1.0), period, off, tex);
   return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
 }
-
 float tileFbm(vec2 uv, float base, sampler2D tex) {
   float f = 0.0;
   float a = 0.5;
@@ -218,71 +203,6 @@ float tileFbm(vec2 uv, float base, sampler2D tex) {
 }
 `;
 
-    const noiseGenFs = `#version 300 es
-precision highp float;
-uniform float uZ;
-in vec2 vUv;
-out vec4 fragColor;
-
-float hash13(vec3 p) {
-  p = fract(p * 0.1031);
-  p += dot(p, p.yzx + 33.33);
-  return fract((p.x + p.y) * p.z);
-}
-
-vec3 hash33(vec3 p) {
-  return vec3(hash13(p), hash13(p + 19.19), hash13(p + 47.71));
-}
-
-float valueTile(vec3 p, float cells) {
-  vec3 pc = p * cells;
-  vec3 i = floor(pc);
-  vec3 f = fract(pc);
-  f = f * f * (3.0 - 2.0 * f);
-  float sum = 0.0;
-  for (int dz = 0; dz < 2; dz++) {
-    for (int dy = 0; dy < 2; dy++) {
-      for (int dx = 0; dx < 2; dx++) {
-        vec3 o = vec3(float(dx), float(dy), float(dz));
-        float v = hash13(mod(i + o, cells) + 0.5);
-        vec3 w = mix(1.0 - f, f, o);
-        sum += v * w.x * w.y * w.z;
-      }
-    }
-  }
-  return sum;
-}
-
-float worleyTile(vec3 p, float cells) {
-  vec3 pc = p * cells;
-  vec3 i = floor(pc);
-  vec3 f = fract(pc);
-  float md = 4.0;
-  for (int dz = -1; dz <= 1; dz++) {
-    for (int dy = -1; dy <= 1; dy++) {
-      for (int dx = -1; dx <= 1; dx++) {
-        vec3 o = vec3(float(dx), float(dy), float(dz));
-        vec3 d = o + hash33(mod(i + o, cells) + 0.5) - f;
-        md = min(md, dot(d, d));
-      }
-    }
-  }
-  return 1.0 - clamp(sqrt(md), 0.0, 1.0);
-}
-
-void main() {
-  vec3 p = vec3(vUv, uZ);
-  float perlin = 0.5 * valueTile(p, 4.0)
-    + 0.26 * valueTile(p, 8.0)
-    + 0.14 * valueTile(p, 16.0)
-    + 0.10 * valueTile(p, 32.0);
-  float w3 = worleyTile(p, 3.0);
-  float w6 = worleyTile(p, 6.0);
-  float w12 = worleyTile(p, 12.0);
-  float shape = clamp(perlin * 0.62 + w3 * 0.38, 0.0, 1.0);
-  fragColor = vec4(shape, w3, w6, w12);
-}`;
-
     const thermInitFs = `#version 300 es
 precision highp float;
 uniform sampler2D uNoise;
@@ -291,9 +211,9 @@ out vec4 fragColor;
 ${simLib}
 ${noiseLib}
 void main() {
-  float t = tEquilibrium(vUv) + 0.05 * (tileFbm(vUv, 5.0, uNoise) - 0.47);
-  float humid = tileFbm(vUv + 3.1, 4.0, uNoise);
-  float qv = qsat(t) * (0.55 + 0.45 * humid);
+  float t = tEquilibrium(vUv) + 0.04 * (tileFbm(vUv, 4.0, uNoise) - 0.47);
+  float humid = tileFbm(vUv + 3.1, 3.5, uNoise);
+  float qv = qsat(t) * (0.58 + 0.38 * humid);
   fragColor = vec4(qv, 0.0, t, 0.0);
 }`;
 
@@ -305,9 +225,9 @@ out vec4 fragColor;
 ${simLib}
 ${noiseLib}
 void main() {
-  float jet = 0.18 * sin(6.2831853 * vUv.y);
-  float wobble = 1.1 * (tileFbm(vUv + 7.3, 4.0, uNoise) - 0.47);
-  float wobble2 = 1.1 * (tileFbm(vUv + 19.7, 4.0, uNoise) - 0.47);
+  float jet = 0.16 * sin(6.2831853 * vUv.y);
+  float wobble = 0.7 * (tileFbm(vUv + 7.3, 3.5, uNoise) - 0.47);
+  float wobble2 = 0.7 * (tileFbm(vUv + 19.7, 3.5, uNoise) - 0.47);
   fragColor = vec4(jet + wobble, wobble2, 0.0, 1.0);
 }`;
 
@@ -323,8 +243,7 @@ out vec4 fragColor;
 ${simLib}
 void main() {
   vec4 s = texture(uTherm, vUv);
-  vec2 rel = vUv - uPoint;
-  rel -= round(rel);
+  vec2 rel = wrapTo(vUv, uPoint);
   float w = exp(-dot(rel, rel) / max(uRadius * uRadius, 1e-6));
   s.z = clamp(s.z + uHeat * w, 0.0, 1.4);
   s.x = clamp(s.x + uMoist * w, 0.0, 2.0);
@@ -345,12 +264,76 @@ out vec4 fragColor;
 ${simLib}
 void main() {
   vec2 vel = texture(uVel, vUv).xy;
-  vec2 rel = vUv - uPoint;
-  rel -= round(rel);
+  vec2 rel = wrapTo(vUv, uPoint);
   float w = exp(-dot(rel, rel) / max(uRadius * uRadius, 1e-6));
   vel += uDir * uForce * w;
   vel += vec2(-rel.y, rel.x) * (uSpin * w / max(uRadius, 1e-6));
   vel -= normalize(rel + vec2(1e-6)) * (uConverge * w);
+  float speed = length(vel);
+  if (speed > VEL_MAX) vel *= VEL_MAX / speed;
+  fragColor = vec4(vel, 0.0, 1.0);
+}`;
+
+    const frontThermFs = `#version 300 es
+precision highp float;
+uniform sampler2D uTherm;
+uniform vec2 uA;
+uniform vec2 uB;
+uniform float uWidth;
+uniform float uCold;
+uniform float uMoist;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec4 s = texture(uTherm, vUv);
+  vec2 ab = wrapTo(uB, uA);
+  float len = max(length(ab), 1e-5);
+  vec2 t = ab / len;
+  vec2 n = vec2(-t.y, t.x);
+  vec2 rel = wrapTo(vUv, uA);
+  float along = clamp(dot(rel, t), 0.0, len);
+  vec2 closest = t * along;
+  vec2 d = rel - closest;
+  float dist = length(d);
+  float side = dot(rel, n);
+  float w = exp(-dist * dist / max(uWidth * uWidth, 1e-6));
+  float taper = smoothstep(0.0, uWidth * 1.4, along) * smoothstep(len, len - uWidth * 1.4, along);
+  w *= mix(0.45, 1.0, taper);
+  s.z = clamp(s.z - uCold * sign(side) * w, 0.0, 1.4);
+  s.x = clamp(s.x + uMoist * w * mix(0.25, 1.15, 0.5 + 0.5 * sign(side)), 0.0, 2.0);
+  fragColor = s;
+}`;
+
+    const frontVelFs = `#version 300 es
+precision highp float;
+uniform sampler2D uVel;
+uniform vec2 uA;
+uniform vec2 uB;
+uniform float uWidth;
+uniform float uAlong;
+uniform float uConverge;
+uniform float uSpin;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec2 vel = texture(uVel, vUv).xy;
+  vec2 ab = wrapTo(uB, uA);
+  float len = max(length(ab), 1e-5);
+  vec2 t = ab / len;
+  vec2 n = vec2(-t.y, t.x);
+  vec2 rel = wrapTo(vUv, uA);
+  float along = clamp(dot(rel, t), 0.0, len);
+  vec2 closest = t * along;
+  vec2 d = rel - closest;
+  float dist = length(d);
+  float w = exp(-dist * dist / max(uWidth * uWidth, 1e-6));
+  float taper = smoothstep(0.0, uWidth, along) * smoothstep(len, len - uWidth, along);
+  w *= mix(0.4, 1.0, taper);
+  vel += t * uAlong * w;
+  vel -= n * sign(dot(rel, n) + 1e-6) * uConverge * w;
+  vel += vec2(-d.y, d.x) * (uSpin * w / max(uWidth, 1e-6));
   float speed = length(vel);
   if (speed > VEL_MAX) vel *= VEL_MAX / speed;
   fragColor = vec4(vel, 0.0, 1.0);
@@ -365,13 +348,11 @@ ${simLib}
 void main() {
   vec2 here = texture(uVel, vUv).xy;
   vec2 vel = texture(uVel, vUv - here * TEX).xy;
-
   float c = cos(CORIOLIS);
   float s = sin(CORIOLIS);
   vel = vec2(c * vel.x + s * vel.y, -s * vel.x + c * vel.y);
   vel += (jetAt(vUv) - vel) * JET_RELAX;
-  vel *= 0.9995;
-
+  vel *= 0.9992;
   float speed = length(vel);
   if (speed > VEL_MAX) vel *= VEL_MAX / speed;
   fragColor = vec4(vel, 0.0, 1.0);
@@ -390,7 +371,6 @@ ${noiseLib}
 void main() {
   vec2 vel = texture(uVel, vUv).xy;
   vec2 src = vUv - vel * TEX;
-
   vec4 s = texture(uTherm, src);
   vec4 blur = 0.25 * (
     texture(uTherm, src + vec2(TEX, 0.0)) +
@@ -398,7 +378,7 @@ void main() {
     texture(uTherm, src + vec2(0.0, TEX)) +
     texture(uTherm, src - vec2(0.0, TEX))
   );
-  s = mix(s, blur, 0.03);
+  s = mix(s, blur, 0.04);
 
   float qv = s.x;
   float qc = s.y;
@@ -406,20 +386,20 @@ void main() {
   float rain = s.w;
 
   float div = divergenceAt(uVel, vUv);
-  float w = clamp(-div / DIV_SCALE, -3.0, 3.0);
-  t -= ADIA * w;
-  qv += MOIST_CONV * w * qv;
+  float lift = clamp(-div / DIV_SCALE, -3.0, 3.0);
+  t -= ADIA * lift;
+  qv += MOIST_CONV * lift * qv;
 
   float teq = tEquilibrium(vUv);
   t += RAD_RELAX * (teq - t);
 
-  float trigger = tileFbm(vUv + vec2(uTime * 0.011, uTime * 0.006), 14.0, uNoise) - 0.47;
+  float trigger = tileFbm(vUv + vec2(uTime * 0.008, uTime * 0.005), 10.0, uNoise) - 0.47;
   t += TRIGGER_T * trigger;
   qv += TRIGGER_Q * trigger;
 
   float qs = qsat(t);
   float speed = length(vel);
-  qv += SURF_EVAP * (1.0 + 0.4 * speed) * max(qs * SURF_RH - qv, 0.0);
+  qv += SURF_EVAP * (1.0 + 0.35 * speed) * max(qs * SURF_RH - qv, 0.0);
   qs = qsat(t);
   float excess = qv - qs;
   float cond = excess > 0.0 ? excess * COND_RATE : -min(qc, -excess * REVAP_RATE);
@@ -431,7 +411,7 @@ void main() {
   qc -= fall;
   rain = rain * RAIN_DECAY + fall * 4.0;
   t -= RAIN_COOL * rain;
-  qv += rain * 0.003;
+  qv += rain * 0.0025;
 
   fragColor = vec4(
     clamp(qv, 0.0, 2.0),
@@ -501,273 +481,194 @@ void main() {
   fragColor = vec4(vel, 0.0, 1.0);
 }`;
 
-    const marchFs = `#version 300 es
+    const noiseGenFs = `#version 300 es
 precision highp float;
-uniform highp sampler3D uNoise3;
-uniform sampler2D uBlueNoise;
-uniform sampler2D uField;
-uniform sampler2D uVel;
-uniform vec2 uResolution;
-uniform int uFrame;
-uniform float uTime;
+uniform float uZ;
 in vec2 vUv;
 out vec4 fragColor;
+float hash13(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+vec3 hash33(vec3 p) {
+  return vec3(hash13(p), hash13(p + 19.19), hash13(p + 47.71));
+}
+float valueTile(vec3 p, float cells) {
+  vec3 pc = p * cells;
+  vec3 i = floor(pc);
+  vec3 f = fract(pc);
+  f = f * f * (3.0 - 2.0 * f);
+  float sum = 0.0;
+  for (int dz = 0; dz < 2; dz++) {
+    for (int dy = 0; dy < 2; dy++) {
+      for (int dx = 0; dx < 2; dx++) {
+        vec3 o = vec3(float(dx), float(dy), float(dz));
+        float v = hash13(mod(i + o, cells) + 0.5);
+        vec3 w = mix(1.0 - f, f, o);
+        sum += v * w.x * w.y * w.z;
+      }
+    }
+  }
+  return sum;
+}
+float worleyTile(vec3 p, float cells) {
+  vec3 pc = p * cells;
+  vec3 i = floor(pc);
+  vec3 f = fract(pc);
+  float md = 4.0;
+  for (int dz = -1; dz <= 1; dz++) {
+    for (int dy = -1; dy <= 1; dy++) {
+      for (int dx = -1; dx <= 1; dx++) {
+        vec3 o = vec3(float(dx), float(dy), float(dz));
+        vec3 d = o + hash33(mod(i + o, cells) + 0.5) - f;
+        md = min(md, dot(d, d));
+      }
+    }
+  }
+  return 1.0 - clamp(sqrt(md), 0.0, 1.0);
+}
+void main() {
+  vec3 p = vec3(vUv, uZ);
+  float perlin = 0.5 * valueTile(p, 4.0) + 0.26 * valueTile(p, 8.0) + 0.14 * valueTile(p, 16.0) + 0.10 * valueTile(p, 32.0);
+  float w3 = worleyTile(p, 3.0);
+  float w6 = worleyTile(p, 6.0);
+  float w12 = worleyTile(p, 12.0);
+  fragColor = vec4(clamp(perlin * 0.62 + w3 * 0.38, 0.0, 1.0), w3, w6, w12);
+}`;
 
-#define STEPS 40
-#define LIGHT_STEPS 5
-
-const float CAM_Y = ${CAM_Y.toFixed(4)};
-const float SPREAD = ${SPREAD.toFixed(4)};
-const float BOT = ${CLOUD_BOT.toFixed(4)};
-const float TOP = ${CLOUD_TOP.toFixed(4)};
-const float DOMAIN = ${DOMAIN.toFixed(4)};
-const float SIGMA = 11.0;
-const float SIGMA_L = 7.0;
-const float SHAPE_TILE = 2.5;
-const float DETAIL_TILE = 0.9;
-const vec3 SUN_DIR = normalize(vec3(0.55, 0.72, 0.4));
-const vec3 SUN_COL = vec3(1.0, 0.98, 0.95);
-const vec3 AMB_COL = vec3(0.42, 0.46, 0.55);
-const float PI = 3.14159265;
+    const weatherFs = `#version 300 es
+precision highp float;
+uniform highp sampler3D uNoise3;
+uniform sampler2D uField;
+uniform sampler2D uVel;
+uniform sampler2D uBlueNoise;
+uniform vec2 uResolution;
+uniform int uFrame;
+in vec2 vUv;
+out vec4 fragColor;
 ${simLib}
 
-float worleyFbm(vec4 n) {
-  return n.g * 0.625 + n.b * 0.25 + n.a * 0.125;
-}
+#define STEPS 40
+#define LIGHT_STEPS 4
 
+const vec3 SUN_DIR = normalize(vec3(0.42, 0.78, 0.46));
+const float SIGMA = 14.0;
+const float SIGMA_L = 7.5;
+
+float worleyFbm(vec4 n) {
+  return n.g * 0.6 + n.b * 0.28 + n.a * 0.12;
+}
 float remap(float v, float lo, float hi) {
   return clamp((v - lo) / max(hi - lo, 1e-4), 0.0, 1.0);
 }
 
-vec2 simUv(vec3 p) {
-  return p.xz / DOMAIN + 0.5;
-}
-
-vec4 fieldAt(vec3 p) {
-  return texture(uField, simUv(p));
-}
-
-vec4 fieldSoft(vec2 uv) {
-  vec2 px = vec2(TEX * 1.8);
-  return (
-    texture(uField, uv) * 4.0 +
-    texture(uField, uv + vec2(px.x, 0.0)) +
-    texture(uField, uv - vec2(px.x, 0.0)) +
-    texture(uField, uv + vec2(0.0, px.y)) +
-    texture(uField, uv - vec2(0.0, px.y))
-  ) * 0.125;
-}
-
-float liftSoft(vec2 uv) {
-  float t = TEX * 2.8;
-  float l = texture(uVel, uv - vec2(t, 0.0)).x;
-  float r = texture(uVel, uv + vec2(t, 0.0)).x;
-  float b = texture(uVel, uv - vec2(0.0, t)).y;
-  float tp = texture(uVel, uv + vec2(0.0, t)).y;
-  float w = clamp(-0.5 * ((r - l) + (tp - b)) / DIV_SCALE, -3.0, 3.0);
-  return w;
-}
-
-vec3 weatherP(vec3 p, vec2 vel) {
-  float hn = clamp((p.y - BOT) / (TOP - BOT), 0.0, 1.0);
-  vec2 shear = vel * (0.08 + 0.4 * hn * hn);
-  return p + vec3(shear.x, 0.0, shear.y);
-}
-
-float topBumps(vec2 xz) {
-  float b = 0.72 * texture(uNoise3, vec3(xz.x, 0.0, xz.y) / 4.2).r;
-  b += 0.28 * texture(uNoise3, vec3(xz.x, 2.2, xz.y) / 1.8).r;
-  return clamp((b - 0.3) * 1.35, 0.0, 1.0);
-}
-
 float cloudDensity(vec3 p, bool cheap) {
-  if (p.y < BOT || p.y > TOP) return 0.0;
-
-  vec2 uv = simUv(p);
-  vec4 f = fieldSoft(uv);
-  float qv = f.x;
+  if (p.y < 0.0 || p.y > 1.05) return 0.0;
+  vec4 n0 = texture(uNoise3, vec3(p.x, p.y * 0.7, p.z) * 3.2);
+  vec4 n1 = texture(uNoise3, vec3(p.x, p.y * 0.95, p.z) * 5.6 + 0.19);
+  vec2 warp = (n0.gb - 0.5) * mix(0.018, 0.068, p.y) + (n1.ba - 0.5) * mix(0.01, 0.038, p.y);
+  vec2 uv = p.xz + warp;
+  vec4 f = texture(uField, uv);
   float qc = f.y;
   float temp = f.z;
   float rain = f.w;
-  vec2 vel = texture(uVel, uv).xy;
-  float w = liftSoft(uv);
-
-  float qs = max(qsat(temp), 1e-4);
-  float rh = qv / qs;
-  float condensate = smoothstep(0.004, 0.16, qc);
-  float sat = smoothstep(0.78, 1.08, rh);
-  float lift = mix(0.78, 1.12, smoothstep(-1.0, 1.8, w));
-  float sink = smoothstep(0.9, 2.4, -w) * 0.22;
-  float cover = (condensate * 0.88 + sat * 0.22) * lift * (1.0 - sink);
-  cover = clamp(cover, 0.0, 1.0);
+  float cover = smoothstep(0.008, 0.13, qc);
   if (cover < 0.008) return 0.0;
 
-  float unstable = clamp((temp - tEquilibrium(uv)) * 5.0 + condensate * 0.4, 0.0, 1.0);
-  float wet = smoothstep(0.05, 0.5, rain);
-  float tower = mix(0.34, 1.06, unstable) * mix(0.9, 1.08, smoothstep(-0.6, 1.4, w));
-  tower *= 1.0 - 0.4 * wet;
-
-  vec3 q = weatherP(p, vel);
-  float bump = topBumps(q.xz);
-  float topH = tower * mix(0.55, 1.0, bump);
-  float h = (p.y - BOT) / ((TOP - BOT) * max(topH, 1e-4));
+  float unstable = clamp((temp - tEquilibrium(uv)) * 5.5 + cover * 0.35, 0.0, 1.0);
+  float wet = smoothstep(0.05, 0.45, rain);
+  vec4 bump = texture(uNoise3, vec3(uv.x, 0.15, uv.y) * 3.6);
+  float top = mix(0.28, 1.0, unstable * 0.75 + cover * 0.25) * mix(0.5, 1.08, worleyFbm(bump));
+  top *= 1.0 - 0.35 * wet;
+  float h = p.y / max(top, 1e-4);
   if (h > 1.0) return 0.0;
 
-  float grad = smoothstep(0.0, 0.28, h) * smoothstep(1.0, 0.66, h);
-  if (grad < 0.008) return 0.0;
+  float grad = smoothstep(0.0, 0.16, h) * smoothstep(1.0, 0.7, h);
+  float edge = 1.0 - cover;
+  float mid = smoothstep(0.06, 0.26, h) * smoothstep(0.94, 0.52, h);
+  float puff = mix(n0.r, worleyFbm(n0), 0.55);
+  cover *= mix(1.0, puff, edge * (0.4 + 0.35 * mid));
+  if (cover < 0.008) return 0.0;
 
-  vec4 s = texture(uNoise3, q / SHAPE_TILE);
-  float base = mix(s.r, worleyFbm(s), 0.26);
-  float d = remap(base * grad, (1.0 - cover) * 0.18, 1.0);
-  d *= smoothstep(0.008, 0.14, cover);
-
+  vec3 q = vec3(uv.x, p.y, uv.y) * vec3(3.4, 3.8, 3.4);
+  vec2 vel = texture(uVel, uv).xy;
+  q.xz += vel * (0.05 + 0.16 * h);
+  vec4 s = texture(uNoise3, q);
+  float base = mix(s.r, worleyFbm(s), 0.42);
+  float d = remap(base * grad, edge * 0.16, 1.0);
   if (!cheap && d > 0.0) {
-    vec4 t = texture(uNoise3, q / DETAIL_TILE + 0.37);
-    float amp = 0.07 * (1.0 - h * 0.28) * smoothstep(0.02, 0.32, d);
-    d = remap(d, worleyFbm(t) * amp, 1.0);
+    vec4 t = texture(uNoise3, q * 2.8 + 0.31);
+    d = remap(d, worleyFbm(t) * mix(0.08, 0.18, h) * (0.35 + 0.65 * edge), 1.0);
   }
-
-  d *= mix(1.0, 0.75, wet * (1.0 - h));
-  return clamp(d, 0.0, 1.0) * 2.05;
+  return clamp(d, 0.0, 1.0) * mix(2.0, 2.7, cover);
 }
 
 float lightTau(vec3 p, float jitter) {
   float tau = 0.0;
-  float s = 0.032;
+  float s = 0.04;
   p += SUN_DIR * s * jitter;
   for (int i = 0; i < LIGHT_STEPS; i++) {
     p += SUN_DIR * s;
     tau += cloudDensity(p, true) * s;
-    s *= 1.55;
+    s *= 1.45;
   }
   return tau;
 }
 
-float scatter(float tau) {
-  float sum = 0.0;
-  float att = 1.0;
-  float ext = 1.0;
-  for (int i = 0; i < 3; i++) {
-    sum += att * exp(-tau * SIGMA_L * ext);
-    att *= 0.35;
-    ext *= 0.28;
-  }
-  return sum;
-}
-
-float hg(float g, float mu) {
-  float gg = g * g;
-  return (1.0 - gg) / (4.0 * PI * pow(1.0 + gg - 2.0 * g * mu, 1.5));
-}
-
 void main() {
-  vec2 p = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
-  vec3 ro = vec3(0.0, CAM_Y, 0.0);
-  vec3 rd = normalize(vec3(p.x * SPREAD, -1.0, p.y * SPREAD));
-
-  float tTop = (TOP - ro.y) / rd.y;
-  float tBot = (BOT - ro.y) / rd.y;
-  float stepLen = (tBot - tTop) / float(STEPS);
-
-  float blue = texture(uBlueNoise, gl_FragCoord.xy / 128.0).r;
-  float jitter = fract(blue + float(uFrame % 32) * 0.618034);
-
-  float mu = dot(rd, SUN_DIR);
-  float phase = 0.62 * hg(0.42, mu) + 0.38 * hg(-0.18, mu);
-
-  vec3 acc = vec3(0.0);
+  vec2 nd = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
+  vec3 ro = vec3(vUv.x, 1.55, vUv.y);
+  vec3 rd = normalize(vec3(nd.x * 0.2, -1.0, nd.y * 0.2));
+  float t0 = (1.05 - ro.y) / rd.y;
+  float t1 = (0.0 - ro.y) / rd.y;
+  float dt = (t1 - t0) / float(STEPS);
+  float jitter = fract(texture(uBlueNoise, gl_FragCoord.xy / 128.0).r + float(uFrame % 24) * 0.618034);
+  float t = t0 + dt * jitter;
   float trans = 1.0;
-  float t = tTop + stepLen * jitter;
+  float acc = 0.0;
 
   for (int i = 0; i < STEPS; i++) {
-    if (trans < 0.02) break;
+    if (trans < 0.03) break;
     vec3 pos = ro + rd * t;
     float den = cloudDensity(pos, false);
-
-    if (den > 0.005) {
-      float h = clamp((pos.y - BOT) / (TOP - BOT) * 1.4, 0.0, 1.0);
-      float light = scatter(lightTau(pos, jitter));
-      float powder = 1.0 - exp(-den * 6.0);
-      float rain = fieldAt(pos).w;
-
-      vec3 lit = SUN_COL * (light * phase * 21.0);
-      lit += AMB_COL * mix(0.04, 0.18, h);
-      lit *= mix(0.40, 1.0, powder);
-      lit *= 1.0 - 0.55 * smoothstep(0.05, 0.9, rain) * (1.0 - h);
-
-      float alpha = 1.0 - exp(-den * stepLen * SIGMA);
+    if (den > 0.004) {
+      float light = exp(-lightTau(pos, jitter) * SIGMA_L);
+      float powder = 1.0 - exp(-den * 4.2);
+      float h = clamp(pos.y, 0.0, 1.0);
+      float rain = texture(uField, pos.xz).w;
+      float lit = mix(0.22, 1.05, light) * mix(0.7, 1.08, powder);
+      lit *= mix(1.0, 0.62, smoothstep(0.06, 0.5, rain) * (1.0 - h));
+      float alpha = 1.0 - exp(-den * dt * SIGMA);
       acc += trans * alpha * lit;
       trans *= 1.0 - alpha;
     }
-
-    t += stepLen;
+    t += dt;
   }
 
-  vec3 col = acc;
-  col = col / (1.0 + col * 0.55);
-  col = max(col, 0.0);
-  col = mix(col, col * col * (3.0 - 2.0 * col), 0.15);
-  fragColor = vec4(col, 1.0);
+  float lum = acc / (1.0 + acc * 0.35);
+  fragColor = vec4(vec3(clamp(lum, 0.0, 1.0)), 1.0);
 }`;
 
-    const fieldViewFs = `#version 300 es
+    const inkFs = `#version 300 es
 precision highp float;
-uniform sampler2D uField;
-uniform sampler2D uVel;
+uniform sampler2D uSrc;
+uniform vec2 uA;
+uniform vec2 uB;
+uniform float uWidth;
+uniform float uStrength;
 in vec2 vUv;
 out vec4 fragColor;
 void main() {
-  vec4 f = texture(uField, vUv);
-  vec2 vel = texture(uVel, vUv).xy;
-  vec3 col = vec3(0.0);
-  col += vec3(1.0) * smoothstep(0.0, 0.5, f.y);
-  col += vec3(0.2, 0.4, 1.0) * smoothstep(0.02, 0.8, f.w);
-  col += vec3(0.9, 0.3, 0.1) * smoothstep(0.55, 0.85, f.z) * 0.5;
-  col += vec3(0.1, 0.8, 0.2) * smoothstep(0.0, 0.9, f.x) * 0.25;
-  col += vec3(0.9, 0.9, 0.2) * smoothstep(1.0, 5.0, length(vel)) * 0.3;
-  fragColor = vec4(col, 1.0);
-}`;
-
-    const particleInitFs = `#version 300 es
-precision highp float;
-in vec2 vUv;
-out vec4 fragColor;
-float hash(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-}
-void main() {
-  float x = hash(vUv);
-  float y = hash(vUv + 19.13);
-  float age = hash(vUv + 71.7);
-  fragColor = vec4(x, y, age, 1.0);
-}`;
-
-    const particleAdvectFs = `#version 300 es
-precision highp float;
-uniform sampler2D uParticles;
-uniform sampler2D uVel;
-uniform sampler2D uField;
-uniform float uTime;
-in vec2 vUv;
-out vec4 fragColor;
-${simLib}
-float hash(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-}
-void main() {
-  vec4 p = texture(uParticles, vUv);
-  vec2 vel = texture(uVel, p.xy).xy;
-  p.xy = fract(p.xy + vel * ${PARTICLE_DT.toFixed(4)});
-  p.z += 0.0018;
-  vec4 f = texture(uField, p.xy);
-  if (p.z > 1.0 || hash(p.xy + uTime) > 0.997) {
-    vec2 spawn = vec2(hash(vUv + uTime), hash(vUv + uTime + 4.7));
-    spawn.x = mix(spawn.x, p.xy.x, 0.15);
-    p.xy = spawn;
-    p.z = 0.0;
-  }
-  p.w = clamp(f.y * 2.4 + max(f.z - 0.58, 0.0) * 0.8, 0.0, 1.5);
-  fragColor = p;
+  vec3 prev = texture(uSrc, vUv).rgb;
+  vec2 ab = uB - uA;
+  float len = max(length(ab), 1e-5);
+  vec2 t = ab / len;
+  vec2 rel = vUv - uA;
+  float along = clamp(dot(rel, t), 0.0, len);
+  float dist = length(rel - t * along);
+  float w = exp(-dist * dist / max(uWidth * uWidth, 1e-6));
+  fragColor = vec4(max(prev, vec3(w * uStrength)), 1.0);
 }`;
 
     const fadeFs = `#version 300 es
@@ -780,285 +681,19 @@ void main() {
   fragColor = vec4(texture(uSrc, vUv).rgb * uFade, 1.0);
 }`;
 
-    const particleDrawVs = `#version 300 es
-uniform sampler2D uParticles;
-uniform sampler2D uField;
-uniform sampler2D uVel;
-uniform vec2 uPartSize;
-out float vGain;
-out vec2 vDir;
-out float vStretch;
-out vec2 vSeed;
-float hash(float n) {
-  return fract(sin(n) * 43758.5453123);
-}
-void main() {
-  int w = int(uPartSize.x);
-  int id = gl_VertexID * ${PARTICLE_STRIDE};
-  ivec2 ij = ivec2(id % w, id / w);
-  vec4 p = texelFetch(uParticles, ij, 0);
-  vec4 f = texture(uField, p.xy);
-  vec2 vel = texture(uVel, p.xy).xy;
-  float cover = smoothstep(0.0, 0.26, f.y) * 0.7 + smoothstep(0.0, 0.2, p.w) * 0.3;
-  float s0 = hash(float(id) + 0.5);
-  float s1 = hash(float(id) + 8.3);
-  if (cover < 0.01) {
-    gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
-    gl_PointSize = 0.0;
-    vGain = 0.0;
-    vDir = vec2(1.0, 0.0);
-    vStretch = 0.0;
-    vSeed = vec2(0.0);
-    return;
-  }
-  vSeed = vec2(s0, s1);
-  vGain = mix(0.08, 0.16, s0) * mix(0.4, 1.0, cover);
-  vDir = normalize(vel + vec2(1e-5, 0.0));
-  vStretch = clamp(length(vel) * 0.22, 0.0, 0.85);
-  gl_Position = vec4(p.xy * 2.0 - 1.0, 0.0, 1.0);
-  gl_PointSize = mix(28.0, 46.0, s0) * mix(0.8, 1.25, cover);
-}`;
-
-    const particleDrawFs = `#version 300 es
+    const compositeFs = `#version 300 es
 precision highp float;
-in float vGain;
-in vec2 vDir;
-in float vStretch;
-in vec2 vSeed;
-out vec4 fragColor;
-
-float wyvill2(vec2 p, vec2 c, float s) {
-  vec2 d = (p - c) / s;
-  float a2 = dot(d, d);
-  if (a2 > 1.0) return 0.0;
-  float a4 = a2 * a2;
-  return max(1.0 - (22.0 / 9.0) * a2 + (17.0 / 9.0) * a4 - (4.0 / 9.0) * a4 * a2, 0.0);
-}
-
-void main() {
-  vec2 pc = gl_PointCoord * 2.0 - 1.0;
-  vec2 t = vDir;
-  vec2 n = vec2(-vDir.y, vDir.x);
-  vec2 q = vec2(dot(pc, t) / mix(1.0, 1.55, vStretch), dot(pc, n) * mix(1.0, 1.12, vStretch));
-  vec2 o0 = (vSeed - 0.5) * 0.52;
-  vec2 o1 = vec2(vSeed.y - 0.5, 0.5 - vSeed.x) * 0.44;
-  float fall = wyvill2(q, vec2(0.0), 0.92) * 0.48
-    + wyvill2(q, o0, 0.7) * 0.34
-    + wyvill2(q, o1, 0.58) * 0.28;
-  if (fall < 0.008) discard;
-  fragColor = vec4(vec3(vGain * fall), 1.0);
-}`;
-
-    const blurFs = `#version 300 es
-precision highp float;
-uniform sampler2D uSrc;
+uniform sampler2D uWeather;
+uniform sampler2D uInk;
 in vec2 vUv;
 out vec4 fragColor;
 void main() {
-  vec2 px = 1.0 / vec2(textureSize(uSrc, 0));
-  vec3 acc = texture(uSrc, vUv).rgb * 4.0;
-  acc += texture(uSrc, vUv + vec2(px.x, 0.0)).rgb;
-  acc += texture(uSrc, vUv - vec2(px.x, 0.0)).rgb;
-  acc += texture(uSrc, vUv + vec2(0.0, px.y)).rgb;
-  acc += texture(uSrc, vUv - vec2(0.0, px.y)).rgb;
-  fragColor = vec4(acc / 8.0, 1.0);
+  float cloud = texture(uWeather, vUv).r;
+  float ink = texture(uInk, vUv).r;
+  float lum = max(cloud, ink * 0.55);
+  fragColor = vec4(vec3(lum), 1.0);
 }`;
 
-    const particleDisplayFs = `#version 300 es
-precision highp float;
-uniform sampler2D uDensity;
-uniform sampler2D uField;
-uniform sampler2D uNoise;
-uniform highp sampler3D uNoise3;
-uniform vec2 uResolution;
-in vec2 vUv;
-out vec4 fragColor;
-
-#define STEPS 14
-#define LIGHT_STEPS 4
-
-const vec3 SUN_DIR = normalize(vec3(0.48, 0.76, 0.42));
-const vec3 LIGHT_COL = vec3(1.0, 0.98, 0.95);
-const vec3 SHADE_COL = vec3(0.40, 0.44, 0.52);
-const float PARALLAX = 0.14;
-const float DENSITY_CUTOFF = 0.02;
-const float DENSITY_FACTOR = 0.3;
-const float ATTEN_FACTOR = 0.09;
-const float COLOR_MUL = 1.05;
-
-float wyvill(float a) {
-  float a2 = a * a;
-  float a4 = a2 * a2;
-  return max(1.0 - (22.0 / 9.0) * a2 + (17.0 / 9.0) * a4 - (4.0 / 9.0) * a4 * a2, 0.0);
-}
-
-float worleyFbm(vec4 s) {
-  return s.g * 0.55 + s.b * 0.3 + s.a * 0.15;
-}
-
-float topHeight(vec2 uv) {
-  float h = texture(uDensity, uv).r * mix(0.45, 1.0, smoothstep(0.0, 0.28, texture(uField, uv).y));
-  if (h < DENSITY_CUTOFF) return 0.0;
-  vec4 s1 = texture(uNoise3, vec3(uv * 1.15, 0.1));
-  vec4 s2 = texture(uNoise3, vec3(uv * 2.8, 0.27));
-  vec4 s3 = texture(uNoise3, vec3(uv * 6.2, 0.49));
-  float bump = worleyFbm(s1) * 0.48 + worleyFbm(s2) * 0.34 + s3.b * 0.18;
-  bump = smoothstep(0.12, 0.92, bump);
-  float tower = smoothstep(0.04, 0.24, h);
-  return h * mix(0.2, 1.3, tower) * mix(0.14, 1.32, bump);
-}
-
-float lobe(float y, float mid, float rad) {
-  float a = abs(y - mid) / max(rad, 1e-4);
-  return a < 1.0 ? wyvill(a) : 0.0;
-}
-
-float cloudDen(vec2 uv, float y) {
-  float top = topHeight(uv);
-  if (top < DENSITY_CUTOFF || y > top + 0.02) return 0.0;
-  vec4 s = texture(uNoise3, vec3(uv * 3.1, y * 0.62 + 0.2));
-  float d = 0.0;
-  d += lobe(y, top * 0.3, top * 0.34) * 0.42;
-  d += lobe(y, top * 0.52, top * 0.3) * 0.58;
-  d += lobe(y, top * mix(0.68, 0.88, s.g), top * mix(0.16, 0.26, s.r)) * 0.95;
-  d += lobe(y, top * mix(0.8, 0.97, s.b), top * mix(0.1, 0.18, s.g)) * 0.8;
-  d += lobe(y, top * mix(0.88, 1.02, s.a), top * 0.11) * 0.55;
-  float hn = clamp(y / max(top, 1e-4), 0.0, 1.0);
-  float carve = (1.0 - worleyFbm(s)) * mix(0.04, 0.55, pow(hn, 1.6));
-  d = max(d - carve, 0.0);
-  return d * smoothstep(DENSITY_CUTOFF, 0.1, top) * DENSITY_FACTOR;
-}
-
-float lightAtten(vec2 uv, float y) {
-  float att = 1.0;
-  float s = 0.11;
-  for (int j = 0; j < LIGHT_STEPS; j++) {
-    y += SUN_DIR.y * s;
-    uv += SUN_DIR.xz * s * PARALLAX;
-    att *= 1.0 - cloudDen(uv, y) * ATTEN_FACTOR * (1.0 - float(j) / float(LIGHT_STEPS));
-    s *= 1.25;
-  }
-  return clamp(att, 0.0, 1.0);
-}
-
-float capRelief(vec2 uv, float y, float top) {
-  float hn = clamp(y / max(top, 1e-4), 0.0, 1.0);
-  float amp = smoothstep(0.45, 0.88, hn);
-  vec2 px = vec2(0.01);
-  float c = worleyFbm(texture(uNoise3, vec3(uv * 2.8, 0.27)));
-  float r = worleyFbm(texture(uNoise3, vec3((uv + vec2(px.x, 0.0)) * 2.8, 0.27)));
-  float u = worleyFbm(texture(uNoise3, vec3((uv + vec2(0.0, px.y)) * 2.8, 0.27)));
-  vec3 n = normalize(vec3(c - r, 0.055, c - u));
-  float ndl = max(dot(n, SUN_DIR), 0.0);
-  float peak = smoothstep(0.22, 0.78, c);
-  float body = 0.62;
-  float cap = mix(0.38, 1.12, ndl) * mix(0.68, 1.0, peak);
-  return mix(body, cap, amp);
-}
-
-void main() {
-  if (topHeight(vUv) < DENSITY_CUTOFF * 0.4) {
-    fragColor = vec4(0.0);
-    return;
-  }
-
-  vec2 p = (gl_FragCoord.xy - 0.5 * uResolution) / uResolution.y;
-  vec3 rd = normalize(vec3(p.x * 0.32, -1.0, p.y * 0.32));
-  float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
-  float dt = 1.0 / float(STEPS);
-  float y = 1.0 - dt * jitter;
-  float trans = 1.0;
-  vec3 acc = vec3(0.0);
-
-  for (int i = 0; i < STEPS; i++) {
-    if (trans < 0.05) break;
-    vec2 uv = vUv + rd.xz * (1.0 - y) * PARALLAX;
-    float den = cloudDen(uv, y);
-    if (den > 0.001) {
-      float top = topHeight(uv);
-      float att = lightAtten(uv, y);
-      float wrap = capRelief(uv, y, top);
-      float powder = 1.0 - exp(-den * 4.8);
-      float lit = wrap * mix(0.55, 1.0, att);
-      vec3 col = mix(SHADE_COL, LIGHT_COL, lit);
-      col *= mix(0.78, 1.1, powder);
-      float alpha = 1.0 - exp(-den * dt * 5.4);
-      alpha = min(alpha * COLOR_MUL, 1.0);
-      acc += trans * alpha * col;
-      trans *= 1.0 - alpha;
-    }
-    y -= dt;
-  }
-
-  fragColor = vec4(acc, 1.0);
-}`;
-
-    const accumFs = `#version 300 es
-precision highp float;
-uniform sampler2D uRaw;
-uniform sampler2D uHistory;
-uniform float uBlend;
-in vec2 vUv;
-out vec4 fragColor;
-void main() {
-  vec3 raw = texture(uRaw, vUv).rgb;
-  vec3 hist = texture(uHistory, vUv).rgb;
-  fragColor = vec4(mix(hist, raw, uBlend), 1.0);
-}`;
-
-    const bicubicFs = `#version 300 es
-precision highp float;
-uniform sampler2D uCloud;
-uniform sampler2D uBlueNoise;
-in vec2 vUv;
-out vec4 fragColor;
-
-const float LEVELS = ${DITHER_LEVELS.toFixed(1)};
-const float BLACK_POINT = 0.03;
-const float WHITE_POINT = 0.95;
-const float CONTRAST = 1.10;
-vec4 cubic(float v) {
-  vec4 n = vec4(1.0, 2.0, 3.0, 4.0) - v;
-  vec4 s = n * n * n;
-  float x = s.x;
-  float y = s.y - 4.0 * s.x;
-  float z = s.z - 4.0 * s.y + 6.0 * s.x;
-  float w = 6.0 - x - y - z;
-  return vec4(x, y, z, w) * (1.0 / 6.0);
-}
-vec4 textureBicubic(sampler2D tex, vec2 uv) {
-  vec2 texSize = vec2(textureSize(tex, 0));
-  vec2 invTexSize = 1.0 / texSize;
-  uv = uv * texSize - 0.5;
-  vec2 fxy = fract(uv);
-  uv -= fxy;
-  vec4 xcubic = cubic(fxy.x);
-  vec4 ycubic = cubic(fxy.y);
-  vec4 c = uv.xxyy + vec2(-0.5, 1.5).xyxy;
-  vec4 s = vec4(xcubic.xz + xcubic.yw, ycubic.xz + ycubic.yw);
-  vec4 offset = c + vec4(xcubic.yw, ycubic.yw) / s;
-  offset *= invTexSize.xxyy;
-  vec4 s0 = texture(tex, offset.xz);
-  vec4 s1 = texture(tex, offset.yz);
-  vec4 s2 = texture(tex, offset.xw);
-  vec4 s3 = texture(tex, offset.yw);
-  float sx = s.x / (s.x + s.y);
-  float sy = s.z / (s.z + s.w);
-  return mix(mix(s3, s2, sx), mix(s1, s0, sx), sy);
-}
-void main() {
-  vec3 col = textureBicubic(uCloud, vUv).rgb;
-  float lum = dot(col, vec3(0.299, 0.587, 0.114));
-  lum = clamp((lum - BLACK_POINT) / (WHITE_POINT - BLACK_POINT), 0.0, 1.0);
-  lum = pow(lum, CONTRAST);
-
-  float threshold = texture(uBlueNoise, gl_FragCoord.xy / 128.0).r;
-  float steps = LEVELS - 1.0;
-  float v = floor(lum * steps + threshold) / steps;
-  fragColor = vec4(vec3(clamp(v, 0.0, 1.0)), 1.0);
-}`;
-
-    const noiseGen = makeProgram(blitVs, noiseGenFs, ["uZ"]);
     const thermInit = makeProgram(blitVs, thermInitFs, ["uNoise"]);
     const velInit = makeProgram(blitVs, velInitFs, ["uNoise"]);
     const impulseTherm = makeProgram(blitVs, impulseThermFs, [
@@ -1077,6 +712,23 @@ void main() {
       "uSpin",
       "uConverge",
     ]);
+    const frontTherm = makeProgram(blitVs, frontThermFs, [
+      "uTherm",
+      "uA",
+      "uB",
+      "uWidth",
+      "uCold",
+      "uMoist",
+    ]);
+    const frontVel = makeProgram(blitVs, frontVelFs, [
+      "uVel",
+      "uA",
+      "uB",
+      "uWidth",
+      "uAlong",
+      "uConverge",
+      "uSpin",
+    ]);
     const advectVel = makeProgram(blitVs, advectVelFs, ["uVel"]);
     const advectTherm = makeProgram(blitVs, advectThermFs, [
       "uTherm",
@@ -1084,44 +736,32 @@ void main() {
       "uNoise",
       "uTime",
     ]);
+    const noiseGen = makeProgram(blitVs, noiseGenFs, ["uZ"]);
     const copy = makeProgram(blitVs, copyFs, ["uSrc"]);
     const divergence = makeProgram(blitVs, divergenceFs, ["uVel", "uTherm", "uMean"]);
     const jacobi = makeProgram(blitVs, jacobiFs, ["uPressure", "uDiv"]);
     const project = makeProgram(blitVs, projectFs, ["uVel", "uPressure"]);
-    const march = makeProgram(blitVs, marchFs, [
+    const weather = makeProgram(blitVs, weatherFs, [
       "uNoise3",
-      "uBlueNoise",
       "uField",
       "uVel",
+      "uBlueNoise",
       "uResolution",
       "uFrame",
-      "uTime",
     ]);
-    const fieldView = makeProgram(blitVs, fieldViewFs, ["uField", "uVel"]);
-    const particleInit = makeProgram(blitVs, particleInitFs, []);
-    const particleAdvect = makeProgram(blitVs, particleAdvectFs, [
-      "uParticles",
-      "uVel",
-      "uField",
-      "uTime",
-    ]);
+    const accum = makeProgram(blitVs, `#version 300 es
+precision highp float;
+uniform sampler2D uRaw;
+uniform sampler2D uHistory;
+uniform float uBlend;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(mix(texture(uHistory, vUv).rgb, texture(uRaw, vUv).rgb, uBlend), 1.0);
+}`, ["uRaw", "uHistory", "uBlend"]);
+    const ink = makeProgram(blitVs, inkFs, ["uSrc", "uA", "uB", "uWidth", "uStrength"]);
     const fade = makeProgram(blitVs, fadeFs, ["uSrc", "uFade"]);
-    const blur = makeProgram(blitVs, blurFs, ["uSrc"]);
-    const particleDraw = makeProgram(particleDrawVs, particleDrawFs, [
-      "uParticles",
-      "uField",
-      "uVel",
-      "uPartSize",
-    ]);
-    const particleDisplay = makeProgram(blitVs, particleDisplayFs, [
-      "uDensity",
-      "uField",
-      "uNoise",
-      "uNoise3",
-      "uResolution",
-    ]);
-    const accum = makeProgram(blitVs, accumFs, ["uRaw", "uHistory", "uBlend"]);
-    const display = makeProgram(blitVs, bicubicFs, ["uCloud", "uBlueNoise"]);
+    const composite = makeProgram(blitVs, compositeFs, ["uWeather", "uInk"]);
 
     const programs = [
       noiseGen,
@@ -1129,22 +769,19 @@ void main() {
       velInit,
       impulseTherm,
       impulseVel,
+      frontTherm,
+      frontVel,
       advectVel,
       advectTherm,
       copy,
       divergence,
       jacobi,
       project,
-      march,
-      fieldView,
-      particleInit,
-      particleAdvect,
-      fade,
-      blur,
-      particleDraw,
-      particleDisplay,
+      weather,
       accum,
-      display,
+      ink,
+      fade,
+      composite,
     ];
     if (programs.some((prog) => !prog)) return null;
 
@@ -1167,7 +804,7 @@ void main() {
       return tex;
     }
 
-    function makeTex3(size, data) {
+    function makeTex3(size) {
       const tex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_3D, tex);
       gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -1175,23 +812,18 @@ void main() {
       gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.REPEAT);
       gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.REPEAT);
       gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.REPEAT);
-      gl.texImage3D(
-        gl.TEXTURE_3D,
-        0,
-        gl.RGBA8,
-        size,
-        size,
-        size,
-        0,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        data
-      );
+      gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, size, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
       return tex;
     }
 
+    function bindTex3(unit, tex, loc) {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_3D, tex);
+      gl.uniform1i(loc, unit);
+    }
+
     const noiseTex = makeTex(NOISE_SIZE, NOISE_SIZE, true, makeNoiseData(), false);
-    const noise3Tex = makeTex3(NOISE3_SIZE, null);
+    const noise3Tex = makeTex3(NOISE3_SIZE);
     const blueTex = makeTex(BLUE_SIZE, BLUE_SIZE, true, makeBlueNoiseData(), false);
     gl.bindTexture(gl.TEXTURE_2D, blueTex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -1205,16 +837,6 @@ void main() {
     const meanTex = simTex();
     gl.bindTexture(gl.TEXTURE_2D, meanTex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-
-    function makeParticleTex() {
-      const tex = makeTex(PARTICLE_SIZE, PARTICLE_SIZE, false, null, true);
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      return tex;
-    }
-    const particleTex = [makeParticleTex(), makeParticleTex()];
-    let particlePing = 0;
 
     const simFb = gl.createFramebuffer();
 
@@ -1234,12 +856,6 @@ void main() {
     function bindTex(unit, tex, loc) {
       gl.activeTexture(gl.TEXTURE0 + unit);
       gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.uniform1i(loc, unit);
-    }
-
-    function bindTex3(unit, tex, loc) {
-      gl.activeTexture(gl.TEXTURE0 + unit);
-      gl.bindTexture(gl.TEXTURE_3D, tex);
       gl.uniform1i(loc, unit);
     }
 
@@ -1264,21 +880,20 @@ void main() {
     bindQuad(velInit);
     bindTex(0, noiseTex, velInit.u.uNoise);
     drawSim(velTex[0]);
-
-    bindQuad(particleInit);
-    targetTex(particleTex[0], PARTICLE_SIZE, PARTICLE_SIZE);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
-    const particleVao = gl.createVertexArray();
 
     let thermPing = 0;
     let velPing = 0;
     let prsPing = 0;
+    let weatherTex = null;
     let rawTex = null;
     let accumTex = [null, null];
     let accumPing = 0;
     let accumWarm = false;
+    let inkTex = [null, null];
+    let inkPing = 0;
+    let viewWidth = 0;
+    let viewHeight = 0;
     let marchWidth = 0;
     let marchHeight = 0;
     let displayWidth = 0;
@@ -1287,15 +902,10 @@ void main() {
     let hidden = false;
     let raf = 0;
     let frame = 0;
-    let viewMode = "particles";
-    let trailTex = [null, null];
-    let trailPing = 0;
-    let trailWarm = false;
-    let trailWidth = 0;
-    let trailHeight = 0;
     const impulses = [];
+    const fronts = [];
 
-    function ensureTarget(w, h) {
+    function ensureView(w, h) {
       let mw = Math.max(1, (w * MARCH_SCALE) | 0);
       let mh = Math.max(1, (h * MARCH_SCALE) | 0);
       const longEdge = Math.max(mw, mh);
@@ -1304,43 +914,58 @@ void main() {
         mw = Math.max(1, (mw * s) | 0);
         mh = Math.max(1, (mh * s) | 0);
       }
-      if (mw === marchWidth && mh === marchHeight && rawTex) return;
+      if (w === viewWidth && h === viewHeight && mw === marchWidth && weatherTex) return;
+      viewWidth = w;
+      viewHeight = h;
       marchWidth = mw;
       marchHeight = mh;
+      if (weatherTex) gl.deleteTexture(weatherTex);
       if (rawTex) gl.deleteTexture(rawTex);
       for (const tex of accumTex) if (tex) gl.deleteTexture(tex);
+      for (const tex of inkTex) if (tex) gl.deleteTexture(tex);
+      weatherTex = makeTex(w, h, false, null, false);
       rawTex = makeTex(mw, mh, false, null, false);
       accumTex = [makeTex(mw, mh, false, null, false), makeTex(mw, mh, false, null, false)];
+      inkTex = [makeTex(w, h, false, null, false), makeTex(w, h, false, null, false)];
       accumWarm = false;
     }
 
-    function ensureTrail(w, h) {
-      const tw = Math.max(1, (w * TRAIL_SCALE) | 0);
-      const th = Math.max(1, (h * TRAIL_SCALE) | 0);
-      if (tw === trailWidth && th === trailHeight && trailTex[0]) return;
-      trailWidth = tw;
-      trailHeight = th;
-      for (const tex of trailTex) if (tex) gl.deleteTexture(tex);
-      trailTex = [makeTex(tw, th, false, null, false), makeTex(tw, th, false, null, false)];
-      trailWarm = false;
+    function screenToSim(sx, sy) {
+      return { x: sx, y: sy };
     }
 
-    function screenToSim(sx, sy) {
-      const aspect = displayHeight > 0 ? displayWidth / displayHeight : 1;
-      const px = (sx - 0.5) * aspect;
-      const py = sy - 0.5;
-      const reach = (CAM_Y - (CLOUD_BOT + CLOUD_TOP) * 0.5) * SPREAD;
-      return {
-        x: (px * reach) / DOMAIN + 0.5,
-        y: (py * reach) / DOMAIN + 0.5,
-        scale: reach / DOMAIN,
-      };
+    function applyFront(seg) {
+      const srcT = thermPing;
+      const dstT = 1 - thermPing;
+      bindQuad(frontTherm);
+      bindTex(0, thermTex[srcT], frontTherm.u.uTherm);
+      gl.uniform2f(frontTherm.u.uA, seg.ax, seg.ay);
+      gl.uniform2f(frontTherm.u.uB, seg.bx, seg.by);
+      gl.uniform1f(frontTherm.u.uWidth, seg.width);
+      gl.uniform1f(frontTherm.u.uCold, seg.cold);
+      gl.uniform1f(frontTherm.u.uMoist, seg.moist);
+      drawSim(thermTex[dstT]);
+      thermPing = dstT;
+
+      const srcV = velPing;
+      const dstV = 1 - velPing;
+      bindQuad(frontVel);
+      bindTex(0, velTex[srcV], frontVel.u.uVel);
+      gl.uniform2f(frontVel.u.uA, seg.ax, seg.ay);
+      gl.uniform2f(frontVel.u.uB, seg.bx, seg.by);
+      gl.uniform1f(frontVel.u.uWidth, seg.width);
+      gl.uniform1f(frontVel.u.uAlong, seg.along);
+      gl.uniform1f(frontVel.u.uConverge, seg.converge);
+      gl.uniform1f(frontVel.u.uSpin, seg.spin);
+      drawSim(velTex[dstV]);
+      velPing = dstV;
     }
 
     function applyImpulses() {
+      while (fronts.length) applyFront(fronts.shift());
+
       while (impulses.length) {
         const imp = impulses.shift();
-
         if (imp.heat || imp.moist) {
           const src = thermPing;
           const dst = 1 - thermPing;
@@ -1353,7 +978,6 @@ void main() {
           drawSim(thermTex[dst]);
           thermPing = dst;
         }
-
         if (imp.force || imp.spin || imp.converge) {
           const src = velPing;
           const dst = 1 - velPing;
@@ -1413,26 +1037,31 @@ void main() {
       bindTex(1, prsTex[prsPing], project.u.uPressure);
       drawSim(velTex[1 - velPing]);
       velPing = 1 - velPing;
-
-      bindQuad(particleAdvect);
-      bindTex(0, particleTex[particlePing], particleAdvect.u.uParticles);
-      bindTex(1, velTex[velPing], particleAdvect.u.uVel);
-      bindTex(2, thermTex[thermPing], particleAdvect.u.uField);
-      gl.uniform1f(particleAdvect.u.uTime, frame * 0.016);
-      targetTex(particleTex[1 - particlePing], PARTICLE_SIZE, PARTICLE_SIZE);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-      particlePing = 1 - particlePing;
     }
 
-    function marchClouds() {
-      bindQuad(march);
-      bindTex3(3, noise3Tex, march.u.uNoise3);
-      bindTex(1, blueTex, march.u.uBlueNoise);
-      bindTex(2, thermTex[thermPing], march.u.uField);
-      bindTex(4, velTex[velPing], march.u.uVel);
-      gl.uniform2f(march.u.uResolution, marchWidth, marchHeight);
-      gl.uniform1i(march.u.uFrame, frame);
-      gl.uniform1f(march.u.uTime, frame * 0.016);
+    function fadeInk() {
+      if (!inkTex[0]) return;
+      const src = inkPing;
+      const dst = 1 - inkPing;
+      bindQuad(fade);
+      bindTex(0, inkTex[src], fade.u.uSrc);
+      gl.uniform1f(fade.u.uFade, 0.94);
+      targetTex(inkTex[dst], viewWidth, viewHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      inkPing = dst;
+    }
+
+    function drawWeather() {
+      ensureView(displayWidth, displayHeight);
+      fadeInk();
+
+      bindQuad(weather);
+      bindTex3(3, noise3Tex, weather.u.uNoise3);
+      bindTex(0, thermTex[thermPing], weather.u.uField);
+      bindTex(1, velTex[velPing], weather.u.uVel);
+      bindTex(2, blueTex, weather.u.uBlueNoise);
+      gl.uniform2f(weather.u.uResolution, marchWidth, marchHeight);
+      gl.uniform1i(weather.u.uFrame, frame);
       targetTex(rawTex, marchWidth, marchHeight);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
 
@@ -1441,19 +1070,22 @@ void main() {
       bindQuad(accum);
       bindTex(0, rawTex, accum.u.uRaw);
       bindTex(1, accumWarm ? accumTex[histSrc] : rawTex, accum.u.uHistory);
-      gl.uniform1f(accum.u.uBlend, accumWarm ? 0.28 : 1.0);
+      gl.uniform1f(accum.u.uBlend, accumWarm ? 0.48 : 1.0);
       targetTex(accumTex[histDst], marchWidth, marchHeight);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       accumPing = histDst;
       accumWarm = true;
-    }
 
-    function drawParticles() {
-      marchClouds();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, displayWidth, displayHeight);
       bindQuad(copy);
       bindTex(0, accumTex[accumPing], copy.u.uSrc);
+      targetTex(weatherTex, viewWidth, viewHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, displayWidth, displayHeight);
+      bindQuad(composite);
+      bindTex(0, weatherTex, composite.u.uWeather);
+      bindTex(1, inkTex[inkPing], composite.u.uInk);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
@@ -1462,39 +1094,13 @@ void main() {
       if (!running || hidden) return;
       raf = requestAnimationFrame(render);
       if (displayWidth <= 0 || displayHeight <= 0) return;
-
-      ensureTarget(displayWidth, displayHeight);
       if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
         canvas.width = displayWidth;
         canvas.height = displayHeight;
       }
-
       stepSim();
       frame++;
-
-      if (viewMode === "field") {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.viewport(0, 0, displayWidth, displayHeight);
-        bindQuad(fieldView);
-        bindTex(0, thermTex[thermPing], fieldView.u.uField);
-        bindTex(1, velTex[velPing], fieldView.u.uVel);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
-        return;
-      }
-
-      if (viewMode !== "clouds") {
-        drawParticles();
-        return;
-      }
-
-      marchClouds();
-
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, displayWidth, displayHeight);
-      bindQuad(display);
-      bindTex(0, accumTex[accumPing], display.u.uCloud);
-      bindTex(1, blueTex, display.u.uBlueNoise);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      drawWeather();
     }
 
     function start() {
@@ -1514,39 +1120,6 @@ void main() {
         running = value;
         start();
       },
-      setView(mode) {
-        viewMode = mode === "field" ? "field" : mode === "clouds" ? "clouds" : "particles";
-        accumWarm = false;
-        trailWarm = false;
-      },
-      stats() {
-        const size = 64;
-        const out = {};
-        const read = (tex, label, names) => {
-          gl.bindFramebuffer(gl.FRAMEBUFFER, simFb);
-          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-          const buf = new Float32Array(size * size * 4);
-          gl.readPixels(0, 0, size, size, gl.RGBA, gl.FLOAT, buf);
-          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-          names.forEach((name, ch) => {
-            if (!name) return;
-            let min = Infinity;
-            let max = -Infinity;
-            let sum = 0;
-            for (let i = 0; i < size * size; i++) {
-              const v = buf[i * 4 + ch];
-              if (v < min) min = v;
-              if (v > max) max = v;
-              sum += v;
-            }
-            out[`${label}.${name}`] = [min, sum / (size * size), max].map((v) => +v.toFixed(4));
-          });
-        };
-        read(thermTex[thermPing], "therm", ["qv", "qc", "T", "rain"]);
-        read(velTex[velPing], "vel", ["u", "v"]);
-        read(divTex, "rhs", ["div"]);
-        return out;
-      },
       addImpulse(imp) {
         const at = screenToSim(imp.sx, imp.sy);
         const dx = imp.dx || 0;
@@ -1558,12 +1131,41 @@ void main() {
           dx: len > 1e-6 ? dx / len : 0,
           dy: len > 1e-6 ? dy / len : 0,
           radius: imp.radius || 0.06,
-          force: len > 1e-6 ? Math.min(len * 90, 3.0) : 0,
+          force: len > 1e-6 ? Math.min(len * 70, 2.2) : 0,
           spin: imp.spin || 0,
           converge: imp.converge || 0,
           heat: imp.heat || 0,
           moist: imp.moist || 0,
         });
+      },
+      addFront(seg) {
+        const a = screenToSim(seg.ax, seg.ay);
+        const b = screenToSim(seg.bx, seg.by);
+        fronts.push({
+          ax: a.x,
+          ay: a.y,
+          bx: b.x,
+          by: b.y,
+          width: seg.width || 0.035,
+          cold: seg.cold || 0.045,
+          moist: seg.moist || 0.08,
+          along: seg.along || 0.22,
+          converge: seg.converge || 0.16,
+          spin: seg.spin || 0.12,
+        });
+        if (inkTex[0]) {
+          const src = inkPing;
+          const dst = 1 - inkPing;
+          bindQuad(ink);
+          bindTex(0, inkTex[src], ink.u.uSrc);
+          gl.uniform2f(ink.u.uA, a.x, a.y);
+          gl.uniform2f(ink.u.uB, b.x, b.y);
+          gl.uniform1f(ink.u.uWidth, 0.01);
+          gl.uniform1f(ink.u.uStrength, 0.7);
+          targetTex(inkTex[dst], viewWidth, viewHeight);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          inkPing = dst;
+        }
       },
     };
   }

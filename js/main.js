@@ -13,14 +13,14 @@ function init() {
       else if (msg.type === "running") renderer.setRunning(msg.v);
       else if (msg.type === "hidden") renderer.setHidden(msg.v);
       else if (msg.type === "impulse") renderer.addImpulse(msg);
-      else if (msg.type === "view") renderer.setView(msg.v);
+      else if (msg.type === "front") renderer.addFront(msg);
       return;
     }
     pending.push(msg);
   }
 
   const script = document.createElement("script");
-  script.src = "js/renderer.js?v=123";
+  script.src = "js/renderer.js?v=204";
   script.onload = () => {
     const r = self.createRenderer(canvas);
     if (!r) {
@@ -53,35 +53,44 @@ function init() {
   let down = false;
   let last = null;
   let moved = false;
-  let spinning = false;
+  let cyclone = false;
   let holdTimer = 0;
 
-  function seed(p, strength) {
+  function seedMoisture(p, strength) {
     send({
       type: "impulse",
       sx: p.x,
       sy: p.y,
-      radius: 0.045,
-      heat: 0.18 * strength,
-      moist: 0.34 * strength,
-      spin: 0.16 * strength,
-      converge: 0.3 * strength,
+      radius: 0.055,
+      heat: 0.04 * strength,
+      moist: 0.28 * strength,
+    });
+  }
+
+  function seedCyclone(p, strength) {
+    send({
+      type: "impulse",
+      sx: p.x,
+      sy: p.y,
+      radius: 0.08,
+      heat: 0.06 * strength,
+      moist: 0.22 * strength,
+      spin: 0.42 * strength,
+      converge: 0.28 * strength,
     });
   }
 
   function onDown(e) {
     down = true;
     moved = false;
-    spinning = e.shiftKey;
+    cyclone = e.shiftKey;
     last = toScreen(e);
-    if (spinning) {
-      send({ type: "impulse", sx: last.x, sy: last.y, radius: 0.07, spin: 0.5 });
-    } else {
-      seed(last, 1);
-      holdTimer = window.setInterval(() => {
-        if (down && !moved && last) seed(last, 0.5);
-      }, 90);
-    }
+    holdTimer = window.setInterval(() => {
+      if (down && !moved && last) {
+        if (cyclone) seedCyclone(last, 0.45);
+        else seedMoisture(last, 0.45);
+      }
+    }, 90);
   }
 
   function onMove(e) {
@@ -89,26 +98,47 @@ function init() {
     const p = toScreen(e);
     const dx = p.x - last.x;
     const dy = p.y - last.y;
-    if (dx * dx + dy * dy < 2e-6) return;
+    if (dx * dx + dy * dy < 1.6e-6) return;
     moved = true;
-    if (spinning) {
-      send({ type: "impulse", sx: p.x, sy: p.y, radius: 0.07, spin: 0.22 });
+    if (cyclone) {
+      send({
+        type: "impulse",
+        sx: p.x,
+        sy: p.y,
+        radius: 0.07,
+        spin: 0.2,
+        converge: 0.1,
+        moist: 0.04,
+      });
     } else {
-      send({ type: "impulse", sx: p.x, sy: p.y, dx, dy, radius: 0.03 });
+      send({
+        type: "front",
+        ax: last.x,
+        ay: last.y,
+        bx: p.x,
+        by: p.y,
+        width: 0.032,
+        cold: 0.05,
+        moist: 0.09,
+        along: 0.24,
+        converge: 0.18,
+        spin: 0.1,
+      });
     }
     last = p;
   }
 
   function onUp() {
     if (!down) return;
+    if (!moved && last) {
+      if (cyclone) seedCyclone(last, 1);
+      else seedMoisture(last, 1);
+    }
     down = false;
-    spinning = false;
+    cyclone = false;
     last = null;
     window.clearInterval(holdTimer);
   }
-
-  self.setCloudView = (mode) => send({ type: "view", v: mode });
-  self.cloudStats = () => (renderer ? renderer.stats() : null);
 
   window.addEventListener("pointerdown", onDown);
   window.addEventListener("pointermove", onMove);
