@@ -121,10 +121,10 @@ void main() {
 const float SIM = ${SIM_SIZE.toFixed(1)};
 const float TEX = 1.0 / SIM;
 const float TREF = 0.60;
-const float CORIOLIS = 0.003;
+const float CORIOLIS = 0.014;
 const float JET_AMP = 0.0;
 const float JET_RELAX = 0.0006;
-const float VEL_MAX = 2.6;
+const float VEL_MAX = 3.1;
 const float CONV_BUOY = 0.004;
 const float CONV_RAIN = 0.006;
 const float BUOY_T = 0.4;
@@ -139,12 +139,17 @@ const float RAIN_THRESH = 0.16;
 const float RAIN_RATE = 0.045;
 const float RAIN_DECAY = 0.94;
 const float RAIN_COOL = 0.0006;
-const float TRIGGER_T = 0.0;
-const float TRIGGER_Q = 0.0;
+const float TRIGGER_T = 0.0004;
+const float TRIGGER_Q = 0.0008;
 const float SURF_EVAP = 0.0024;
 const float SURF_RH = 0.82;
 const float RAD_RELAX = 0.0035;
-const float CLOUD_ADV = 0.35;
+const float CLOUD_ADV = 0.45;
+const float THERM_ADV = 2.6;
+const float WISHE = 4.4;
+const float CONV_STORM = 0.0014;
+const float EYE_SUBSIDE = 0.0008;
+const float STRETCH = 1.55;
 
 vec2 jetAt(vec2 uv) {
   return vec2(JET_AMP * sin(6.2831853 * uv.y), 0.0);
@@ -164,6 +169,21 @@ float divergenceAt(sampler2D vel, vec2 uv) {
   float b = texture(vel, uv - vec2(0.0, TEX)).y;
   float t = texture(vel, uv + vec2(0.0, TEX)).y;
   return 0.5 * ((r - l) + (t - b));
+}
+
+float vorticityAt(sampler2D vel, vec2 uv) {
+  float dvxdy = texture(vel, uv + vec2(0.0, TEX)).x - texture(vel, uv - vec2(0.0, TEX)).x;
+  float dvydx = texture(vel, uv + vec2(TEX, 0.0)).y - texture(vel, uv - vec2(TEX, 0.0)).y;
+  return 0.5 * (dvydx - dvxdy);
+}
+
+float vortSmooth(sampler2D vel, vec2 uv) {
+  float a = abs(vorticityAt(vel, uv));
+  a += abs(vorticityAt(vel, uv + vec2(2.0 * TEX, 0.0)));
+  a += abs(vorticityAt(vel, uv - vec2(2.0 * TEX, 0.0)));
+  a += abs(vorticityAt(vel, uv + vec2(0.0, 2.0 * TEX)));
+  a += abs(vorticityAt(vel, uv - vec2(0.0, 2.0 * TEX)));
+  return a * 0.2;
 }
 
 vec2 wrapTo(vec2 p, vec2 a) {
@@ -270,6 +290,39 @@ void main() {
   fragColor = vec4(vel, 0.0, 1.0);
 }`;
 
+    const cycloneVelFs = `#version 300 es
+precision highp float;
+uniform sampler2D uVel;
+uniform vec2 uPoint;
+uniform float uRadius;
+uniform float uSpin;
+uniform float uMix;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec2 vel = texture(uVel, vUv).xy;
+  vec2 rel = wrapTo(vUv, uPoint);
+  float r = length(rel);
+  float rad = max(uRadius, 1e-5);
+  if (r < rad * 1.65 && uMix > 0.001) {
+    float r0 = rad * 0.1;
+    float lo = 1.0 - exp(-dot(rel, rel) / max(r0 * r0, 1e-8));
+    float vth = uSpin * lo * r0 / max(r, r0 * 0.4);
+    vth *= smoothstep(1.65, 0.85, r / rad);
+    vec2 radial = rel / max(r, 1e-5);
+    vec2 tang = vec2(-radial.y, radial.x);
+    float vr = dot(vel, radial);
+    float vt = mix(dot(vel, tang), vth, uMix);
+    float inflow = smoothstep(0.1, 0.4, r / rad) * smoothstep(1.9, 0.75, r / rad);
+    vr = mix(vr, -0.45 * vth, uMix * 0.7 * inflow);
+    vel = tang * vt + radial * vr;
+  }
+  float speed = length(vel);
+  if (speed > VEL_MAX) vel *= VEL_MAX / speed;
+  fragColor = vec4(vel, 0.0, 1.0);
+}`;
+
     const frontThermFs = `#version 300 es
 precision highp float;
 uniform sampler2D uTherm;
@@ -338,17 +391,34 @@ void main() {
     const advectVelFs = `#version 300 es
 precision highp float;
 uniform sampler2D uVel;
+uniform sampler2D uTherm;
 in vec2 vUv;
 out vec4 fragColor;
 ${simLib}
 void main() {
   vec2 here = texture(uVel, vUv).xy;
   vec2 vel = texture(uVel, vUv - here * TEX).xy;
-  float c = cos(CORIOLIS);
-  float s = sin(CORIOLIS);
-  vel = vec2(c * vel.x + s * vel.y, -s * vel.x + c * vel.y);
+  vel += vec2(CORIOLIS * vel.y, -CORIOLIS * vel.x);
   vel += (jetAt(vUv) - vel) * JET_RELAX;
-  vel *= 0.988;
+  vec2 vn = texture(uVel, vUv + vec2(0.0, TEX)).xy;
+  vec2 vs = texture(uVel, vUv - vec2(0.0, TEX)).xy;
+  vec2 ve = texture(uVel, vUv + vec2(TEX, 0.0)).xy;
+  vec2 vw = texture(uVel, vUv - vec2(TEX, 0.0)).xy;
+  vec2 mean = 0.25 * (vn + vs + ve + vw);
+  vec2 rot = vel - mean;
+  float div = divergenceAt(uVel, vUv);
+  vec4 s = texture(uTherm, vUv);
+  float cover = smoothstep(0.025, 0.16, s.y);
+  float moist = smoothstep(0.02, 0.14, s.x);
+  float vort = abs(vorticityAt(uVel, vUv));
+  float org = smoothstep(0.01, 0.07, vort);
+  float convect = cover * moist * mix(0.18, 1.0, org);
+  float sink = convect * STRETCH;
+  float stretch = (vort + CORIOLIS * 6.0) * sink;
+  rot *= 1.0 + clamp((-div / DIV_SCALE) * 0.08, -0.04, 0.08) + clamp(stretch, -0.03, 0.24);
+  vel = mean + rot;
+  float storm = smoothstep(0.014, 0.08, vort) * smoothstep(0.02, 0.12, s.y);
+  vel *= mix(0.992, 0.9995, storm);
   float speed = length(vel);
   if (speed > VEL_MAX) vel *= VEL_MAX / speed;
   fragColor = vec4(vel, 0.0, 1.0);
@@ -359,13 +429,30 @@ precision highp float;
 uniform sampler2D uTherm;
 uniform sampler2D uVel;
 uniform sampler2D uNoise;
+uniform sampler2D uSst;
 uniform float uTime;
+uniform vec4 uEye0;
+uniform vec4 uEye1;
+uniform vec4 uEye2;
+uniform vec4 uEye3;
+uniform int uEyeN;
 in vec2 vUv;
 out vec4 fragColor;
 ${simLib}
 ${noiseLib}
+float eyeEnv(vec2 uv) {
+  float e = 0.0;
+  for (int i = 0; i < 4; i++) {
+    if (i >= uEyeN) break;
+    vec4 s = i == 0 ? uEye0 : i == 1 ? uEye1 : i == 2 ? uEye2 : uEye3;
+    float rn = length(wrapTo(uv, s.xy)) / max(s.z, 1e-5);
+    e = max(e, s.w * exp(-rn * rn));
+  }
+  return e;
+}
 void main() {
-  vec2 vel = texture(uVel, vUv).xy * CLOUD_ADV;
+  vec2 raw = texture(uVel, vUv).xy;
+  vec2 vel = raw * THERM_ADV;
   vec2 src = vUv - vel * TEX;
   vec4 s = texture(uTherm, src);
   vec4 blur = 0.25 * (
@@ -400,8 +487,10 @@ void main() {
   qv += TRIGGER_Q * trigger;
 
   float qs = qsat(t);
-  float speed = length(vel);
-  qv += SURF_EVAP * (1.0 + 0.35 * speed) * max(qs * SURF_RH - qv, 0.0);
+  float wind = length(raw);
+  float sst = texture(uSst, vUv).x;
+  qv += SURF_EVAP * (0.55 + WISHE * wind) * (1.0 + 3.2 * sst) * max(qs * SURF_RH - qv, 0.0);
+  t += 0.00035 * sst * (0.55 + wind);
   qs = qsat(t);
   float excess = qv - qs;
   float cond = excess > 0.0 ? excess * COND_RATE : -min(qc, -excess * REVAP_RATE);
@@ -409,7 +498,12 @@ void main() {
   qc += cond;
   t += LATENT * cond;
 
-  float fall = max(qc - RAIN_THRESH, 0.0) * RAIN_RATE;
+  float core = smoothstep(0.025, 0.11, abs(vorticityAt(uVel, vUv)));
+  float eyeW = eyeEnv(vUv) * (1.0 - smoothstep(0.12, 0.45, wind));
+  qc = max(qc - eyeW * (qc * 0.12 + 0.002), 0.0);
+  qv -= eyeW * qv * 0.01;
+  t += eyeW * 0.0022;
+  float fall = max(qc - mix(RAIN_THRESH, RAIN_THRESH + 0.07, core), 0.0) * mix(RAIN_RATE, RAIN_RATE * 0.42, core);
   qc -= fall;
   rain = rain * RAIN_DECAY + fall * 4.0;
   t -= RAIN_COOL * rain;
@@ -437,15 +531,37 @@ precision highp float;
 uniform sampler2D uVel;
 uniform sampler2D uTherm;
 uniform sampler2D uMean;
+uniform vec4 uSeed0;
+uniform vec4 uSeed1;
+uniform vec4 uSeed2;
+uniform vec4 uSeed3;
+uniform int uSeedN;
 in vec2 vUv;
 out vec4 fragColor;
 ${simLib}
+float seedEnv(vec2 uv) {
+  float e = 0.0;
+  for (int i = 0; i < 4; i++) {
+    if (i >= uSeedN) break;
+    vec4 s = i == 0 ? uSeed0 : i == 1 ? uSeed1 : i == 2 ? uSeed2 : uSeed3;
+    float rn = length(wrapTo(uv, s.xy)) / max(s.z, 1e-5);
+    e = max(e, smoothstep(1.2, 0.32, rn));
+  }
+  return e;
+}
 void main() {
   float div = divergenceAt(uVel, vUv);
   vec4 s = texture(uTherm, vUv);
   vec4 avg = textureLod(uMean, vec2(0.5), ${SIM_MIP.toFixed(1)});
   float buoy = (s.z - avg.z) * BUOY_T + (s.y - avg.y) * BUOY_QC;
-  float target = -CONV_BUOY * buoy + CONV_RAIN * (s.w - avg.w);
+  float cover = smoothstep(0.03, 0.18, s.y);
+  float vort = vortSmooth(uVel, vUv);
+  float org = max(seedEnv(vUv), smoothstep(0.014, 0.08, vort));
+  float moist = smoothstep(0.02, 0.12, s.x);
+  float convect = cover * mix(0.35, 1.0, moist) * mix(0.2, 1.0, org);
+  float speed = length(texture(uVel, vUv).xy);
+  float eye = smoothstep(0.06, 0.16, vort) * (1.0 - smoothstep(0.18, 0.5, speed)) * org;
+  float target = -CONV_BUOY * buoy + CONV_RAIN * (s.w - avg.w) - CONV_STORM * convect + EYE_SUBSIDE * eye;
   fragColor = vec4(div - target, 0.0, 0.0, 1.0);
 }`;
 
@@ -601,7 +717,7 @@ float cloudDensity(vec3 p, bool cheap) {
   );
   float fresh0 = smoothstep(0.03, 0.14, abs(f0.y - qcN0) * 7.0);
   vec2 warp = (n0.gb - 0.5) * mix(0.03, 0.11, h) + (n1.ba - 0.5) * mix(0.016, 0.06, h);
-  warp += vel * CLOUD_ADV * h * 0.045;
+  warp += vel * CLOUD_ADV * h * 0.04;
   warp += (n0.ra - 0.5) * fresh0 * mix(0.02, 0.09, h);
   vec2 uv = p.xz + warp;
   vec4 f = texture(uField, uv);
@@ -933,6 +1049,86 @@ void main() {
       "uSpin",
       "uConverge",
     ]);
+    const systemLineVelFs = `#version 300 es
+precision highp float;
+uniform sampler2D uVel;
+uniform vec2 uA;
+uniform vec2 uB;
+uniform float uWidth;
+uniform float uSign;
+uniform float uMix;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec2 vel = texture(uVel, vUv).xy;
+  vec2 ab = wrapTo(uB, uA);
+  float len = max(length(ab), 1e-5);
+  vec2 t = ab / len;
+  vec2 rel = wrapTo(vUv, uA);
+  float along = clamp(dot(rel, t), 0.0, len);
+  vec2 closest = t * along;
+  vec2 d = rel - closest;
+  float dist = length(d);
+  float rad = max(uWidth, 1e-5);
+  if (dist < rad * 2.1 && uMix > 0.001) {
+    float env = exp(-dist * dist / max(rad * rad, 1e-8));
+    float taper = smoothstep(0.0, rad * 0.35, along) * smoothstep(len, len - rad * 0.35, along);
+    env *= mix(0.5, 1.0, taper);
+    vec2 radial = d / max(dist, 1e-5);
+    vec2 tang = vec2(-radial.y, radial.x);
+    float vth = uSign * 0.9;
+    float vr = -uSign * 0.13;
+    vec2 target = tang * vth + radial * vr + t * 0.05;
+    vel = mix(vel, target, 0.3 * env * uMix);
+  }
+  float speed = length(vel);
+  if (speed > VEL_MAX) vel *= VEL_MAX / speed;
+  fragColor = vec4(vel, 0.0, 1.0);
+}`;
+
+    const sstStampFs = `#version 300 es
+precision highp float;
+uniform sampler2D uSst;
+uniform vec2 uPoint;
+uniform float uRadius;
+uniform float uWarm;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  float s = texture(uSst, vUv).x;
+  vec2 rel = wrapTo(vUv, uPoint);
+  float w = exp(-dot(rel, rel) / max(uRadius * uRadius, 1e-6));
+  fragColor = vec4(clamp(s + uWarm * w, 0.0, 1.0), 0.0, 0.0, 1.0);
+}`;
+
+    const sstRelaxFs = `#version 300 es
+precision highp float;
+uniform sampler2D uSst;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(texture(uSst, vUv).x * 0.9997, 0.0, 0.0, 1.0);
+}`;
+
+    const cycloneVel = makeProgram(blitVs, cycloneVelFs, [
+      "uVel",
+      "uPoint",
+      "uRadius",
+      "uSpin",
+      "uMix",
+    ]);
+    const systemLineVel = makeProgram(blitVs, systemLineVelFs, [
+      "uVel",
+      "uA",
+      "uB",
+      "uWidth",
+      "uSign",
+      "uMix",
+    ]);
+    const sstStamp = makeProgram(blitVs, sstStampFs, ["uSst", "uPoint", "uRadius", "uWarm"]);
+    const sstRelax = makeProgram(blitVs, sstRelaxFs, ["uSst"]);
     const frontTherm = makeProgram(blitVs, frontThermFs, [
       "uTherm",
       "uA",
@@ -950,16 +1146,31 @@ void main() {
       "uConverge",
       "uSpin",
     ]);
-    const advectVel = makeProgram(blitVs, advectVelFs, ["uVel"]);
+    const advectVel = makeProgram(blitVs, advectVelFs, ["uVel", "uTherm"]);
     const advectTherm = makeProgram(blitVs, advectThermFs, [
       "uTherm",
       "uVel",
       "uNoise",
+      "uSst",
       "uTime",
+      "uEye0",
+      "uEye1",
+      "uEye2",
+      "uEye3",
+      "uEyeN",
     ]);
     const noiseGen = makeProgram(blitVs, noiseGenFs, ["uZ"]);
     const copy = makeProgram(blitVs, copyFs, ["uSrc"]);
-    const divergence = makeProgram(blitVs, divergenceFs, ["uVel", "uTherm", "uMean"]);
+    const divergence = makeProgram(blitVs, divergenceFs, [
+      "uVel",
+      "uTherm",
+      "uMean",
+      "uSeed0",
+      "uSeed1",
+      "uSeed2",
+      "uSeed3",
+      "uSeedN",
+    ]);
     const jacobi = makeProgram(blitVs, jacobiFs, ["uPressure", "uDiv"]);
     const project = makeProgram(blitVs, projectFs, ["uVel", "uPressure"]);
     const weather = makeProgram(blitVs, weatherFs, [
@@ -997,6 +1208,10 @@ void main() {
       velInit,
       impulseTherm,
       impulseVel,
+      cycloneVel,
+      systemLineVel,
+      sstStamp,
+      sstRelax,
       frontTherm,
       frontVel,
       advectVel,
@@ -1062,6 +1277,7 @@ void main() {
     const thermTex = [simTex(), simTex()];
     const velTex = [simTex(), simTex()];
     const stormTex = [simTex(), simTex()];
+    const sstTex = [simTex(), simTex()];
     const prsTex = [simTex(), simTex()];
     const divTex = simTex();
     const meanTex = simTex();
@@ -1115,11 +1331,16 @@ void main() {
     gl.clear(gl.COLOR_BUFFER_BIT);
     targetTex(stormTex[1], SIM_SIZE, SIM_SIZE);
     gl.clear(gl.COLOR_BUFFER_BIT);
+    targetTex(sstTex[0], SIM_SIZE, SIM_SIZE);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    targetTex(sstTex[1], SIM_SIZE, SIM_SIZE);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
     let thermPing = 0;
     let velPing = 0;
     let stormPing = 0;
+    let sstPing = 0;
     let prsPing = 0;
     let weatherTex = null;
     let rawTex = null;
@@ -1144,6 +1365,8 @@ void main() {
     let onFps = null;
     const impulses = [];
     const fronts = [];
+    const warms = [];
+    let systems = [];
 
     function ensureView(w, h) {
       let mw = Math.max(1, (w * MARCH_SCALE) | 0);
@@ -1201,240 +1424,144 @@ void main() {
       velPing = dstV;
     }
 
+    function applyImpulse(imp) {
+      if (imp.heat || imp.moist) {
+        const src = thermPing;
+        const dst = 1 - thermPing;
+        bindQuad(impulseTherm);
+        bindTex(0, thermTex[src], impulseTherm.u.uTherm);
+        gl.uniform2f(impulseTherm.u.uPoint, imp.x, imp.y);
+        gl.uniform1f(impulseTherm.u.uRadius, imp.radius);
+        gl.uniform1f(impulseTherm.u.uHeat, imp.heat);
+        gl.uniform1f(impulseTherm.u.uMoist, imp.moist);
+        drawSim(thermTex[dst]);
+        thermPing = dst;
+      }
+      if (imp.force || imp.spin || imp.converge) {
+        const src = velPing;
+        const dst = 1 - velPing;
+        bindQuad(impulseVel);
+        bindTex(0, velTex[src], impulseVel.u.uVel);
+        gl.uniform2f(impulseVel.u.uPoint, imp.x, imp.y);
+        gl.uniform2f(impulseVel.u.uDir, imp.dx || 0, imp.dy || 0);
+        gl.uniform1f(impulseVel.u.uRadius, imp.radius);
+        gl.uniform1f(impulseVel.u.uForce, imp.force || 0);
+        gl.uniform1f(impulseVel.u.uSpin, imp.spin);
+        gl.uniform1f(impulseVel.u.uConverge, imp.converge);
+        drawSim(velTex[dst]);
+        velPing = dst;
+      }
+    }
+
     function applyImpulses() {
       while (fronts.length) applyFront(fronts.shift());
 
       while (impulses.length) {
-        const imp = impulses.shift();
-        if (imp.heat || imp.moist) {
-          const src = thermPing;
-          const dst = 1 - thermPing;
-          bindQuad(impulseTherm);
-          bindTex(0, thermTex[src], impulseTherm.u.uTherm);
-          gl.uniform2f(impulseTherm.u.uPoint, imp.x, imp.y);
-          gl.uniform1f(impulseTherm.u.uRadius, imp.radius);
-          gl.uniform1f(impulseTherm.u.uHeat, imp.heat);
-          gl.uniform1f(impulseTherm.u.uMoist, imp.moist);
-          drawSim(thermTex[dst]);
-          thermPing = dst;
-        }
-        if (imp.force || imp.spin || imp.converge) {
-          const src = velPing;
-          const dst = 1 - velPing;
-          bindQuad(impulseVel);
-          bindTex(0, velTex[src], impulseVel.u.uVel);
-          gl.uniform2f(impulseVel.u.uPoint, imp.x, imp.y);
-          gl.uniform2f(impulseVel.u.uDir, imp.dx, imp.dy);
-          gl.uniform1f(impulseVel.u.uRadius, imp.radius);
-          gl.uniform1f(impulseVel.u.uForce, imp.force);
-          gl.uniform1f(impulseVel.u.uSpin, imp.spin);
-          gl.uniform1f(impulseVel.u.uConverge, imp.converge);
-          drawSim(velTex[dst]);
-          velPing = dst;
-        }
+        applyImpulse(impulses.shift());
       }
     }
 
-    function stepSim() {
-      applyImpulses();
-
-      bindQuad(advectVel);
-      bindTex(0, velTex[velPing], advectVel.u.uVel);
-      drawSim(velTex[1 - velPing]);
-      velPing = 1 - velPing;
-
-      bindQuad(advectTherm);
-      bindTex(0, thermTex[thermPing], advectTherm.u.uTherm);
-      bindTex(1, velTex[velPing], advectTherm.u.uVel);
-      bindTex(2, noiseTex, advectTherm.u.uNoise);
-      gl.uniform1f(advectTherm.u.uTime, frame * 0.016);
-      drawSim(thermTex[1 - thermPing]);
-      thermPing = 1 - thermPing;
-
-      bindQuad(copy);
-      bindTex(0, thermTex[thermPing], copy.u.uSrc);
-      drawSim(meanTex);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, meanTex);
-      gl.generateMipmap(gl.TEXTURE_2D);
-
-      bindQuad(divergence);
-      bindTex(0, velTex[velPing], divergence.u.uVel);
-      bindTex(1, thermTex[thermPing], divergence.u.uTherm);
-      bindTex(2, meanTex, divergence.u.uMean);
-      drawSim(divTex);
-
-      bindQuad(jacobi);
-      bindTex(1, divTex, jacobi.u.uDiv);
-      for (let i = 0; i < JACOBI_STEPS; i++) {
-        bindTex(0, prsTex[prsPing], jacobi.u.uPressure);
-        drawSim(prsTex[1 - prsPing]);
-        prsPing = 1 - prsPing;
-      }
-
-      bindQuad(project);
-      bindTex(0, velTex[velPing], project.u.uVel);
-      bindTex(1, prsTex[prsPing], project.u.uPressure);
-      drawSim(velTex[1 - velPing]);
-      velPing = 1 - velPing;
-
-      bindQuad(stormCharge);
-      bindTex(0, stormTex[stormPing], stormCharge.u.uStorm);
-      bindTex(1, thermTex[thermPing], stormCharge.u.uTherm);
-      drawSim(stormTex[1 - stormPing]);
-      stormPing = 1 - stormPing;
+    function applySystemLine(seg, sign, width, mix) {
+      const srcV = velPing;
+      const dstV = 1 - velPing;
+      bindQuad(systemLineVel);
+      bindTex(0, velTex[srcV], systemLineVel.u.uVel);
+      gl.uniform2f(systemLineVel.u.uA, seg.ax, seg.ay);
+      gl.uniform2f(systemLineVel.u.uB, seg.bx, seg.by);
+      gl.uniform1f(systemLineVel.u.uWidth, width);
+      gl.uniform1f(systemLineVel.u.uSign, sign);
+      gl.uniform1f(systemLineVel.u.uMix, mix);
+      drawSim(velTex[dstV]);
+      velPing = dstV;
     }
 
-    function fadeInk() {
-      if (!inkTex[0]) return;
+    function pickSegs(segs) {
+      if (segs.length <= 4) return segs;
+      const out = [];
+      const last = segs.length - 1;
+      for (let i = 0; i < 4; i++) out.push(segs[Math.round((i * last) / 3)]);
+      return out;
+    }
+
+    function seedFade(born) {
+      const age = (performance.now() - (born || 0)) / 1000;
+      if (age < 2.5) return 1;
+      return 0.12 + 0.88 * Math.max(0, 1 - (age - 2.5) / 5);
+    }
+
+    function applySystems() {
+      for (const s of systems) {
+        const fade = seedFade(s.born);
+        const srcV = velPing;
+        const dstV = 1 - velPing;
+        bindQuad(cycloneVel);
+        bindTex(0, velTex[srcV], cycloneVel.u.uVel);
+        gl.uniform2f(cycloneVel.u.uPoint, s.x, s.y);
+        gl.uniform1f(cycloneVel.u.uRadius, s.radius);
+        gl.uniform1f(cycloneVel.u.uSpin, s.spin);
+        gl.uniform1f(cycloneVel.u.uMix, 0.5 * fade);
+        drawSim(velTex[dstV]);
+        velPing = dstV;
+        stampWarm(s.x, s.y, s.radius * 1.9, 0.0032);
+        const width = Math.max(s.radius * 0.38, 0.045);
+        for (const seg of pickSegs(s.segs)) applySystemLine(seg, s.kind, width, fade);
+      }
+    }
+
+    function stampWarm(x, y, radius, amount) {
+      const src = sstPing;
+      const dst = 1 - sstPing;
+      bindQuad(sstStamp);
+      bindTex(0, sstTex[src], sstStamp.u.uSst);
+      gl.uniform2f(sstStamp.u.uPoint, x, y);
+      gl.uniform1f(sstStamp.u.uRadius, radius);
+      gl.uniform1f(sstStamp.u.uWarm, amount);
+      drawSim(sstTex[dst]);
+      sstPing = dst;
+    }
+
+    function applyWarms() {
+      while (warms.length) {
+        const w = warms.shift();
+        stampWarm(w.x, w.y, w.radius, w.amount);
+      }
+    }
+
+    function relaxSst() {
+      bindQuad(sstRelax);
+      bindTex(0, sstTex[sstPing], sstRelax.u.uSst);
+      drawSim(sstTex[1 - sstPing]);
+      sstPing = 1 - sstPing;
+    }
+
+    function bindSeeds() {
+      const slots = [divergence.u.uSeed0, divergence.u.uSeed1, divergence.u.uSeed2, divergence.u.uSeed3];
+      const lows = systems.filter((s) => s.kind > 0).slice(0, 4);
+      gl.uniform1i(divergence.u.uSeedN, lows.length);
+      for (let i = 0; i < 4; i++) {
+        const s = lows[i];
+        if (s) gl.uniform4f(slots[i], s.x, s.y, s.radius, 1);
+        else gl.uniform4f(slots[i], 0, 0, 1, 0);
+      }
+    }
+
+    function stampInk(ax, ay, bx, by, width, strength) {
+      if (!inkTex[0] || viewWidth <= 0) return;
       const src = inkPing;
       const dst = 1 - inkPing;
-      bindQuad(fade);
-      bindTex(0, inkTex[src], fade.u.uSrc);
-      gl.uniform1f(fade.u.uFade, 0.94);
+      bindQuad(ink);
+      bindTex(0, inkTex[src], ink.u.uSrc);
+      gl.uniform2f(ink.u.uA, ax, ay);
+      gl.uniform2f(ink.u.uB, bx, by);
+      gl.uniform1f(ink.u.uWidth, width);
+      gl.uniform1f(ink.u.uStrength, strength);
       targetTex(inkTex[dst], viewWidth, viewHeight);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       inkPing = dst;
     }
 
-    function drawWeather() {
-      ensureView(displayWidth, displayHeight);
-      fadeInk();
-
-      bindQuad(weather);
-      bindTex3(3, noise3Tex, weather.u.uNoise3);
-      bindTex(0, thermTex[thermPing], weather.u.uField);
-      bindTex(1, velTex[velPing], weather.u.uVel);
-      bindTex(2, blueTex, weather.u.uBlueNoise);
-      bindTex(4, stormTex[stormPing], weather.u.uStorm);
-      gl.uniform2f(weather.u.uResolution, marchWidth, marchHeight);
-      gl.uniform1i(weather.u.uFrame, frame);
-      gl.uniform1i(weather.u.uSteps, marchSteps);
-      targetTex(rawTex, marchWidth, marchHeight);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-      const histSrc = accumPing;
-      const histDst = 1 - accumPing;
-      bindQuad(accum);
-      bindTex(0, rawTex, accum.u.uRaw);
-      bindTex(1, accumWarm ? accumTex[histSrc] : rawTex, accum.u.uHistory);
-      gl.uniform1f(accum.u.uBlend, accumWarm ? 0.26 : 1.0);
-      targetTex(accumTex[histDst], marchWidth, marchHeight);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-      accumPing = histDst;
-      accumWarm = true;
-
-      bindQuad(copy);
-      bindTex(0, accumTex[accumPing], copy.u.uSrc);
-      targetTex(weatherTex, viewWidth, viewHeight);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, displayWidth, displayHeight);
-      bindQuad(composite);
-      bindTex(0, weatherTex, composite.u.uWeather);
-      bindTex(1, inkTex[inkPing], composite.u.uInk);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-    }
-
-    function render() {
-      raf = 0;
-      if (!running || hidden) return;
-      raf = requestAnimationFrame(render);
-      if (displayWidth <= 0 || displayHeight <= 0) return;
-      if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
-        canvas.width = displayWidth;
-        canvas.height = displayHeight;
-      }
-      stepSim();
-      frame++;
-      drawWeather();
-      fpsFrames++;
-      const now = performance.now();
-      if (!fpsLast) fpsLast = now;
-      if (now - fpsLast >= 500) {
-        if (onFps) onFps((fpsFrames * 1000) / (now - fpsLast));
-        fpsFrames = 0;
-        fpsLast = now;
-      }
-    }
-
-    function start() {
-      if (!raf && running && !hidden) raf = requestAnimationFrame(render);
-    }
-
-    return {
-      setSize(width, height) {
-        displayWidth = width | 0;
-        displayHeight = height | 0;
-      },
-      setHidden(value) {
-        hidden = value;
-        start();
-      },
-      setRunning(value) {
-        running = value;
-        start();
-      },
-      setSteps(value) {
-        marchSteps = Math.max(16, Math.min(96, value | 0));
-      },
-      setOnFps(fn) {
-        onFps = fn;
-      },
-      addImpulse(imp) {
-        const at = screenToSim(imp.sx, imp.sy);
-        const dx = imp.dx || 0;
-        const dy = imp.dy || 0;
-        const len = Math.hypot(dx, dy);
-        impulses.push({
-          x: at.x,
-          y: at.y,
-          dx: len > 1e-6 ? dx / len : 0,
-          dy: len > 1e-6 ? dy / len : 0,
-          radius: imp.radius || 0.06,
-          force: len > 1e-6 ? Math.min(len * 70, 2.2) : 0,
-          spin: imp.spin || 0,
-          converge: imp.converge || 0,
-          heat: imp.heat || 0,
-          moist: imp.moist || 0,
-        });
-      },
-      addFront(seg) {
-        const a = screenToSim(seg.ax, seg.ay);
-        const b = screenToSim(seg.bx, seg.by);
-        fronts.push({
-          ax: a.x,
-          ay: a.y,
-          bx: b.x,
-          by: b.y,
-          width: seg.width || 0.035,
-          cold: seg.cold || 0.045,
-          moist: seg.moist || 0.08,
-          along: seg.along || 0.22,
-          converge: seg.converge || 0.16,
-          spin: seg.spin || 0.12,
-        });
-        if (inkTex[0]) {
-          const src = inkPing;
-          const dst = 1 - inkPing;
-          bindQuad(ink);
-          bindTex(0, inkTex[src], ink.u.uSrc);
-          gl.uniform2f(ink.u.uA, a.x, a.y);
-          gl.uniform2f(ink.u.uB, b.x, b.y);
-          gl.uniform1f(ink.u.uWidth, Math.max(0.004, (seg.width || 0.035) * 0.32));
-          gl.uniform1f(ink.u.uStrength, 0.7);
-          targetTex(inkTex[dst], viewWidth, viewHeight);
-          gl.drawArrays(gl.TRIANGLES, 0, 3);
-          inkPing = dst;
-        }
-      },
-    };
-  }
-
-  scope.createRenderer = createRenderer;
-})(typeof self !== "undefined" ? self : window);
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   for (const s of systems) {
+    function drawSystemInk() {
+      for (const s of systems) {
         const segs = s.segs;
         if (!segs.length) continue;
         if (segs.length <= 16) {
@@ -1448,6 +1575,22 @@ void main() {
           const a = pts[Math.round(i * step)];
           const b = pts[Math.round((i + 1) * step)];
           stampInk(a.x, a.y, b.x, b.y, 0.0038, 0.28);
+        }
+      }
+    }
+
+    function bindEyes() {
+      const slots = [advectTherm.u.uEye0, advectTherm.u.uEye1, advectTherm.u.uEye2, advectTherm.u.uEye3];
+      const n = Math.min(systems.length, 4);
+      gl.uniform1i(advectTherm.u.uEyeN, n);
+      for (let i = 0; i < 4; i++) {
+        const s = systems[i];
+        if (s) {
+          const age = (performance.now() - (s.born || 0)) / 1000;
+          const strength = Math.max(0, Math.min(1, (age - 4) / 8));
+          gl.uniform4f(slots[i], s.x, s.y, s.radius * 0.05, strength);
+        } else {
+          gl.uniform4f(slots[i], 0, 0, 1, 0);
         }
       }
     }
@@ -1468,6 +1611,7 @@ void main() {
       bindTex(2, noiseTex, advectTherm.u.uNoise);
       bindTex(3, sstTex[sstPing], advectTherm.u.uSst);
       gl.uniform1f(advectTherm.u.uTime, frame * 0.016);
+      bindEyes();
       drawSim(thermTex[1 - thermPing]);
       thermPing = 1 - thermPing;
 
