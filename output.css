@@ -570,10 +570,6 @@ html {
   font-size: 14px;
 }
 
-html.inverted {
-  filter: invert(1);
-}
-
 body {
   position: relative;
   min-height: 100dvh;
@@ -597,7 +593,6 @@ body {
 }
 
 #canvas {
-  pointer-events: none;
   position: fixed;
   inset: 0px;
   z-index: 10;
@@ -605,19 +600,94 @@ body {
   width: 100vw;
 }
 
-.fps {
+#legend {
   pointer-events: none;
   position: fixed;
-  top: 0.75rem;
-  right: 0.75rem;
-  z-index: 50;
+  right: 1rem;
+  top: 1rem;
+  z-index: 20;
+  -webkit-user-select: none;
+     -moz-user-select: none;
+          user-select: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 11px;
-  --tw-numeric-spacing: tabular-nums;
-  font-variant-numeric: var(--tw-ordinal) var(--tw-slashed-zero) var(--tw-numeric-figure) var(--tw-numeric-spacing) var(--tw-numeric-fraction);
-  line-height: 1;
+  line-height: 1.25rem;
+  color: rgb(255 255 255 / 0.65);
+}
+
+#legend div {
+  display: flex;
+  gap: 0.75rem;
+}
+
+#legend span {
+  width: 2.5rem;
+  flex-shrink: 0;
+  color: rgb(255 255 255 / 0.4);
+}
+
+#legend .march {
+  align-items: center;
+}
+
+#legend .stepper {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+#legend button {
+  display: flex;
+  height: 1.25rem;
+  width: 1.25rem;
+  align-items: center;
+  justify-content: center;
+  color: rgb(255 255 255 / 0.4);
+}
+
+#legend button:hover {
+  color: rgb(255 255 255 / 0.85);
+}
+
+#legend button:active {
   --tw-text-opacity: 1;
   color: rgb(255 255 255 / var(--tw-text-opacity));
-  text-shadow: 0 0 4px #000, 0 1px 0 #000;
+}
+
+#legend em {
+  width: 1.5rem;
+  text-align: center;
+  font-style: normal;
+  color: rgb(255 255 255 / 0.65);
+}
+
+#legend .on,
+  #legend .on span {
+  color: rgb(255 255 255 / 0.85);
+}
+
+#marks {
+  pointer-events: none;
+  position: fixed;
+  inset: 0px;
+  z-index: 15;
+}
+
+.mark {
+  position: absolute;
+  --tw-translate-x: -50%;
+  --tw-translate-y: -50%;
+  transform: translate(var(--tw-translate-x), var(--tw-translate-y)) rotate(var(--tw-rotate)) skewX(var(--tw-skew-x)) skewY(var(--tw-skew-y)) scaleX(var(--tw-scale-x)) scaleY(var(--tw-scale-y));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  font-weight: 300;
+  letter-spacing: 0.025em;
+  color: rgb(255 255 255 / 0.35);
+}
+
+.block {
+  display: block;
 }
 
 .\!hidden {
@@ -628,19 +698,8 @@ body {
   display: none;
 }
 
-.ring {
-  --tw-ring-offset-shadow: var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color);
-  --tw-ring-shadow: var(--tw-ring-inset) 0 0 0 calc(3px + var(--tw-ring-offset-width)) var(--tw-ring-color);
-  box-shadow: var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 #0000);
-}
-
 .blur {
   --tw-blur: blur(8px);
-  filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
-}
-
-.invert {
-  --tw-invert: invert(100%);
   filter: var(--tw-blur) var(--tw-brightness) var(--tw-contrast) var(--tw-grayscale) var(--tw-hue-rotate) var(--tw-invert) var(--tw-saturate) var(--tw-sepia) var(--tw-drop-shadow);
 }
 

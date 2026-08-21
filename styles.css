@@ -37,11 +37,47 @@
 
 @layer components {
   #canvas {
-    @apply fixed inset-0 w-screen h-screen z-10 pointer-events-none;
+    @apply fixed inset-0 w-screen h-screen z-10;
   }
 
-  .fps {
-    @apply fixed top-3 right-3 z-50 text-[11px] leading-none text-white pointer-events-none tabular-nums;
-    text-shadow: 0 0 4px #000, 0 1px 0 #000;
+  #legend {
+    @apply pointer-events-none fixed right-4 top-4 z-20 select-none font-mono text-[11px] leading-5 text-white/65;
+  }
+
+  #legend div {
+    @apply flex gap-3;
+  }
+
+  #legend span {
+    @apply w-10 shrink-0 text-white/40;
+  }
+
+  #legend .march {
+    @apply items-center;
+  }
+
+  #legend .stepper {
+    @apply pointer-events-auto flex items-center gap-1.5;
+  }
+
+  #legend button {
+    @apply flex h-5 w-5 items-center justify-center text-white/40 hover:text-white/85 active:text-white;
+  }
+
+  #legend em {
+    @apply w-6 text-center not-italic text-white/65;
+  }
+
+  #legend .on,
+  #legend .on span {
+    @apply text-white/85;
+  }
+
+  #marks {
+    @apply pointer-events-none fixed inset-0 z-[15];
+  }
+
+  .mark {
+    @apply absolute -translate-x-1/2 -translate-y-1/2 font-mono text-[13px] font-light tracking-wide text-white/35;
   }
 }

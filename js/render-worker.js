@@ -32,40 +32,16 @@ self.onmessage = (event) => {
       self.postMessage({ ok: canRender() });
       break;
     case "init":
-      renderer = self.createRenderer(msg.canvas, (data) => self.postMessage(data));
+      renderer = self.createRenderer(msg.canvas);
       break;
     case "size":
       if (renderer) renderer.setSize(msg.w, msg.h);
-      break;
-    case "pointer":
-      if (renderer) renderer.setPointer(msg.x, msg.y);
-      break;
-    case "radius":
-      if (renderer) renderer.adjustRadius(msg.d);
-      break;
-    case "look":
-      if (renderer) renderer.look(msg.x, msg.y);
-      break;
-    case "thrust":
-      if (renderer) renderer.thrust(msg.d);
-      break;
-    case "keys":
-      if (renderer) renderer.setKeys(msg);
       break;
     case "running":
       if (renderer) renderer.setRunning(msg.v);
       break;
     case "hidden":
       if (renderer) renderer.setHidden(msg.v);
-      break;
-    case "clusters":
-      if (renderer) renderer.setClusters(msg.clusters);
-      break;
-    case "timeScale":
-      if (renderer) {
-        if (msg.reset) renderer.resetTimeScale();
-        else renderer.adjustTimeScale(msg.factor);
-      }
       break;
   }
 };

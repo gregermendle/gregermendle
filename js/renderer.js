@@ -1,9 +1,12 @@
 (function (scope) {
-  function isMobile() {
-    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
-      navigator.userAgent
-    );
-  }
+  const NOISE_SIZE = 256;
+  const NOISE3_SIZE = 96;
+  const BLUE_SIZE = 128;
+  const SIM_SIZE = 256;
+  const SIM_MIP = 8;
+  const JACOBI_STEPS = 40;
+  const MARCH_SCALE = 0.72;
+  const MAX_MARCH = 720;
 
   function loadShader(gl, type, source) {
     const shader = gl.createShader(type);
@@ -17,2435 +20,1712 @@
     return shader;
   }
 
-  function initShaderProgram(gl, vsSource, fsSource) {
-    const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
-    const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
-    const program = gl.createProgram();
-    if (!vertexShader || !fragmentShader) return null;
-    gl.attachShader(program, vertexShader);
-    gl.attachShader(program, fragmentShader);
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      return null;
-    }
-    return program;
-  }
-
-  function initBuffers(gl) {
-    const buffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      new Float32Array([-1, -1, 3, -1, -1, 3]),
-      gl.STATIC_DRAW
-    );
-    return { position: buffer };
-  }
-
-  const RS_REF = 0.25;
-  const STAR_RADIUS = 0.32 * RS_REF;
-  const VIEW_FRUSTUM_PAD = 0.32;
-  const STAR_ANGULAR_PAD = 12;
-  const STAR_BASE_PAD = 0.32;
-  const STAR_GLOW_PAD = 9;
-  const STAR_PX_PAD = 6;
-  const MIN_LENS_Z = 2.5;
-  const STAR_FAR_Z = 2800;
-  const LENS_Z_MIN = 0.8;
-  const ENABLE_DITHER = false;
-  const LENS_FADE_BEHIND = -12;
-  const LENS_FADE_FRONT = 0.6;
-  const LENS_FAR_START = 80;
-  const LENS_FAR_END = 320;
-  const GRAV_G = 1;
-  const GRAV_SOFT2 = 0.025;
-  const GRAV_STEP = 8.5;
-  const BH_MU0 = 38.5;
-  const STAR_COMPACT = 2.12e-6;
-  const TDE_ACCRETE = 0.5;
-  const GRAV_NEAR2 = 36 * 36;
-  const GRAV_KICK_DT = 0.42;
-  const GRAV_MAX_KICKS = 8;
-  const GRAV_KICKS_MID = 5;
-  const GRAV_KICKS_FAR = 3;
-  const GRAV_CAM_MID = 100;
-  const GRAV_CAM_FAR = 220;
-  const GRAV_KICK_MUL = 24;
-  const SIM_TIME_MIN = 0.001;
-  const SIM_TIME_MAX = 1e12;
-  const DUST_GAIN_MUL = 0.95;
-  const DUST_COUNT_MUL = 0.72;
-  const GALAXY_OUT_SCALE = 2;
-  const STAR_VISUAL = 0.95;
-  const DUST_SIZE_MUL = 0.72;
-  const PHYS_RS = 0.5;
-  const C_LIGHT2 = (2 * BH_MU0) / PHYS_RS;
-  const PW_RS = 20;
-  const BH_SPIN = 0.92;
-  const DISC_MAX = 768;
-  const DISC_FRAGS = 12;
-  const DISC_ALPHA = 0.1;
-  const DISC_OUTER = 72;
-  const SHADOW_RS = 2.59807621135;
-  const GEO_STEPS = 96;
-
-  function kerrIscoOverRs(chi) {
-    const z1 = 1 + Math.cbrt(1 - chi * chi) * (Math.cbrt(1 + chi) + Math.cbrt(1 - chi));
-    const z2 = Math.sqrt(3 * chi * chi + z1 * z1);
-    return 0.5 * (3 + z2 - Math.sqrt((3 - z1) * (3 + z1 + 2 * z2)));
-  }
-
-  function kerrOmegaEquatorial(r, rs, chi) {
-    const M = rs * 0.5;
-    const a = chi * M;
-    const u = Math.sqrt(Math.max(1e-12, M / (r * r * r)));
-    return u / (1 + a * u);
-  }
-
-  function getShaders(webgl2) {
-    const ver = webgl2 ? "#version 300 es\n" : "";
-    const fragOut = webgl2 ? "out vec4 fragColor;\n" : "";
-    const writeColor = webgl2 ? "fragColor" : "gl_FragColor";
-    const attr = webgl2 ? "in" : "attribute";
-    const varyOut = webgl2 ? "out" : "varying";
-    const varyIn = webgl2 ? "in" : "varying";
-    const tex = webgl2 ? "texture" : "texture2D";
-
-    const blitVs = `${ver}${attr} vec4 aVertexPosition;
-    ${varyOut} vec2 vTexCoord;
-    void main() {
-      gl_Position = aVertexPosition;
-      vTexCoord = aVertexPosition.xy * 0.5 + 0.5;
-    }`;
-
-    const blitFs = `${ver}precision highp float;
-    uniform sampler2D uTex;
-    ${varyIn} vec2 vTexCoord;
-    ${fragOut}
-    void main() { ${writeColor} = vec4(vec3(${tex}(uTex, vTexCoord).r), 1.0); }`;
-
-    const maskCh = webgl2 ? "g" : "a";
-    const lensLib = `
-    vec2 holePos(vec3 ro) {
-      float zProj = max(dot(-ro, camFwd), ${LENS_Z_MIN.toFixed(2)});
-      return vec2(dot(-ro, camRight), dot(-ro, camUp)) / zProj;
-    }
-    float einstein2(float rs, float holeZ, float z) {
-      if (z <= 0.0) return 0.0;
-      float zL = max(holeZ, ${LENS_Z_MIN.toFixed(2)});
-      float dls = z - zL;
-      if (dls <= 0.0) return 0.0;
-      return 2.0 * rs * dls / max(zL * z, 1e-8);
-    }
-    float shadowAng(float rs, float holeZ) {
-      return ${SHADOW_RS.toFixed(8)} * rs / max(holeZ, ${LENS_Z_MIN.toFixed(2)});
-    }
-    vec2 lensPull(vec2 uv, vec2 lp, float te2, float bc2) {
-      if (te2 <= 0.0) return vec2(0.0);
-      vec2 d = uv - lp;
-      float b2 = dot(d, d);
-      if (b2 <= bc2) return vec2(0.0);
-      return d * (te2 / b2);
-    }`;
-    const starVs = `${ver}${attr} vec2 aCorner;
-    ${attr} vec4 aStar;
-    ${attr} vec3 aColor;
-    ${attr} float aKind;
-    uniform vec2 resolution;
-    uniform float progress;
-    uniform float schwarzschildRadius;
-    uniform vec3 camPos;
-    uniform vec3 camFwd;
-    uniform vec3 camRight;
-    uniform vec3 camUp;
-    uniform float uUseLens;
-    ${varyOut} vec4 vStar;
-    ${varyOut} vec3 vColor;
-    ${varyOut} float vKind;
-    ${lensLib}
-    void main() {
-      float minRes = min(resolution.x, resolution.y);
-      float px = 1.0 / minRes;
-      vec3 ro = camPos;
-      float radius = schwarzschildRadius * progress;
-      float holeZ = dot(-ro, camFwd);
-      float z = aStar.z;
-      float ang = aStar.w;
-      float holeTe2 = uUseLens > 0.5 ? einstein2(radius, holeZ, z) : 0.0;
-      if (holeTe2 < px * px) holeTe2 = 0.0;
-      float ring = sqrt(holeTe2);
-      float glowR = max(ang * 5.5, px * 3.4);
-      float pad = aKind > 1.5
-        ? max(ang * 2.2, px * 3.0)
-        : max(max(ang * ${STAR_GLOW_PAD.toFixed(1)}, px * ${STAR_PX_PAD.toFixed(1)}), glowR * 6.0);
-      if (uUseLens > 0.5 && aKind < 1.5) pad = max(pad, ring * 2.4);
-      vec2 uv = aStar.xy + aCorner * pad;
-      gl_Position = vec4(uv.x * (2.0 * minRes / resolution.x), uv.y * (2.0 * minRes / resolution.y), 0.0, 1.0);
-      vStar = aStar;
-      vColor = aColor;
-      vKind = aKind;
-    }`;
-
-    const starFs = `${ver}precision highp float;
-    uniform vec2 resolution;
-    uniform float progress;
-    uniform float schwarzschildRadius;
-    uniform vec3 camPos;
-    uniform vec3 camFwd;
-    uniform vec3 camRight;
-    uniform vec3 camUp;
-    uniform sampler2D uMask;
-    uniform float uUseLens;
-    uniform float uUseMask;
-    uniform vec2 uMaskRes;
-    ${varyIn} vec4 vStar;
-    ${varyIn} vec3 vColor;
-    ${varyIn} float vKind;
-    ${fragOut}
-    ${lensLib}
-    void main() {
-      float minRes = min(resolution.x, resolution.y);
-      vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
-      float px = 1.0 / minRes;
-      vec3 ro = camPos;
-      float radius = schwarzschildRadius * progress;
-      float holeZ = dot(-ro, camFwd);
-      vec2 holeP = holePos(ro);
-      float holeMask = uUseMask > 0.5 ? ${tex}(uMask, gl_FragCoord.xy / uMaskRes).${maskCh} : 0.0;
-      float z = vStar.z;
-      if (z <= 1e-4 || (uUseMask > 0.5 && holeZ > 1e-4 && z > holeZ && holeMask > 0.4)) {
-        ${writeColor} = vec4(0.0);
-        return;
-      }
-      vec2 sp = vStar.xy;
-      float ang = vStar.w;
-      float holeTe2 = uUseLens > 0.5 ? einstein2(radius, holeZ, z) : 0.0;
-      if (holeTe2 < px * px) holeTe2 = 0.0;
-      float bc = shadowAng(radius, holeZ);
-      if (holeTe2 > 0.0 && dot(uv - holeP, uv - holeP) <= bc * bc) {
-        ${writeColor} = vec4(0.0);
-        return;
-      }
-      vec2 src = uv;
-      if (holeTe2 > 0.0) src -= lensPull(uv, holeP, holeTe2, bc * bc);
-      float d = length(src - sp);
-      float glow;
-      if (vKind > 1.5) {
-        float fall = exp(-dot(src - sp, src - sp) / max(ang * ang, 1e-8));
-        glow = fall * (vKind - 2.0) * progress;
-      } else {
-        float coreR = max(ang, px * 1.15);
-        float glowR = max(ang * 5.5, px * 3.4);
-        float core = smoothstep(coreR, coreR * 0.42, d);
-        float near = clamp(ang / (px * 10.0), 0.0, 1.0);
-        float halo = exp(-d / max(glowR, 1e-5)) * mix(0.16, 0.52, near);
-        glow = (core + halo) * progress;
-      }
-      ${writeColor} = vec4(vColor * glow, 1.0);
-    }`;
-
-    const lineVs = `${ver}${attr} vec2 aPos;
-    ${attr} vec2 aMeta;
-    uniform vec2 resolution;
-    ${varyOut} vec2 vMeta;
-    void main() {
-      float minRes = min(resolution.x, resolution.y);
-      gl_Position = vec4(aPos.x * (2.0 * minRes / resolution.x), aPos.y * (2.0 * minRes / resolution.y), 0.0, 1.0);
-      vMeta = aMeta;
-    }`;
-
-    const lineFs = `${ver}precision highp float;
-    uniform vec2 resolution;
-    uniform float progress;
-    uniform vec3 camPos;
-    uniform vec3 camFwd;
-    uniform sampler2D uMask;
-    uniform float uUseMask;
-    uniform vec2 uMaskRes;
-    ${varyIn} vec2 vMeta;
-    ${fragOut}
-    void main() {
-      float holeZ = dot(-camPos, camFwd);
-      float holeMask = uUseMask > 0.5 ? ${tex}(uMask, gl_FragCoord.xy / uMaskRes).${maskCh} : 0.0;
-      if (vMeta.x < 0.0 || (uUseMask > 0.5 && holeZ > 1e-4 && vMeta.x > holeZ && holeMask > 0.4)) {
-        ${writeColor} = vec4(0.0);
-        return;
-      }
-      float glow = (1.0 - smoothstep(0.35, 0.85, abs(vMeta.y))) * 0.16 * progress;
-      ${writeColor} = vec4(vec3(glow), 1.0);
-    }`;
-
-    const dustVs = `${ver}${attr} vec2 aCorner;
-    ${attr} vec4 aDust;
-    ${attr} vec3 aColor;
-    uniform vec2 resolution;
-    ${varyOut} vec4 vDust;
-    ${varyOut} vec3 vColor;
-    void main() {
-      float minRes = min(resolution.x, resolution.y);
-      float px = 1.0 / minRes;
-      float ang = aDust.w;
-      float pad = max(ang * 2.2, px * 3.0);
-      vec2 uv = aDust.xy + aCorner * pad;
-      gl_Position = vec4(uv.x * (2.0 * minRes / resolution.x), uv.y * (2.0 * minRes / resolution.y), 0.0, 1.0);
-      vDust = aDust;
-      vColor = aColor;
-    }`;
-
-    const dustFs = `${ver}precision highp float;
-    uniform vec2 resolution;
-    uniform float progress;
-    uniform vec3 camPos;
-    uniform vec3 camFwd;
-    uniform sampler2D uMask;
-    uniform float uUseMask;
-    uniform vec2 uMaskRes;
-    ${varyIn} vec4 vDust;
-    ${varyIn} vec3 vColor;
-    ${fragOut}
-    void main() {
-      float minRes = min(resolution.x, resolution.y);
-      vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
-      float holeZ = dot(-camPos, camFwd);
-      float holeMask = uUseMask > 0.5 ? ${tex}(uMask, gl_FragCoord.xy / uMaskRes).${maskCh} : 0.0;
-      float z = vDust.z;
-      if (z <= 1e-4 || (uUseMask > 0.5 && holeZ > 1e-4 && z > holeZ && holeMask > 0.75)) {
-        ${writeColor} = vec4(0.0);
-        return;
-      }
-      vec2 d = uv - vDust.xy;
-      float fall = exp(-dot(d, d) / max(vDust.w * vDust.w, 1e-8));
-      ${writeColor} = vec4(vColor * (fall * progress), 1.0);
-    }`;
-
-    const colorBlitFs = `${ver}precision highp float;
-    uniform sampler2D uTex;
-    ${varyIn} vec2 vTexCoord;
-    ${fragOut}
-    void main() { ${writeColor} = ${tex}(uTex, vTexCoord); }`;
-
-    const colorLensFs = `${ver}precision highp float;
-    uniform sampler2D uField;
-    uniform vec2 resolution;
-    ${varyIn} vec2 vTexCoord;
-    ${fragOut}
-    void main() {
-      ${writeColor} = ${tex}(uField, vTexCoord);
-    }`;
-
-    const holeDiscVs = `${ver}${attr} vec2 aCorner;
-    uniform vec2 resolution;
-    uniform float progress;
-    uniform float schwarzschildRadius;
-    uniform vec3 camPos;
-    uniform vec3 camFwd;
-    uniform vec3 camRight;
-    uniform vec3 camUp;
-    ${varyOut} vec2 vUv;
-    ${lensLib}
-    void main() {
-      float minRes = min(resolution.x, resolution.y);
-      float px = 1.0 / minRes;
-      vec3 ro = camPos;
-      float holeZ = dot(-ro, camFwd);
-      if (holeZ <= ${LENS_Z_MIN.toFixed(2)}) {
-        gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
-        vUv = vec2(2.0);
-        return;
-      }
-      vec2 holeP = holePos(ro);
-      float rs = schwarzschildRadius * progress;
-      float pad = max(${DISC_OUTER.toFixed(1)} * 1.8 / holeZ, shadowAng(rs, holeZ) * 6.0);
-      pad = max(pad, px * 16.0);
-      vUv = holeP + aCorner * pad;
-      gl_Position = vec4(vUv.x * (2.0 * minRes / resolution.x), vUv.y * (2.0 * minRes / resolution.y), 0.0, 1.0);
-    }`;
-
-    const holeDiscFs = `${ver}precision highp float;
-    uniform vec2 resolution;
-    uniform float progress;
-    uniform float schwarzschildRadius;
-    uniform float bhSpin;
-    uniform float uDiscMass;
-    uniform float uPass;
-    uniform vec3 camPos;
-    uniform vec3 camFwd;
-    uniform vec3 camRight;
-    uniform vec3 camUp;
-    ${varyIn} vec2 vUv;
-    ${fragOut}
-    ${lensLib}
-    float kerrIscoRs(float chi) {
-      float z1 = 1.0 + pow(max(0.0, 1.0 - chi * chi), 0.333333) * (pow(1.0 + chi, 0.333333) + pow(1.0 - chi, 0.333333));
-      float z2 = sqrt(3.0 * chi * chi + z1 * z1);
-      return 0.5 * (3.0 + z2 - sqrt(max(0.0, (3.0 - z1) * (3.0 + z1 + 2.0 * z2))));
-    }
-    float discI(vec3 hit, vec3 vel, float rs, float chi) {
-      float rho = length(hit.xz);
-      float isco = max(kerrIscoRs(chi) * rs, rs * 1.2);
-      float rout = ${DISC_OUTER.toFixed(1)};
-      if (rho < isco || rho > rout) return 0.0;
-      float M = 0.5 * rs;
-      float a = chi * M;
-      float u = sqrt(M / max(rho * rho * rho, 1e-8));
-      float omega = u / (1.0 + a * u);
-      vec3 vphi = vec3(-hit.z, 0.0, hit.x) * omega;
-      float grav = sqrt(max(0.03, 1.0 - rs / rho));
-      float doppler = 1.0 / max(0.16, 1.0 - dot(normalize(-vel), vphi));
-      float nt = max(0.0, 1.0 - sqrt(isco / rho));
-      float flux = nt * pow(isco / rho, 0.85) * smoothstep(rout, rout * 0.55, rho);
-      float g = grav * doppler;
-      return flux * g * g * g * 18.0;
-    }
-    void main() {
-      float rs = schwarzschildRadius * progress;
-      if (rs < 1e-5) {
-        ${writeColor} = vec4(0.0);
-        return;
-      }
-      vec3 ro = camPos;
-      vec3 vel = normalize(camFwd + camRight * vUv.x + camUp * vUv.y);
-      float bound = ${DISC_OUTER.toFixed(1)} + 12.0;
-      float b = dot(ro, vel);
-      float c = dot(ro, ro) - bound * bound;
-      float h2 = b * b - c;
-      if (h2 < 0.0 && length(ro) > bound) {
-        ${writeColor} = vec4(0.0);
-        return;
-      }
-      float t0 = 0.0;
-      if (h2 >= 0.0 && length(ro) > bound) t0 = max(0.0, -b - sqrt(h2));
-      vec3 pos = ro + vel * t0;
-      vec3 prev = pos;
-      float glow = 0.0;
-      float shadow = 0.0;
-      float step = max(rs * 0.08, bound * 0.035);
-      for (int i = 0; i < ${GEO_STEPS}; i++) {
-        float r = length(pos);
-        if (r <= rs) {
-          shadow = 1.0;
-          break;
-        }
-        if (i > 0 && prev.y * pos.y <= 0.0) {
-          float den = pos.y - prev.y;
-          float f = abs(den) > 1e-8 ? prev.y / den : 0.0;
-          vec3 hit = prev - (pos - prev) * f;
-          glow += discI(hit, vel, rs, bhSpin);
-        }
-        float r5 = r * r * r * r * r;
-        vec3 acc = -1.5 * rs * dot(pos, vel) / max(r5, 1e-8) * pos;
-        vel = normalize(vel + acc * step);
-        prev = pos;
-        pos += vel * step;
-        step = clamp(r * 0.14, rs * 0.05, bound * 0.06);
-        if (r > bound * 1.2 && dot(pos, vel) > 0.0) break;
-      }
-      glow *= 0.85 + 1.1 * (1.0 - exp(-uDiscMass * 80.0));
-      if (uPass > 0.5) {
-        if (shadow < 0.5) discard;
-        ${writeColor} = vec4(1.0);
-        return;
-      }
-      if (glow <= 1e-5) discard;
-      float I = glow / (1.0 + glow);
-      ${writeColor} = vec4(vec3(I), 1.0);
-    }`;
-
-    const lensFs = `${ver}precision highp float;
-    uniform sampler2D uField;
-    uniform vec2 resolution;
-    ${varyIn} vec2 vTexCoord;
-    ${fragOut}
-    void main() {
-      float minRes = min(resolution.x, resolution.y);
-      vec2 uv = (gl_FragCoord.xy - 0.5 * resolution.xy) / minRes;
-      vec2 srcTex = uv * minRes / resolution + 0.5;
-      float glow = ${tex}(uField, srcTex).r;
-      ${writeColor} = vec4(vec3(glow), 1.0);
-    }`;
-
-    return {
-      blitVs,
-      blitFs,
-      starVs,
-      starFs,
-      lineVs,
-      lineFs,
-      holeDiscVs,
-      holeDiscFs,
-      lensFs,
-      dustVs,
-      dustFs,
-      colorBlitFs,
-      colorLensFs,
+  function mulberry32(seed) {
+    return () => {
+      seed |= 0;
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
   }
 
-  const E7 = 7 / 16;
-  const E3 = 3 / 16;
-  const E5 = 5 / 16;
-  const E1 = 1 / 16;
-  const RENDER_SCALE = 1;
-
-  let wasmExports = null;
-
-  async function loadWasmDither() {
-    try {
-      const res = await fetch("/js/dither.wasm");
-      const compiled = WebAssembly.instantiateStreaming
-        ? await WebAssembly.instantiateStreaming(res)
-        : await WebAssembly.instantiate(await res.arrayBuffer());
-      wasmExports = compiled.instance.exports;
-    } catch {
-      wasmExports = null;
+  function makeNoiseData() {
+    const rng = mulberry32(0x6e6f6973);
+    const data = new Uint8Array(NOISE_SIZE * NOISE_SIZE * 4);
+    for (let i = 0; i < NOISE_SIZE * NOISE_SIZE; i++) {
+      const j = i * 4;
+      data[j] = (rng() * 256) | 0;
+      data[j + 1] = (rng() * 256) | 0;
+      data[j + 2] = (rng() * 256) | 0;
+      data[j + 3] = 255;
     }
+    return data;
   }
 
-  // Floyd-Steinberg over a single-channel image. Only two rows of diffused
-  // error are live at a time: `cur` holds the row being thresholded and
-  // `carry`/`a1`/`a2` hold the neighbours still being accumulated.
-  let ditherCur = null;
-  let ditherNext = null;
-
-  function ditherJS(gray, out, width, height) {
-    const n = width * height;
-    const fround = Math.fround;
-    let cur = ditherCur;
-    let next = ditherNext;
-    if (!cur || cur.length < width + 4) {
-      cur = new Float32Array(width + 4);
-      next = new Float32Array(width + 4);
-    }
-    for (let x = 0; x < width; x++) cur[x + 1] = gray[x];
-    let row = 0;
-    for (let y = 0; y < height; y++) {
-      const nextRow = row + width;
-      let carry = 0;
-      let a2 = 0;
-      let a1 = nextRow < n ? gray[nextRow] : 0;
-      for (let x = 0; x < width; x++) {
-        const v = fround(cur[x + 1] + carry);
-        const lit = v >= 256;
-        out[row + x] = lit ? gray[row + x] : 0;
-        carry = v * E7 - (lit ? 255 * E7 : 0);
-        const e = v - (lit ? 255 : 0);
-        next[x] = a2 + e * E3;
-        a2 = fround(a1 + e * E5);
-        const j = nextRow + x + 1;
-        a1 = fround((j < n ? gray[j] : 0) + e * E1);
-      }
-      next[width] = a2;
-      const swap = cur;
-      cur = next;
-      next = swap;
-      row = nextRow;
-    }
-    ditherCur = cur;
-    ditherNext = next;
-  }
-
-  function grayJS(rgba, gray, n) {
-    for (let i = 0, j = 0; i < n; i++, j += 4) gray[i] = rgba[j];
-  }
-
-  function align16(v) {
-    return (v + 15) & ~15;
-  }
-
-  function rowStride(width, bytesPerPixel) {
-    return (width * bytesPerPixel + 3) & ~3;
-  }
-
-  function copyRows(src, dst, width, height, srcStride, dstStride) {
-    if (srcStride === dstStride && src === dst) return;
-    if (srcStride === dstStride) {
-      dst.set(src.subarray(0, dstStride * height));
-      return;
-    }
-    for (let y = 0, s = 0, d = 0; y < height; y++, s += srcStride, d += dstStride) {
-      dst.set(src.subarray(s, s + width), d);
-    }
-  }
-
-  function matchesPattern(buf, stride, expected, width) {
-    for (let i = 0; i < expected.length; i++) {
-      const x = i % width;
-      const y = (i / width) | 0;
-      if (buf[y * stride + x] !== expected[i]) return false;
-    }
-    return true;
-  }
-
-  function probeSingleChannelTarget(gl, webgl2) {
-    while (gl.getError() !== gl.NO_ERROR) {}
-    const w = 5;
-    const h = 2;
-    const pattern = new Uint8Array([11, 22, 33, 44, 55, 66, 77, 88, 99, 110]);
-    const stride = rowStride(w, 1);
-    const tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, pattern);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    const fb = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
-    const formatOk =
-      complete &&
-      gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_FORMAT) === gl.RED &&
-      gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE) === gl.UNSIGNED_BYTE;
-    let syncOk = false;
-    let pboOk = false;
-    if (formatOk) {
-      gl.pixelStorei(gl.PACK_ALIGNMENT, 4);
-      const packed = new Uint8Array(stride * h);
-      gl.readPixels(0, 0, w, h, gl.RED, gl.UNSIGNED_BYTE, packed);
-      syncOk = gl.getError() === gl.NO_ERROR && matchesPattern(packed, stride, pattern, w);
-      if (syncOk && webgl2) {
-        const pbo = gl.createBuffer();
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo);
-        gl.bufferData(gl.PIXEL_PACK_BUFFER, stride * h, gl.STREAM_READ);
-        gl.readPixels(0, 0, w, h, gl.RED, gl.UNSIGNED_BYTE, 0);
-        const out = new Uint8Array(stride * h);
-        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, out);
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-        pboOk = gl.getError() === gl.NO_ERROR && matchesPattern(out, stride, pattern, w);
-        gl.deleteBuffer(pbo);
-      }
-    }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.deleteFramebuffer(fb);
-    gl.deleteTexture(tex);
-    return { single: syncOk, pbo: pboOk };
-  }
-
-  function easeOutBack(x) {
-    const c1 = 1.70158;
-    const c3 = c1 + 1;
-    return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
-  }
-
-  function createRenderer(canvas, emit) {
-    const glAttrs = {
-      alpha: false,
-      depth: false,
-      stencil: false,
-      antialias: false,
-      powerPreference: "high-performance",
-      premultipliedAlpha: false,
-      preserveDrawingBuffer: false,
-      desynchronized: false,
-      failIfMajorPerformanceCaveat: false,
-    };
-    const gl =
-      canvas.getContext("webgl2", glAttrs) || canvas.getContext("webgl", glAttrs);
-    if (!gl) return null;
-
-    const webgl2 =
-      typeof WebGL2RenderingContext !== "undefined" &&
-      gl instanceof WebGL2RenderingContext;
-    const shaders = getShaders(webgl2);
-    const blitProgram = initShaderProgram(gl, shaders.blitVs, shaders.blitFs);
-    const starProgram = initShaderProgram(gl, shaders.starVs, shaders.starFs);
-    const lineProgram = initShaderProgram(gl, shaders.lineVs, shaders.lineFs);
-    const lensProgram = initShaderProgram(gl, shaders.blitVs, shaders.lensFs);
-    const holeDiscProgram = initShaderProgram(gl, shaders.holeDiscVs, shaders.holeDiscFs);
-    const dustProgram = initShaderProgram(gl, shaders.dustVs, shaders.dustFs);
-    const colorBlitProgram = initShaderProgram(gl, shaders.blitVs, shaders.colorBlitFs);
-    const colorLensProgram = initShaderProgram(gl, shaders.blitVs, shaders.colorLensFs);
-    const buffers = initBuffers(gl);
-    loadWasmDither();
-
-    let starVertCount = 0;
-    let starFrontCount = 0;
-    let lineVertCount = 0;
-    let lineFrontCount = 0;
-    let starGeom = new Float32Array(10 * 6 * 256);
-    let starGeomFront = new Float32Array(10 * 6 * 64);
-    let lineGeom = new Float32Array(4 * 6 * 256);
-    let lineGeomFront = new Float32Array(4 * 6 * 64);
-    let dustGeom = new Float32Array(9 * 6 * 128);
-    let dustGeomFront = new Float32Array(9 * 6 * 32);
-    let dustVertCount = 0;
-    let dustFrontCount = 0;
-
-    let clusterCount = 0;
-    let clusterOx = new Float32Array(0);
-    let clusterOy = new Float32Array(0);
-    let clusterOz = new Float32Array(0);
-    let clusterBound = new Float32Array(0);
-    let clusterR = new Float32Array(0);
-    let pointStart = new Int32Array(0);
-    let pointCount = new Int32Array(0);
-    let pointX = new Float32Array(0);
-    let pointY = new Float32Array(0);
-    let pointZ = new Float32Array(0);
-    let pointR = new Float32Array(0);
-    let pointCr = new Float32Array(0);
-    let pointCg = new Float32Array(0);
-    let pointCb = new Float32Array(0);
-    let worldX = new Float32Array(0);
-    let worldY = new Float32Array(0);
-    let worldZ = new Float32Array(0);
-    let worldVx = new Float32Array(0);
-    let worldVy = new Float32Array(0);
-    let worldVz = new Float32Array(0);
-    let pointMass = new Float32Array(0);
-    let starLive = new Uint8Array(0);
-    let starJet = new Uint8Array(0);
-    let starCluster = new Int16Array(0);
-    let comX = new Float32Array(0);
-    let comY = new Float32Array(0);
-    let comZ = new Float32Array(0);
-    let comMass = new Float32Array(0);
-    let physFx = new Float32Array(0);
-    let physFy = new Float32Array(0);
-    let physFz = new Float32Array(0);
-    let interFx = new Float32Array(0);
-    let interFy = new Float32Array(0);
-    let interFz = new Float32Array(0);
-    let dustWx = new Float32Array(0);
-    let dustWy = new Float32Array(0);
-    let dustWz = new Float32Array(0);
-    let dustVx = new Float32Array(0);
-    let dustVy = new Float32Array(0);
-    let dustVz = new Float32Array(0);
-    let clusterLineMax = new Float32Array(0);
-    let hashHead = new Int32Array(1024);
-    let hashNext = new Int32Array(0);
-    let totalStars = 0;
-    let dustCount = new Int32Array(0);
-    let dustJet = new Uint8Array(0);
-    let dustRadius = new Float32Array(0);
-    let dustSize = new Float32Array(0);
-    let dustGain = new Float32Array(0);
-    let dustH = new Float32Array(0);
-    let dustStretch = new Float32Array(0);
-    let dustR = new Float32Array(0);
-    let dustG = new Float32Array(0);
-    let dustB = new Float32Array(0);
-    let dustBakeStart = new Int32Array(0);
-    let dustBakeAlong = new Float32Array(0);
-    let dustBakeOut = new Float32Array(0);
-    let dustBakeUp = new Float32Array(0);
-    let dustBakePuff = new Float32Array(0);
-    let dustBakeGain = new Float32Array(0);
-    let discPx = new Float32Array(DISC_MAX);
-    let discPy = new Float32Array(DISC_MAX);
-    let discPz = new Float32Array(DISC_MAX);
-    let discVx = new Float32Array(DISC_MAX);
-    let discVy = new Float32Array(DISC_MAX);
-    let discVz = new Float32Array(DISC_MAX);
-    let discPm = new Float32Array(DISC_MAX);
-    let discCount = 0;
-
-    function removeDiscAt(i) {
-      const last = discCount - 1;
-      if (i < last) {
-        discPx[i] = discPx[last];
-        discPy[i] = discPy[last];
-        discPz[i] = discPz[last];
-        discVx[i] = discVx[last];
-        discVy[i] = discVy[last];
-        discVz[i] = discVz[last];
-        discPm[i] = discPm[last];
-      }
-      discCount = last;
-    }
-
-    function addDiscParticle(x, y, z, vx, vy, vz, m) {
-      let slot = discCount;
-      if (discCount >= DISC_MAX) {
-        let minI = 0;
-        let minM = discPm[0];
-        for (let j = 1; j < DISC_MAX; j++) {
-          if (discPm[j] < minM) {
-            minM = discPm[j];
-            minI = j;
-          }
-        }
-        if (m <= minM) return;
-        slot = minI;
-      } else {
-        discCount++;
-      }
-      discPx[slot] = x;
-      discPy[slot] = y;
-      discPz[slot] = z;
-      discVx[slot] = vx;
-      discVy[slot] = vy;
-      discVz[slot] = vz;
-      discPm[slot] = m;
-    }
-
-    function shredStar(px, py, pz, vx, vy, vz, m, mu) {
-      const r = Math.hypot(px, py, pz) || 1;
-      const inv = 1 / r;
-      const tx = -pz * inv;
-      const tz = px * inv;
-      const piece = m / DISC_FRAGS;
-      for (let k = 0; k < DISC_FRAGS; k++) {
-        const u = (k + 0.5) / DISC_FRAGS;
-        const kick = (u - 0.5) * 0.55 * Math.sqrt(mu / r);
-        addDiscParticle(
-          px + tx * kick * 0.02,
-          py * 0.15,
-          pz + tz * kick * 0.02,
-          vx + tx * kick,
-          vy * 0.2,
-          vz + tz * kick,
-          piece
-        );
-      }
-    }
-
-    function updateDiscParticles(dt, rs, mu) {
-      const isco = kerrIscoOverRs(BH_SPIN) * rs;
-      const out = keplerOut;
-      for (let i = discCount - 1; i >= 0; i--) {
-        const r = Math.hypot(discPx[i], discPy[i], discPz[i]);
-        if (r <= rs || r < isco) {
-          holeMass += discPm[i] * TDE_ACCRETE;
-          targetRadius = Math.min(maxRadius, rsOfMass(holeMass));
-          removeDiscAt(i);
-          continue;
-        }
-        if (keplerStep(discPx[i], discPy[i], discPz[i], discVx[i], discVy[i], discVz[i], dt, mu, out)) {
-          discPx[i] = out[0];
-          discPy[i] = out[1];
-          discPz[i] = out[2];
-          discVx[i] = out[3];
-          discVy[i] = out[4];
-          discVz[i] = out[5];
-        }
-        const rho = Math.hypot(discPx[i], discPz[i]);
-        const omega = kerrOmegaEquatorial(Math.max(rho, isco), rs, BH_SPIN);
-        const vk = Math.sqrt(mu / Math.max(rho, isco));
-        const vr = -DISC_ALPHA * vk * (0.5 * rs / Math.max(rho, isco));
-        const inv = 1 / Math.max(rho, 1e-8);
-        discVx[i] += (-omega * discPz[i] + discPx[i] * inv * vr - discVx[i]) * Math.min(1, dt * 0.35);
-        discVz[i] += (omega * discPx[i] + discPz[i] * inv * vr - discVz[i]) * Math.min(1, dt * 0.35);
-        discVy[i] *= 1 - 0.08 * dt;
-        discPy[i] *= 1 - 0.08 * dt;
-      }
-    }
-
-    function setClusters(next) {
-      holeMass = BH_MU0 / GRAV_G;
-      targetRadius = PHYS_RS;
-      schwarzschildRadius = PHYS_RS;
-      discCount = 0;
-      const src = Array.isArray(next) ? next : [];
-      clusterCount = src.length;
-      clusterOx = new Float32Array(clusterCount);
-      clusterOy = new Float32Array(clusterCount);
-      clusterOz = new Float32Array(clusterCount);
-      clusterBound = new Float32Array(clusterCount);
-      clusterR = new Float32Array(clusterCount);
-      pointStart = new Int32Array(clusterCount);
-      pointCount = new Int32Array(clusterCount);
-      dustCount = new Int32Array(clusterCount);
-      dustJet = new Uint8Array(clusterCount);
-      dustRadius = new Float32Array(clusterCount);
-      dustSize = new Float32Array(clusterCount);
-      dustGain = new Float32Array(clusterCount);
-      dustH = new Float32Array(clusterCount);
-      dustStretch = new Float32Array(clusterCount);
-      dustR = new Float32Array(clusterCount);
-      dustG = new Float32Array(clusterCount);
-      dustB = new Float32Array(clusterCount);
-      let totalPts = 0;
-      let totalDustPuffs = 0;
-      for (let i = 0; i < clusterCount; i++) {
-        const cluster = src[i] || {};
-        const pts = cluster.points;
-        totalPts += pts ? pts.length : 0;
-        const dust = Array.isArray(cluster.dust) ? cluster.dust[0] : cluster.dust;
-        if (dust && (dust.count | 0) > 0) totalDustPuffs += dust.count | 0;
-      }
-      dustBakeStart = new Int32Array(clusterCount);
-      dustBakeAlong = new Float32Array(totalDustPuffs);
-      dustBakeOut = new Float32Array(totalDustPuffs);
-      dustBakeUp = new Float32Array(totalDustPuffs);
-      dustBakePuff = new Float32Array(totalDustPuffs);
-      dustBakeGain = new Float32Array(totalDustPuffs);
-      let dustBakePtr = 0;
-      pointX = new Float32Array(totalPts);
-      pointY = new Float32Array(totalPts);
-      pointZ = new Float32Array(totalPts);
-      pointR = new Float32Array(totalPts);
-      pointCr = new Float32Array(totalPts);
-      pointCg = new Float32Array(totalPts);
-      pointCb = new Float32Array(totalPts);
-      worldX = new Float32Array(totalPts);
-      worldY = new Float32Array(totalPts);
-      worldZ = new Float32Array(totalPts);
-      worldVx = new Float32Array(totalPts);
-      worldVy = new Float32Array(totalPts);
-      worldVz = new Float32Array(totalPts);
-      pointMass = new Float32Array(totalPts);
-      starLive = new Uint8Array(totalPts);
-      starJet = new Uint8Array(totalPts);
-      starCluster = new Int16Array(totalPts);
-      comX = new Float32Array(clusterCount);
-      comY = new Float32Array(clusterCount);
-      comZ = new Float32Array(clusterCount);
-      comMass = new Float32Array(clusterCount);
-      physFx = new Float32Array(totalPts);
-      physFy = new Float32Array(totalPts);
-      physFz = new Float32Array(totalPts);
-      interFx = new Float32Array(totalPts);
-      interFy = new Float32Array(totalPts);
-      interFz = new Float32Array(totalPts);
-      dustWx = new Float32Array(clusterCount);
-      dustWy = new Float32Array(clusterCount);
-      dustWz = new Float32Array(clusterCount);
-      dustVx = new Float32Array(clusterCount);
-      dustVy = new Float32Array(clusterCount);
-      dustVz = new Float32Array(clusterCount);
-      clusterLineMax = new Float32Array(clusterCount);
-      hashNext = new Int32Array(clusterCount);
-      totalStars = totalPts;
-      const bhMassRef = BH_MU0 / GRAV_G;
-      let p = 0;
-      for (let c = 0; c < clusterCount; c++) {
-        const cluster = src[c] || {};
-        const origin = cluster.origin || [0, 0, 0];
-        clusterOx[c] = (origin[0] || 0) * GALAXY_OUT_SCALE;
-        clusterOy[c] = (origin[1] || 0) * GALAXY_OUT_SCALE;
-        clusterOz[c] = (origin[2] || 0) * GALAXY_OUT_SCALE;
-        const cr = cluster.radius || STAR_RADIUS;
-        clusterR[c] = cr;
-        const pts = cluster.points || [];
-        pointStart[c] = p;
-        pointCount[c] = pts.length;
-        let maxExt = 0;
-        for (let i = 0; i < pts.length; i++) {
-          const pt = pts[i] || [];
-          const x = pt[0] || 0;
-          const y = pt[1] || 0;
-          const z = pt[2] || 0;
-          const r = pt[3] || cr;
-          pointX[p] = x * GALAXY_OUT_SCALE;
-          pointY[p] = y * GALAXY_OUT_SCALE;
-          pointZ[p] = z * GALAXY_OUT_SCALE;
-          pointR[p] = r;
-          pointCr[p] = pt[4] == null ? 1 : pt[4];
-          pointCg[p] = pt[5] == null ? 1 : pt[5];
-          pointCb[p] = pt[6] == null ? 1 : pt[6];
-          const wx = (clusterOx[c] || 0) + x;
-          const wy = (clusterOy[c] || 0) + y;
-          const wz = (clusterOz[c] || 0) + z;
-          worldX[p] = wx;
-          worldY[p] = wy;
-          worldZ[p] = wz;
-          starCluster[p] = c;
-          pointMass[p] = (STAR_COMPACT * C_LIGHT2 * Math.max(r, 1e-6)) / GRAV_G;
-          starLive[p] = 1;
-          const ext = Math.hypot(x, y, z) + r;
-          if (ext > maxExt) maxExt = ext;
-          p++;
-        }
-        const start = pointStart[c];
-        const end = start + pts.length;
-        const muRef = GRAV_G * bhMassRef;
-        let maxSpan = 0;
-        for (let i = start; i < end; i++) {
-          diskOrbitVel(worldX[i], worldY[i], worldZ[i], muRef, i + 1);
-          worldVx[i] = orbitScratch[0];
-          worldVy[i] = orbitScratch[1];
-          worldVz[i] = orbitScratch[2];
-          if (i > start) {
-            const span = Math.hypot(
-              worldX[i] - worldX[i - 1],
-              worldY[i] - worldY[i - 1],
-              worldZ[i] - worldZ[i - 1]
-            );
-            if (span > maxSpan) maxSpan = span;
-          }
-        }
-        clusterLineMax[c] = Math.min(16, maxSpan * 1.2 + 1.6);
-        dustWx[c] = clusterOx[c];
-        dustWy[c] = clusterOy[c];
-        dustWz[c] = clusterOz[c];
-        const dust = Array.isArray(cluster.dust) ? cluster.dust[0] : cluster.dust;
-        if (dust && (dust.count | 0) > 0) {
-          dustCount[c] = dust.count | 0;
-          dustRadius[c] = (dust.radius || 5) * GALAXY_OUT_SCALE;
-          dustSize[c] = (dust.size || 1.6) * DUST_SIZE_MUL;
-          dustGain[c] = Math.max(0, dust.opacity == null ? 0.04 : dust.opacity) * DUST_GAIN_MUL;
-          dustH[c] = dust.height == null ? 0.12 : Math.max(0.03, dust.height);
-          dustStretch[c] = dust.stretch == null ? 1.4 : Math.max(0.4, dust.stretch);
-          dustR[c] = 1;
-          dustG[c] = 1;
-          dustB[c] = 1;
-          const rad = dustRadius[c];
-          const size = dustSize[c];
-          const height = dustH[c];
-          const stretch = dustStretch[c];
-          const tlen0 = Math.hypot(dustWx[c], dustWz[c]) || 1;
-          const rx0 = dustWx[c] / tlen0;
-          const rz0 = dustWz[c] / tlen0;
-          const tx0 = -rz0;
-          const tz0 = rx0;
-          dustBakeStart[c] = dustBakePtr;
-          const dn = dustCount[c];
-          for (let i = 0; i < dn; i++) {
-            const u = dustHash(c, i, 0);
-            const v = dustHash(c, i, 1);
-            const w = dustHash(c, i, 2);
-            const along = (u - 0.5) * 2 * rad * stretch;
-            const out = (w - 0.5) * 2 * rad * 0.42;
-            const up = (v - 0.5) * 2 * rad * height;
-            dustBakeAlong[dustBakePtr] = tx0 * along + rx0 * out;
-            dustBakeOut[dustBakePtr] = up;
-            dustBakeUp[dustBakePtr] = tz0 * along + rz0 * out;
-            dustBakePuff[dustBakePtr] = size * (0.55 + dustHash(c, i, 4) * 0.85);
-            dustBakeGain[dustBakePtr] = 0.7 + dustHash(c, i, 5) * 0.3;
-            dustBakePtr++;
-          }
-          const dustExt = rad * Math.max(1, stretch) + size * 1.4;
-          if (dustExt > maxExt) maxExt = dustExt;
-        }
-        clusterBound[c] = maxExt;
-      }
-    }
-
-    fetch("/js/clusters.json")
-      .then((res) => res.json())
-      .then((data) => {
-        if (!clusterCount) setClusters(data.clusters || []);
-      })
-      .catch(() => {});
-
-    function viewHalf(renderW, renderH, minRes) {
-      return {
-        x: renderW / (2 * minRes) + VIEW_FRUSTUM_PAD,
-        y: renderH / (2 * minRes) + VIEW_FRUSTUM_PAD,
-      };
-    }
-
-    function starInView(b, wx, wy, wz, starR, half) {
-      const dx = wx - camX;
-      const dy = wy - camY;
-      const dz = wz - camZ;
-      const z = dx * b.fx + dy * b.fy + dz * b.fz;
-      if (z <= 0.05 || z > STAR_FAR_Z) return false;
-      const sx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
-      const sy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
-      const pad = (starR / z) * STAR_ANGULAR_PAD + STAR_BASE_PAD;
-      return Math.abs(sx) <= half.x + pad && Math.abs(sy) <= half.y + pad;
-    }
-
-    function clusterInView(b, ox, oy, oz, boundR, half) {
-      const dx = ox - camX;
-      const dy = oy - camY;
-      const dz = oz - camZ;
-      const z = dx * b.fx + dy * b.fy + dz * b.fz;
-      if (z + boundR < 0.05 || z - boundR > STAR_FAR_Z) return false;
-      if (z <= boundR * 2 + 0.05) return true;
-      const sx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
-      const sy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
-      const pad = (boundR / z) * STAR_ANGULAR_PAD + STAR_BASE_PAD;
-      return Math.abs(sx) <= half.x + pad && Math.abs(sy) <= half.y + pad;
-    }
-
-    function smoothstepJS(edge0, edge1, x) {
-      const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-      return t * t * (3 - 2 * t);
-    }
-
-    function lensFadeJS(holeZ) {
-      return 1;
-    }
-
-    function einstein2JS(mass, zL, zS) {
-      const fade = lensFadeJS(zL);
-      if (fade <= 0 || zS <= 0) return 0;
-      const zUse = Math.max(zL, LENS_Z_MIN);
-      const dls = zS - zUse;
-      if (dls <= 0) return 0;
-      return (fade * 2 * mass * dls) / Math.max(zUse * zS, 1e-8);
-    }
-
-    function lensPullJS(uvx, uvy, lpx, lpy, te2) {
-      if (te2 <= 0) return [0, 0];
-      const dx = uvx - lpx;
-      const dy = uvy - lpy;
-      const s = te2 / Math.max(dx * dx + dy * dy, te2 * 0.08);
-      return [dx * s, dy * s];
-    }
-
-    function growFloat(buf, need) {
-      if (buf.length >= need) return buf;
-      let n = buf.length || 256;
-      while (n < need) n *= 2;
-      return new Float32Array(n);
-    }
-
-    function emitStarTo(bufName, countName, spx, spy, z, ang, kind, cr, cg, cb) {
-      const count = countName === "front" ? starFrontCount : starVertCount;
-      const need = count * 10 + 60;
-      if (countName === "front") starGeomFront = growFloat(starGeomFront, need);
-      else starGeom = growFloat(starGeom, need);
-      const geom = countName === "front" ? starGeomFront : starGeom;
-      const corners = [-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1];
-      for (let i = 0; i < 6; i++) {
-        const o = count * 10 + i * 10;
-        geom[o] = corners[i * 2];
-        geom[o + 1] = corners[i * 2 + 1];
-        geom[o + 2] = spx;
-        geom[o + 3] = spy;
-        geom[o + 4] = z;
-        geom[o + 5] = ang;
-        geom[o + 6] = cr;
-        geom[o + 7] = cg;
-        geom[o + 8] = cb;
-        geom[o + 9] = kind;
-      }
-      if (countName === "front") starFrontCount += 6;
-      else starVertCount += 6;
-    }
-
-    function emitStarQuad(spx, spy, z, ang, kind, cr, cg, cb) {
-      emitStarTo("starGeom", "back", spx, spy, z, ang, kind, cr, cg, cb);
-    }
-
-    function dustHash(c, i, k) {
-      let n = Math.imul(c + 1, 374761393) ^ Math.imul(i + 1, 668265263) ^ Math.imul(k + 1, 1442695041);
-      n = Math.imul(n ^ (n >>> 15), 2246822519);
-      n = Math.imul(n ^ (n >>> 13), 3266489917);
-      return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
-    }
-
-    function emitDustTo(front, spx, spy, z, ang, cr, cg, cb) {
-      const count = front ? dustFrontCount : dustVertCount;
-      const need = count * 9 + 54;
-      if (front) dustGeomFront = growFloat(dustGeomFront, need);
-      else dustGeom = growFloat(dustGeom, need);
-      const geom = front ? dustGeomFront : dustGeom;
-      const corners = [-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1];
-      for (let i = 0; i < 6; i++) {
-        const o = count * 9 + i * 9;
-        geom[o] = corners[i * 2];
-        geom[o + 1] = corners[i * 2 + 1];
-        geom[o + 2] = spx;
-        geom[o + 3] = spy;
-        geom[o + 4] = z;
-        geom[o + 5] = ang;
-        geom[o + 6] = cr;
-        geom[o + 7] = cg;
-        geom[o + 8] = cb;
-      }
-      if (front) dustFrontCount += 6;
-      else dustVertCount += 6;
-    }
-
-    function emitClusterDust(c, ox, oy, oz, b, minRes, half, holeZ) {
-      const baseN = dustCount[c];
-      if (!baseN) return;
-      let n = Math.max(3, (baseN * DUST_COUNT_MUL) | 0);
-      if (isMobile()) n = Math.max(6, (n * 0.48) | 0);
-      const dustStep = Math.max(1, (baseN / n) | 0);
-      const gain = dustGain[c];
-      const zCut = Math.max(holeZ, LENS_Z_MIN);
-      const bakeStart = dustBakeStart[c];
-      for (let i = 0; i < baseN; i += dustStep) {
-        const bi = bakeStart + i;
-        const wx = ox + dustBakeAlong[bi];
-        const wy = oy + dustBakeOut[bi];
-        const wz = oz + dustBakeUp[bi];
-        const puff = dustBakePuff[bi];
-        if (!starInView(b, wx, wy, wz, puff, half)) continue;
-        const dx = wx - camX;
-        const dy = wy - camY;
-        const dz = wz - camZ;
-        const z = dx * b.fx + dy * b.fy + dz * b.fz;
-        const spx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
-        const spy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
-        const ang = puff / Math.max(z, puff * 0.35);
-        const puffGain = gain * dustBakeGain[bi];
-        emitDustTo(z <= zCut, spx, spy, z, ang, puffGain, puffGain, puffGain);
-      }
-    }
-
-    function emitLineQuad(ax, ay, bx, by, z, minRes, front) {
-      const dx = bx - ax;
-      const dy = by - ay;
-      const len = Math.hypot(dx, dy) || 1e-5;
-      const hw = 0.85 / minRes;
-      const nx = (-dy / len) * hw;
-      const ny = (dx / len) * hw;
-      const x0 = ax - nx;
-      const y0 = ay - ny;
-      const x1 = ax + nx;
-      const y1 = ay + ny;
-      const x2 = bx - nx;
-      const y2 = by - ny;
-      const x3 = bx + nx;
-      const y3 = by + ny;
-      const count = front ? lineFrontCount : lineVertCount;
-      const need = count * 4 + 24;
-      if (front) lineGeomFront = growFloat(lineGeomFront, need);
-      else lineGeom = growFloat(lineGeom, need);
-      const geom = front ? lineGeomFront : lineGeom;
-      const verts = [x0, y0, -0.85, x1, y1, 0.85, x2, y2, -0.85, x2, y2, -0.85, x1, y1, 0.85, x3, y3, 0.85];
-      for (let i = 0; i < 6; i++) {
-        const o = count * 4 + i * 4;
-        geom[o] = verts[i * 3];
-        geom[o + 1] = verts[i * 3 + 1];
-        geom[o + 2] = z;
-        geom[o + 3] = verts[i * 3 + 2];
-      }
-      if (front) lineFrontCount += 6;
-      else lineVertCount += 6;
-    }
-
-    const orbitScratch = new Float32Array(3);
-
-    function diskOrbitVel(px, py, pz, mu, hash) {
-      const sr = Math.hypot(px, py, pz) || 1;
-      const h1 = (Math.imul(hash, 2654435761) >>> 0) / 4294967296;
-      const h2 = (Math.imul(hash, 1597334677) >>> 0) / 4294967296;
-      const h3 = (Math.imul(hash, 2246822519) >>> 0) / 4294967296;
-      let tx = -pz;
-      let tz = px;
-      const tLen = Math.hypot(tx, tz) || 1;
-      tx /= tLen;
-      tz /= tLen;
-      const inner = sr < 90;
-      const e = inner ? Math.sqrt(Math.max(1e-6, h1)) * 0.94 : 0.04 * h1;
-      const f = h2 * Math.PI * 2;
-      const cf = Math.cos(f);
-      const sf = Math.sin(f);
-      const p = sr * (1 + e * cf);
-      const n = Math.sqrt(Math.max(1e-8, mu / p));
-      const vr = n * e * sf;
-      const vt = n * (1 + e * cf);
-      const inv = 1 / sr;
-      orbitScratch[0] = tx * vt + px * inv * vr;
-      orbitScratch[1] = (h3 - 0.5) * 0.08 * n;
-      orbitScratch[2] = tz * vt + pz * inv * vr;
-    }
-
-    function rsOfMass(m) {
-      return (2 * GRAV_G * m) / C_LIGHT2;
-    }
-
-    function massOfRs(rs) {
-      return (rs * C_LIGHT2) / (2 * GRAV_G);
-    }
-
-    function bhMu() {
-      return GRAV_G * holeMass;
-    }
-
-    function stumpff(psi, out) {
-      if (psi > 1e-8) {
-        const s = Math.sqrt(psi);
-        out[0] = (1 - Math.cos(s)) / psi;
-        out[1] = (s - Math.sin(s)) / (s * psi);
-        return;
-      }
-      if (psi < -1e-8) {
-        const s = Math.sqrt(-psi);
-        out[0] = (Math.cosh(s) - 1) / -psi;
-        out[1] = (Math.sinh(s) - s) / (s * -psi);
-        return;
-      }
-      out[0] = 0.5 - psi / 24;
-      out[1] = 1 / 6 - psi / 120;
-    }
-
-    const keplerStump = new Float64Array(2);
-    const keplerOut = new Float64Array(6);
-
-    function keplerStep(px, py, pz, vx, vy, vz, dt, mu, out) {
-      const r0 = Math.hypot(px, py, pz);
-      if (r0 < 1e-6 || dt === 0) {
-        out[0] = px;
-        out[1] = py;
-        out[2] = pz;
-        out[3] = vx;
-        out[4] = vy;
-        out[5] = vz;
-        return true;
-      }
-
-      const v2 = vx * vx + vy * vy + vz * vz;
-      const rdotv = px * vx + py * vy + pz * vz;
-      const alpha = 2 / r0 - v2 / mu;
-      if (alpha > 1e-12) {
-        const a = 1 / alpha;
-        const period = Math.PI * 2 * Math.sqrt((a * a * a) / mu);
-        dt -= period * Math.round(dt / period);
-        if (dt === 0) {
-          out[0] = px;
-          out[1] = py;
-          out[2] = pz;
-          out[3] = vx;
-          out[4] = vy;
-          out[5] = vz;
-          return true;
-        }
-      }
-
-      const sqrtMu = Math.sqrt(mu);
-      let chi;
-      if (alpha > 1e-12) {
-        chi = sqrtMu * dt * alpha;
-      } else if (alpha < -1e-12) {
-        const sign = dt >= 0 ? 1 : -1;
-        const den = rdotv * alpha + sign * Math.sqrt(-mu * alpha) * (1 - r0 * alpha);
-        chi = sign * Math.sqrt(-1 / alpha) * Math.log(Math.max(1e-12, (-2 * mu * alpha * dt) / den));
-        if (!Number.isFinite(chi)) chi = sqrtMu * dt * Math.abs(alpha);
-      } else {
-        chi = (sqrtMu * dt) / r0;
-      }
-
-      const sqrtMuDt = sqrtMu * dt;
-      const cs = keplerStump;
-      let converged = false;
-      for (let k = 0; k < 14; k++) {
-        stumpff(alpha * chi * chi, cs);
-        const C = cs[0];
-        const S = cs[1];
-        const chi2 = chi * chi;
-        const chi3 = chi2 * chi;
-        const F = (rdotv / sqrtMu) * chi2 * C + (1 - alpha * r0) * chi3 * S + r0 * chi - sqrtMuDt;
-        const dF = (rdotv / sqrtMu) * chi * (1 - alpha * chi2 * S) + (1 - alpha * r0) * chi2 * C + r0;
-        if (Math.abs(dF) < 1e-18) break;
-        const dchi = F / dF;
-        chi -= dchi;
-        if (Math.abs(dchi) < 1e-12 * (1 + Math.abs(chi))) {
-          converged = true;
-          break;
-        }
-      }
-
-      stumpff(alpha * chi * chi, cs);
-      const C = cs[0];
-      const S = cs[1];
-      const chi2 = chi * chi;
-      const chi3 = chi2 * chi;
-      const f = 1 - (chi2 / r0) * C;
-      const g = dt - (chi3 / sqrtMu) * S;
-      const nx = f * px + g * vx;
-      const ny = f * py + g * vy;
-      const nz = f * pz + g * vz;
-      const r = Math.hypot(nx, ny, nz);
-      if (!converged || !(r > 1e-8) || !Number.isFinite(r)) return false;
-
-      const fdot = (sqrtMu / (r * r0)) * (alpha * chi3 * S - chi);
-      const gdot = 1 - (chi2 / r) * C;
-      const nvx = fdot * px + gdot * vx;
-      const nvy = fdot * py + gdot * vy;
-      const nvz = fdot * pz + gdot * vz;
-      if (!Number.isFinite(nvx + nvy + nvz)) return false;
-
-      out[0] = nx;
-      out[1] = ny;
-      out[2] = nz;
-      out[3] = nvx;
-      out[4] = nvy;
-      out[5] = nvz;
-      return true;
-    }
-
-    function newtonBhStep(i, dt, mu, wx, wy, wz, vx, vy, vz) {
-      const px = wx[i];
-      const py = wy[i];
-      const pz = wz[i];
-      const r2 = px * px + py * py + pz * pz + 1e-8;
-      const invR3 = mu / (r2 * Math.sqrt(r2));
-      vx[i] -= px * invR3 * dt;
-      vy[i] -= py * invR3 * dt;
-      vz[i] -= pz * invR3 * dt;
-      wx[i] += vx[i] * dt;
-      wy[i] += vy[i] * dt;
-      wz[i] += vz[i] * dt;
-    }
-
-    function keplerBody(px, py, pz, vx, vy, vz, dt, mu) {
-      const out = keplerOut;
-      if (keplerStep(px, py, pz, vx, vy, vz, dt, mu, out)) {
-        return out;
-      }
-      const r2 = px * px + py * py + pz * pz + 1e-8;
-      const invR3 = mu / (r2 * Math.sqrt(r2));
-      const nvx = vx - px * invR3 * dt;
-      const nvy = vy - py * invR3 * dt;
-      const nvz = vz - pz * invR3 * dt;
-      out[0] = px + nvx * dt;
-      out[1] = py + nvy * dt;
-      out[2] = pz + nvz * dt;
-      out[3] = nvx;
-      out[4] = nvy;
-      out[5] = nvz;
-      return out;
-    }
-
-    function refreshCom(n, cc, wx, wy, wz, mass, cx, cy, cz, cm) {
-      cx.fill(0);
-      cy.fill(0);
-      cz.fill(0);
-      cm.fill(0);
-      for (let i = 0; i < n; i++) {
-        const m = mass[i];
-        const c = starCluster[i];
-        cx[c] += wx[i] * m;
-        cy[c] += wy[i] * m;
-        cz[c] += wz[i] * m;
-        cm[c] += m;
-      }
-      for (let c = 0; c < cc; c++) {
-        const m = cm[c];
-        if (m <= 0) continue;
-        cx[c] /= m;
-        cy[c] /= m;
-        cz[c] /= m;
-      }
-    }
-
-    function computeInterCluster(n, cc, wx, wy, wz, mass, g, eps2, cx, cy, cz, cm) {
-      interFx.fill(0);
-      interFy.fill(0);
-      interFz.fill(0);
-      if (cc < 2) return;
-      refreshCom(n, cc, wx, wy, wz, mass, cx, cy, cz, cm);
-      const near2 = GRAV_NEAR2;
-      const invCell = 1 / 40;
-      hashHead.fill(-1);
-      for (let c = 0; c < cc; c++) {
-        if (pointCount[c] < 1) continue;
-        const ix = (Math.floor(cx[c] * invCell) + 512) & 31;
-        const iz = (Math.floor(cz[c] * invCell) + 512) & 31;
-        const key = ix | (iz << 5);
-        hashNext[c] = hashHead[key];
-        hashHead[key] = c;
-      }
-      for (let c = 0; c < cc; c++) {
-        const c1s = pointStart[c];
-        const c1e = c1s + pointCount[c];
-        if (c1e <= c1s) continue;
-        const c1x = cx[c];
-        const c1y = cy[c];
-        const c1z = cz[c];
-        const m1 = cm[c];
-        if (m1 <= 0) continue;
-        const ix0 = (Math.floor(c1x * invCell) + 512) & 31;
-        const iz0 = (Math.floor(c1z * invCell) + 512) & 31;
-        for (let oz = -1; oz <= 1; oz++) {
-          for (let ox = -1; ox <= 1; ox++) {
-            const key = ((ix0 + ox) & 31) | (((iz0 + oz) & 31) << 5);
-            let d = hashHead[key];
-            while (d >= 0) {
-              if (d > c) {
-                const c2s = pointStart[d];
-                const c2e = c2s + pointCount[d];
-                if (c2e > c2s) {
-                  const m2 = cm[d];
-                  if (m2 <= 0) {
-                    d = hashNext[d];
-                    continue;
-                  }
-                  const dx0 = cx[d] - c1x;
-                  const dy0 = cy[d] - c1y;
-                  const dz0 = cz[d] - c1z;
-                  if (dx0 * dx0 + dy0 * dy0 + dz0 * dz0 <= near2) {
-                    const r2 = dx0 * dx0 + dy0 * dy0 + dz0 * dz0 + eps2;
-                    const invR3 = g / (r2 * Math.sqrt(r2));
-                    const fx = dx0 * invR3;
-                    const fy = dy0 * invR3;
-                    const fz = dz0 * invR3;
-                    for (let i = c1s; i < c1e; i++) {
-                      interFx[i] += fx * m2;
-                      interFy[i] += fy * m2;
-                      interFz[i] += fz * m2;
-                    }
-                    for (let j = c2s; j < c2e; j++) {
-                      interFx[j] -= fx * m1;
-                      interFy[j] -= fy * m1;
-                      interFz[j] -= fz * m1;
-                    }
-                  }
-                }
-              }
-              d = hashNext[d];
+  function makeBlueNoiseData() {
+    const n = BLUE_SIZE * BLUE_SIZE;
+    const values = new Float32Array(n);
+    const rng = mulberry32(0x626c7565);
+    for (let i = 0; i < n; i++) values[i] = rng();
+    const tmp = new Float32Array(n);
+    for (let pass = 0; pass < 8; pass++) {
+      tmp.set(values);
+      for (let y = 0; y < BLUE_SIZE; y++) {
+        for (let x = 0; x < BLUE_SIZE; x++) {
+          let acc = 0;
+          let wsum = 0;
+          for (let oy = -2; oy <= 2; oy++) {
+            for (let ox = -2; ox <= 2; ox++) {
+              if (!ox && !oy) continue;
+              const w = 1 / (ox * ox + oy * oy);
+              const ix = (x + ox + BLUE_SIZE) % BLUE_SIZE;
+              const iy = (y + oy + BLUE_SIZE) % BLUE_SIZE;
+              acc += tmp[iy * BLUE_SIZE + ix] * w;
+              wsum += w;
             }
           }
+          values[y * BLUE_SIZE + x] = tmp[y * BLUE_SIZE + x] - 0.85 * (acc / wsum - 0.5);
         }
       }
     }
+    const ranked = Array.from(values, (v, i) => [v, i]).sort((a, b) => a[0] - b[0]);
+    const data = new Uint8Array(n * 4);
+    for (let r = 0; r < n; r++) {
+      const i = ranked[r][1] * 4;
+      const v = (r / (n - 1)) * 255;
+      data[i] = data[i + 1] = data[i + 2] = v;
+      data[i + 3] = 255;
+    }
+    return data;
+  }
 
-    function kickStars(h, n, cc, wx, wy, wz, vx, vy, vz, mass, g, eps2, ax, ay, az) {
-      ax.fill(0);
-      ay.fill(0);
-      az.fill(0);
+  function createRenderer(canvas) {
+    const gl = canvas.getContext("webgl2", {
+      alpha: false,
+      antialias: false,
+      depth: false,
+      preserveDrawingBuffer: true,
+      powerPreference: "high-performance",
+    });
+    if (!gl) return null;
+    gl.getExtension("EXT_color_buffer_float");
+    gl.getExtension("EXT_color_buffer_half_float");
 
-      for (let c = 0; c < cc; c++) {
-        const start = pointStart[c];
-        const end = start + pointCount[c];
-        for (let i = start; i < end; i++) {
-          const mi = mass[i];
-          if (mi <= 0) continue;
-          const ix = wx[i];
-          const iy = wy[i];
-          const iz = wz[i];
-          for (let j = i + 1; j < end; j++) {
-            const mj = mass[j];
-            if (mj <= 0) continue;
-            const dx = wx[j] - ix;
-            const dy = wy[j] - iy;
-            const dz = wz[j] - iz;
-            const r2 = dx * dx + dy * dy + dz * dz + eps2;
-            const invR3 = g / (r2 * Math.sqrt(r2));
-            ax[i] += dx * invR3 * mj;
-            ay[i] += dy * invR3 * mj;
-            az[i] += dz * invR3 * mj;
-            ax[j] -= dx * invR3 * mi;
-            ay[j] -= dy * invR3 * mi;
-            az[j] -= dz * invR3 * mi;
-          }
-        }
+    function makeProgram(vsSrc, fsSrc, uniformNames) {
+      const p = gl.createProgram();
+      const v = loadShader(gl, gl.VERTEX_SHADER, vsSrc);
+      const f = loadShader(gl, gl.FRAGMENT_SHADER, fsSrc);
+      if (!v || !f) return null;
+      gl.attachShader(p, v);
+      gl.attachShader(p, f);
+      gl.linkProgram(p);
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+        console.error(gl.getProgramInfoLog(p) || "program link failed");
+        return null;
       }
-
-      for (let i = 0; i < n; i++) {
-        if (!starLive[i] || starJet[i]) continue;
-        vx[i] += (ax[i] + interFx[i]) * h;
-        vy[i] += (ay[i] + interFy[i]) * h;
-        vz[i] += (az[i] + interFz[i]) * h;
-      }
+      const u = {};
+      for (const name of uniformNames) u[name] = gl.getUniformLocation(p, name);
+      return { p, u, aPos: gl.getAttribLocation(p, "aPos") };
     }
 
-    function killStar(i, wx, wy, wz, vx, vy, vz, mass) {
-      starLive[i] = 0;
-      starJet[i] = 0;
-      mass[i] = 0;
-      wx[i] = 0;
-      wy[i] = 0;
-      wz[i] = 0;
-      vx[i] = 0;
-      vy[i] = 0;
-      vz[i] = 0;
-    }
+    const blitVs = `#version 300 es
+in vec4 aPos;
+out vec2 vUv;
+void main() {
+  gl_Position = aPos;
+  vUv = aPos.xy * 0.5 + 0.5;
+}`;
 
-    function absorbInflow(n, dt, wx, wy, wz, vx, vy, vz, mass, mu) {
-      const rs = schwarzschildRadius;
-      const pwR = rs * PW_RS;
-      const isco = kerrIscoOverRs(BH_SPIN) * rs;
-      let grew = 0;
-      for (let i = 0; i < n; i++) {
-        if (!starLive[i]) continue;
-        const px = wx[i];
-        const py = wy[i];
-        const pz = wz[i];
-        const r = Math.hypot(px, py, pz);
-        const Rstar = pointR[i];
-        if (r <= rs + Rstar) {
-          grew += mass[i];
-          killStar(i, wx, wy, wz, vx, vy, vz, mass);
-          continue;
-        }
-        const m = mass[i];
-        const rt = Rstar * Math.cbrt(holeMass / Math.max(m, 1e-30));
-        const lx = py * vz[i] - pz * vy[i];
-        const ly = pz * vx[i] - px * vz[i];
-        const lz = px * vy[i] - py * vx[i];
-        const L = Math.hypot(lx, ly, lz);
-        const Lisco = Math.sqrt(mu * isco);
-        if (r < rt || (r < isco && L < Lisco)) {
-          shredStar(px, py, pz, vx[i], vy[i], vz[i], m, mu);
-          killStar(i, wx, wy, wz, vx, vy, vz, mass);
-          continue;
-        }
-        if (r >= pwR) continue;
-        const inv = 1 / r;
-        const den = Math.max(r - rs, rs * 0.12);
-        const extra = mu * (1 / (den * den) - 1 / (r * r));
-        vx[i] -= extra * px * inv * dt;
-        vy[i] -= extra * py * inv * dt;
-        vz[i] -= extra * pz * inv * dt;
-      }
-      updateDiscParticles(dt, rs, mu);
-      if (grew > 0) {
-        holeMass += grew;
-        targetRadius = Math.min(maxRadius, rsOfMass(holeMass));
-      }
-    }
+    const simLib = `
+const float SIM = ${SIM_SIZE.toFixed(1)};
+const float TEX = 1.0 / SIM;
+const float TREF = 0.60;
+const float CORIOLIS = 0.014;
+const float JET_AMP = 0.0;
+const float JET_RELAX = 0.0006;
+const float VEL_MAX = 3.1;
+const float CONV_BUOY = 0.004;
+const float CONV_RAIN = 0.006;
+const float BUOY_T = 0.4;
+const float BUOY_QC = 0.28;
+const float DIV_SCALE = 0.00045;
+const float ADIA = 0.00028;
+const float MOIST_CONV = 0.0009;
+const float COND_RATE = 0.055;
+const float REVAP_RATE = 0.01;
+const float LATENT = 0.18;
+const float RAIN_THRESH = 0.16;
+const float RAIN_RATE = 0.045;
+const float RAIN_DECAY = 0.94;
+const float RAIN_COOL = 0.0006;
+const float TRIGGER_T = 0.0004;
+const float TRIGGER_Q = 0.0008;
+const float SURF_EVAP = 0.0024;
+const float SURF_RH = 0.82;
+const float RAD_RELAX = 0.0035;
+const float CLOUD_ADV = 0.45;
+const float THERM_ADV = 2.6;
+const float WISHE = 4.4;
+const float CONV_STORM = 0.0014;
+const float EYE_SUBSIDE = 0.0008;
+const float STRETCH = 1.55;
 
-    function driftStars(dt, n, cc, mu, wx, wy, wz, vx, vy, vz) {
-      const out = keplerOut;
-      for (let i = 0; i < n; i++) {
-        if (!starLive[i]) continue;
-        if (keplerStep(wx[i], wy[i], wz[i], vx[i], vy[i], vz[i], dt, mu, out)) {
-          wx[i] = out[0];
-          wy[i] = out[1];
-          wz[i] = out[2];
-          vx[i] = out[3];
-          vy[i] = out[4];
-          vz[i] = out[5];
-        } else {
-          newtonBhStep(i, dt, mu, wx, wy, wz, vx, vy, vz);
-        }
-      }
-    }
+vec2 jetAt(vec2 uv) {
+  return vec2(JET_AMP * sin(6.2831853 * uv.y), 0.0);
+}
 
-    function updateGravity(frameMs, timeMul) {
-      const n = totalStars;
-      const cc = clusterCount;
-      if (!cc) return;
+float qsat(float t) {
+  return 0.42 * exp(3.2 * (t - TREF));
+}
 
-      const wx = worldX;
-      const wy = worldY;
-      const wz = worldZ;
-      const vx = worldVx;
-      const vy = worldVy;
-      const vz = worldVz;
-      const mass = pointMass;
-      const cx = comX;
-      const cy = comY;
-      const cz = comZ;
-      const cm = comMass;
-      const ax = physFx;
-      const ay = physFy;
-      const az = physFz;
-      const mu = bhMu();
-      const orbitDt = frameMs * 0.001 * GRAV_STEP * timeMul;
-      const useKicks = timeMul <= GRAV_KICK_MUL;
-      const camDist = Math.hypot(camX, camY, camZ);
-      const kickCap =
-        camDist > GRAV_CAM_FAR ? GRAV_KICKS_FAR : camDist > GRAV_CAM_MID ? GRAV_KICKS_MID : GRAV_MAX_KICKS;
-      const refreshBounds = (simFrame++ & 3) === 0;
+float tEquilibrium(vec2 uv) {
+  return 0.615 + 0.035 * cos(6.2831853 * uv.y);
+}
 
-      if (n) computeInterCluster(n, cc, wx, wy, wz, mass, GRAV_G, GRAV_SOFT2, cx, cy, cz, cm);
+float divergenceAt(sampler2D vel, vec2 uv) {
+  float l = texture(vel, uv - vec2(TEX, 0.0)).x;
+  float r = texture(vel, uv + vec2(TEX, 0.0)).x;
+  float b = texture(vel, uv - vec2(0.0, TEX)).y;
+  float t = texture(vel, uv + vec2(0.0, TEX)).y;
+  return 0.5 * ((r - l) + (t - b));
+}
 
-      if (n && useKicks) {
-        const nKick = Math.min(kickCap, Math.max(1, Math.ceil(orbitDt / GRAV_KICK_DT)));
-        const h = orbitDt / nKick;
-        kickStars(h * 0.5, n, cc, wx, wy, wz, vx, vy, vz, mass, GRAV_G, GRAV_SOFT2, ax, ay, az);
-        for (let s = 0; s < nKick; s++) {
-          driftStars(h, n, cc, mu, wx, wy, wz, vx, vy, vz);
-          kickStars(
-            s + 1 === nKick ? h * 0.5 : h,
-            n,
-            cc,
-            wx,
-            wy,
-            wz,
-            vx,
-            vy,
-            vz,
-            mass,
-            GRAV_G,
-            GRAV_SOFT2,
-            ax,
-            ay,
-            az
-          );
-        }
-      } else {
-        driftStars(orbitDt, n, cc, mu, wx, wy, wz, vx, vy, vz);
-        if (n) {
-          for (let i = 0; i < n; i++) {
-            if (!starLive[i] || starJet[i]) continue;
-            vx[i] += interFx[i] * orbitDt;
-            vy[i] += interFy[i] * orbitDt;
-            vz[i] += interFz[i] * orbitDt;
-          }
-        }
-      }
+float vorticityAt(sampler2D vel, vec2 uv) {
+  float dvxdy = texture(vel, uv + vec2(0.0, TEX)).x - texture(vel, uv - vec2(0.0, TEX)).x;
+  float dvydx = texture(vel, uv + vec2(TEX, 0.0)).y - texture(vel, uv - vec2(TEX, 0.0)).y;
+  return 0.5 * (dvydx - dvxdy);
+}
 
-      absorbInflow(n, orbitDt, wx, wy, wz, vx, vy, vz, mass, mu);
-      refreshCom(n, cc, wx, wy, wz, mass, cx, cy, cz, cm);
-      for (let c = 0; c < cc; c++) {
-        const m = cm[c];
-        if (m <= 0) {
-          dustCount[c] = 0;
-          continue;
-        }
-        clusterOx[c] = cx[c];
-        clusterOy[c] = cy[c];
-        clusterOz[c] = cz[c];
-        if (dustCount[c] && !dustJet[c]) {
-          dustWx[c] = cx[c];
-          dustWy[c] = cy[c];
-          dustWz[c] = cz[c];
-        }
-        if (!refreshBounds) continue;
-        const start = pointStart[c];
-        const end = start + pointCount[c];
-        let maxExt = 0;
-        for (let i = start; i < end; i++) {
-          pointX[i] = wx[i] - cx[c];
-          pointY[i] = wy[i] - cy[c];
-          pointZ[i] = wz[i] - cz[c];
-          const ext = Math.hypot(pointX[i], pointY[i], pointZ[i]);
-          if (ext > maxExt) maxExt = ext;
-        }
-        clusterBound[c] = maxExt;
-      }
-    }
+float vortSmooth(sampler2D vel, vec2 uv) {
+  float a = abs(vorticityAt(vel, uv));
+  a += abs(vorticityAt(vel, uv + vec2(2.0 * TEX, 0.0)));
+  a += abs(vorticityAt(vel, uv - vec2(2.0 * TEX, 0.0)));
+  a += abs(vorticityAt(vel, uv + vec2(0.0, 2.0 * TEX)));
+  a += abs(vorticityAt(vel, uv - vec2(0.0, 2.0 * TEX)));
+  return a * 0.2;
+}
 
-    function packScene(b, renderW, renderH, radius) {
-      const minRes = Math.min(renderW, renderH);
-      const half = viewHalf(renderW, renderH, minRes);
-      const holeZ = -camX * b.fx - camY * b.fy - camZ * b.fz;
-      starVertCount = 0;
-      starFrontCount = 0;
-      lineVertCount = 0;
-      lineFrontCount = 0;
-      dustVertCount = 0;
-      dustFrontCount = 0;
-      for (let c = 0; c < clusterCount; c++) {
-        const npts = pointCount[c];
-        const hasDust = dustCount[c] > 0;
-        if (!npts && !hasDust) continue;
-        const starVisible =
-          npts > 0 &&
-          clusterInView(b, clusterOx[c], clusterOy[c], clusterOz[c], clusterBound[c], half);
-        const dustVisible =
-          hasDust &&
-          clusterInView(
-            b,
-            dustWx[c],
-            dustWy[c],
-            dustWz[c],
-            dustRadius[c] * Math.max(1, dustStretch[c]) + dustSize[c] * 1.4,
-            half
-          );
-        if (!starVisible && !dustVisible) continue;
-        if (dustVisible) emitClusterDust(c, dustWx[c], dustWy[c], dustWz[c], b, minRes, half, holeZ);
-        if (!starVisible) continue;
-        const start = pointStart[c];
-        for (let i = 0; i < npts; i++) {
-          const pi = start + i;
-          if (!starLive[pi]) continue;
-          const wx = worldX[pi];
-          const wy = worldY[pi];
-          const wz = worldZ[pi];
-          const sr = pointR[pi];
-          const displaySr = sr * STAR_VISUAL;
-          const scr = pointCr[pi];
-          const scg = pointCg[pi];
-          const scb = pointCb[pi];
-          if (!starInView(b, wx, wy, wz, displaySr, half)) continue;
-          const dx = wx - camX;
-          const dy = wy - camY;
-          const dz = wz - camZ;
-          const z = dx * b.fx + dy * b.fy + dz * b.fz;
-          const spx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
-          const spy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
-          const ang = displaySr / Math.max(z, displaySr * 0.35);
-          const behind = z > Math.max(holeZ, LENS_Z_MIN);
-          if (!behind) emitStarTo("starGeomFront", "front", spx, spy, z, ang, 0, scr, scg, scb);
-          else emitStarQuad(spx, spy, z, ang, 0, scr, scg, scb);
-        }
-      }
-      for (let i = 0; i < discCount; i++) {
-        const wx = discPx[i];
-        const wy = discPy[i];
-        const wz = discPz[i];
-        const sr = 0.04;
-        if (!starInView(b, wx, wy, wz, sr, half)) continue;
-        const dx = wx - camX;
-        const dy = wy - camY;
-        const dz = wz - camZ;
-        const z = dx * b.fx + dy * b.fy + dz * b.fz;
-        const spx = (dx * b.rx + dy * b.ry + dz * b.rz) / z;
-        const spy = (dx * b.ux + dy * b.uy + dz * b.uz) / z;
-        const ang = sr / Math.max(z, sr * 0.35);
-        const behind = z > Math.max(holeZ, LENS_Z_MIN);
-        const g = 0.55;
-        if (!behind) emitStarTo("starGeomFront", "front", spx, spy, z, ang, 0, g, g, g);
-        else emitStarQuad(spx, spy, z, ang, 0, g, g, g);
-      }
-    }
+vec2 wrapTo(vec2 p, vec2 a) {
+  return p - a;
+}
+`;
 
-    const readbackCaps = webgl2 ? probeSingleChannelTarget(gl, true) : { single: false, pbo: false };
-    const singleTarget = true;
-    const usePbo = webgl2 && readbackCaps.pbo;
-    const sceneInternal = webgl2 ? gl.RG8 : gl.RGBA;
-    const sceneFormat = webgl2 ? gl.RG : gl.RGBA;
-    const displayInternal = webgl2 ? gl.R8 : gl.LUMINANCE;
-    const displayFormat = webgl2 ? gl.RED : gl.LUMINANCE;
-    const sceneBytes = 1;
+    const noiseLib = `
+float lattice(vec2 cell, float period, vec2 off, sampler2D tex) {
+  vec2 c = mod(cell, period) + off;
+  return textureLod(tex, (c + 0.5) / 256.0, 0.0).x;
+}
+float tileNoise(vec2 uv, float period, vec2 off, sampler2D tex) {
+  vec2 p = uv * period;
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float s00 = lattice(i, period, off, tex);
+  float s10 = lattice(i + vec2(1.0, 0.0), period, off, tex);
+  float s01 = lattice(i + vec2(0.0, 1.0), period, off, tex);
+  float s11 = lattice(i + vec2(1.0, 1.0), period, off, tex);
+  return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+}
+float tileFbm(vec2 uv, float base, sampler2D tex) {
+  float f = 0.0;
+  float a = 0.5;
+  float period = base;
+  vec2 off = vec2(0.0);
+  for (int i = 0; i < 4; i++) {
+    f += a * tileNoise(uv, period, off, tex);
+    period *= 2.0;
+    a *= 0.5;
+    off += vec2(37.0, 71.0);
+  }
+  return f;
+}
+`;
 
-    const starAttribs = {
-      corner: gl.getAttribLocation(starProgram, "aCorner"),
-      star: gl.getAttribLocation(starProgram, "aStar"),
-      color: gl.getAttribLocation(starProgram, "aColor"),
-      kind: gl.getAttribLocation(starProgram, "aKind"),
-    };
-    const starUniforms = {
-      resolution: gl.getUniformLocation(starProgram, "resolution"),
-      progress: gl.getUniformLocation(starProgram, "progress"),
-      schwarzschildRadius: gl.getUniformLocation(starProgram, "schwarzschildRadius"),
-      camPos: gl.getUniformLocation(starProgram, "camPos"),
-      camFwd: gl.getUniformLocation(starProgram, "camFwd"),
-      camRight: gl.getUniformLocation(starProgram, "camRight"),
-      camUp: gl.getUniformLocation(starProgram, "camUp"),
-      mask: gl.getUniformLocation(starProgram, "uMask"),
-      useLens: gl.getUniformLocation(starProgram, "uUseLens"),
-      useMask: gl.getUniformLocation(starProgram, "uUseMask"),
-      maskRes: gl.getUniformLocation(starProgram, "uMaskRes"),
-    };
-    const lineAttribs = {
-      pos: gl.getAttribLocation(lineProgram, "aPos"),
-      meta: gl.getAttribLocation(lineProgram, "aMeta"),
-    };
-    const lineUniforms = {
-      resolution: gl.getUniformLocation(lineProgram, "resolution"),
-      progress: gl.getUniformLocation(lineProgram, "progress"),
-      camPos: gl.getUniformLocation(lineProgram, "camPos"),
-      camFwd: gl.getUniformLocation(lineProgram, "camFwd"),
-      mask: gl.getUniformLocation(lineProgram, "uMask"),
-      useMask: gl.getUniformLocation(lineProgram, "uUseMask"),
-      maskRes: gl.getUniformLocation(lineProgram, "uMaskRes"),
-    };
-    const lensUniforms = {
-      field: gl.getUniformLocation(lensProgram, "uField"),
-      resolution: gl.getUniformLocation(lensProgram, "resolution"),
-      progress: gl.getUniformLocation(lensProgram, "progress"),
-      schwarzschildRadius: gl.getUniformLocation(lensProgram, "schwarzschildRadius"),
-      camPos: gl.getUniformLocation(lensProgram, "camPos"),
-      camFwd: gl.getUniformLocation(lensProgram, "camFwd"),
-      camRight: gl.getUniformLocation(lensProgram, "camRight"),
-      camUp: gl.getUniformLocation(lensProgram, "camUp"),
-    };
-    const holeDiscAttribs = {
-      corner: holeDiscProgram ? gl.getAttribLocation(holeDiscProgram, "aCorner") : -1,
-    };
-    const holeDiscUniforms = {
-      resolution: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "resolution") : null,
-      progress: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "progress") : null,
-      schwarzschildRadius: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "schwarzschildRadius") : null,
-      camPos: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "camPos") : null,
-      camFwd: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "camFwd") : null,
-      camRight: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "camRight") : null,
-      camUp: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "camUp") : null,
-      spin: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "bhSpin") : null,
-      discMass: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "uDiscMass") : null,
-      pass: holeDiscProgram ? gl.getUniformLocation(holeDiscProgram, "uPass") : null,
-    };
-    const dustAttribs = {
-      corner: gl.getAttribLocation(dustProgram, "aCorner"),
-      dust: gl.getAttribLocation(dustProgram, "aDust"),
-      color: gl.getAttribLocation(dustProgram, "aColor"),
-    };
-    const dustUniforms = {
-      resolution: gl.getUniformLocation(dustProgram, "resolution"),
-      progress: gl.getUniformLocation(dustProgram, "progress"),
-      camPos: gl.getUniformLocation(dustProgram, "camPos"),
-      camFwd: gl.getUniformLocation(dustProgram, "camFwd"),
-      mask: gl.getUniformLocation(dustProgram, "uMask"),
-      useMask: gl.getUniformLocation(dustProgram, "uUseMask"),
-      maskRes: gl.getUniformLocation(dustProgram, "uMaskRes"),
-    };
-    const colorLensUniforms = {
-      field: gl.getUniformLocation(colorLensProgram, "uField"),
-      resolution: gl.getUniformLocation(colorLensProgram, "resolution"),
-      progress: gl.getUniformLocation(colorLensProgram, "progress"),
-      schwarzschildRadius: gl.getUniformLocation(colorLensProgram, "schwarzschildRadius"),
-      camPos: gl.getUniformLocation(colorLensProgram, "camPos"),
-      camFwd: gl.getUniformLocation(colorLensProgram, "camFwd"),
-      camRight: gl.getUniformLocation(colorLensProgram, "camRight"),
-      camUp: gl.getUniformLocation(colorLensProgram, "camUp"),
-    };
-    const colorBlitAttrib = gl.getAttribLocation(colorBlitProgram, "aVertexPosition");
-    const colorLensAttrib = gl.getAttribLocation(colorLensProgram, "aVertexPosition");
-    const starBuffer = gl.createBuffer();
-    const lineBuffer = gl.createBuffer();
-    const dustBuffer = gl.createBuffer();
-    const holeDiscBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, holeDiscBuffer);
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
-      gl.STATIC_DRAW
+    const thermInitFs = `#version 300 es
+precision highp float;
+uniform sampler2D uNoise;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+${noiseLib}
+void main() {
+  float t = tEquilibrium(vUv) + 0.04 * (tileFbm(vUv, 4.0, uNoise) - 0.47);
+  float humid = tileFbm(vUv + 3.1, 3.5, uNoise);
+  float qv = qsat(t) * (0.5 + 0.22 * humid);
+  fragColor = vec4(qv, 0.0, t, 0.0);
+}`;
+
+    const velInitFs = `#version 300 es
+precision highp float;
+uniform sampler2D uNoise;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+${noiseLib}
+void main() {
+  fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+}`;
+
+    const impulseThermFs = `#version 300 es
+precision highp float;
+uniform sampler2D uTherm;
+uniform vec2 uPoint;
+uniform float uRadius;
+uniform float uHeat;
+uniform float uMoist;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec4 s = texture(uTherm, vUv);
+  vec2 rel = wrapTo(vUv, uPoint);
+  float w = exp(-dot(rel, rel) / max(uRadius * uRadius, 1e-6));
+  s.z = clamp(s.z + uHeat * w, 0.0, 1.4);
+  s.x = clamp(s.x + uMoist * w, 0.0, 2.0);
+  fragColor = s;
+}`;
+
+    const impulseVelFs = `#version 300 es
+precision highp float;
+uniform sampler2D uVel;
+uniform vec2 uPoint;
+uniform vec2 uDir;
+uniform float uRadius;
+uniform float uForce;
+uniform float uSpin;
+uniform float uConverge;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec2 vel = texture(uVel, vUv).xy;
+  vec2 rel = wrapTo(vUv, uPoint);
+  float w = exp(-dot(rel, rel) / max(uRadius * uRadius, 1e-6));
+  vel += uDir * uForce * w;
+  vel += vec2(-rel.y, rel.x) * (uSpin * w / max(uRadius, 1e-6));
+  vel -= normalize(rel + vec2(1e-6)) * (uConverge * w);
+  float speed = length(vel);
+  if (speed > VEL_MAX) vel *= VEL_MAX / speed;
+  fragColor = vec4(vel, 0.0, 1.0);
+}`;
+
+    const cycloneVelFs = `#version 300 es
+precision highp float;
+uniform sampler2D uVel;
+uniform vec2 uPoint;
+uniform float uRadius;
+uniform float uSpin;
+uniform float uMix;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec2 vel = texture(uVel, vUv).xy;
+  vec2 rel = wrapTo(vUv, uPoint);
+  float r = length(rel);
+  float rad = max(uRadius, 1e-5);
+  if (r < rad * 1.65 && uMix > 0.001) {
+    float r0 = rad * 0.1;
+    float lo = 1.0 - exp(-dot(rel, rel) / max(r0 * r0, 1e-8));
+    float vth = uSpin * lo * r0 / max(r, r0 * 0.4);
+    vth *= smoothstep(1.65, 0.85, r / rad);
+    vec2 radial = rel / max(r, 1e-5);
+    vec2 tang = vec2(-radial.y, radial.x);
+    float vr = dot(vel, radial);
+    float vt = mix(dot(vel, tang), vth, uMix);
+    float inflow = smoothstep(0.1, 0.4, r / rad) * smoothstep(1.9, 0.75, r / rad);
+    vr = mix(vr, -0.45 * vth, uMix * 0.7 * inflow);
+    vel = tang * vt + radial * vr;
+  }
+  float speed = length(vel);
+  if (speed > VEL_MAX) vel *= VEL_MAX / speed;
+  fragColor = vec4(vel, 0.0, 1.0);
+}`;
+
+    const frontThermFs = `#version 300 es
+precision highp float;
+uniform sampler2D uTherm;
+uniform vec2 uA;
+uniform vec2 uB;
+uniform float uWidth;
+uniform float uCold;
+uniform float uMoist;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec4 s = texture(uTherm, vUv);
+  vec2 ab = wrapTo(uB, uA);
+  float len = max(length(ab), 1e-5);
+  vec2 t = ab / len;
+  vec2 n = vec2(-t.y, t.x);
+  vec2 rel = wrapTo(vUv, uA);
+  float along = clamp(dot(rel, t), 0.0, len);
+  vec2 closest = t * along;
+  vec2 d = rel - closest;
+  float dist = length(d);
+  float side = dot(rel, n);
+  float w = exp(-dist * dist / max(uWidth * uWidth, 1e-6));
+  float taper = smoothstep(0.0, uWidth * 1.4, along) * smoothstep(len, len - uWidth * 1.4, along);
+  w *= mix(0.45, 1.0, taper);
+  s.z = clamp(s.z - uCold * sign(side) * w, 0.0, 1.4);
+  s.x = clamp(s.x + uMoist * w * mix(0.25, 1.15, 0.5 + 0.5 * sign(side)), 0.0, 2.0);
+  fragColor = s;
+}`;
+
+    const frontVelFs = `#version 300 es
+precision highp float;
+uniform sampler2D uVel;
+uniform vec2 uA;
+uniform vec2 uB;
+uniform float uWidth;
+uniform float uAlong;
+uniform float uConverge;
+uniform float uSpin;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec2 vel = texture(uVel, vUv).xy;
+  vec2 ab = wrapTo(uB, uA);
+  float len = max(length(ab), 1e-5);
+  vec2 t = ab / len;
+  vec2 n = vec2(-t.y, t.x);
+  vec2 rel = wrapTo(vUv, uA);
+  float along = clamp(dot(rel, t), 0.0, len);
+  vec2 closest = t * along;
+  vec2 d = rel - closest;
+  float dist = length(d);
+  float w = exp(-dist * dist / max(uWidth * uWidth, 1e-6));
+  float taper = smoothstep(0.0, uWidth, along) * smoothstep(len, len - uWidth, along);
+  w *= mix(0.4, 1.0, taper);
+  vel += t * uAlong * w;
+  vel -= n * sign(dot(rel, n) + 1e-6) * uConverge * w;
+  vel += vec2(-d.y, d.x) * (uSpin * w / max(uWidth, 1e-6));
+  float speed = length(vel);
+  if (speed > VEL_MAX) vel *= VEL_MAX / speed;
+  fragColor = vec4(vel, 0.0, 1.0);
+}`;
+
+    const advectVelFs = `#version 300 es
+precision highp float;
+uniform sampler2D uVel;
+uniform sampler2D uTherm;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec2 here = texture(uVel, vUv).xy;
+  vec2 vel = texture(uVel, vUv - here * TEX).xy;
+  vel += vec2(CORIOLIS * vel.y, -CORIOLIS * vel.x);
+  vel += (jetAt(vUv) - vel) * JET_RELAX;
+  vec2 vn = texture(uVel, vUv + vec2(0.0, TEX)).xy;
+  vec2 vs = texture(uVel, vUv - vec2(0.0, TEX)).xy;
+  vec2 ve = texture(uVel, vUv + vec2(TEX, 0.0)).xy;
+  vec2 vw = texture(uVel, vUv - vec2(TEX, 0.0)).xy;
+  vec2 mean = 0.25 * (vn + vs + ve + vw);
+  vec2 rot = vel - mean;
+  float div = divergenceAt(uVel, vUv);
+  vec4 s = texture(uTherm, vUv);
+  float cover = smoothstep(0.025, 0.16, s.y);
+  float moist = smoothstep(0.02, 0.14, s.x);
+  float vort = abs(vorticityAt(uVel, vUv));
+  float org = smoothstep(0.01, 0.07, vort);
+  float convect = cover * moist * mix(0.18, 1.0, org);
+  float sink = convect * STRETCH;
+  float stretch = (vort + CORIOLIS * 6.0) * sink;
+  rot *= 1.0 + clamp((-div / DIV_SCALE) * 0.08, -0.04, 0.08) + clamp(stretch, -0.03, 0.24);
+  vel = mean + rot;
+  float storm = smoothstep(0.014, 0.08, vort) * smoothstep(0.02, 0.12, s.y);
+  vel *= mix(0.992, 0.9995, storm);
+  float speed = length(vel);
+  if (speed > VEL_MAX) vel *= VEL_MAX / speed;
+  fragColor = vec4(vel, 0.0, 1.0);
+}`;
+
+    const advectThermFs = `#version 300 es
+precision highp float;
+uniform sampler2D uTherm;
+uniform sampler2D uVel;
+uniform sampler2D uNoise;
+uniform sampler2D uSst;
+uniform float uTime;
+uniform vec4 uEye0;
+uniform vec4 uEye1;
+uniform vec4 uEye2;
+uniform vec4 uEye3;
+uniform int uEyeN;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+${noiseLib}
+float eyeEnv(vec2 uv) {
+  float e = 0.0;
+  for (int i = 0; i < 4; i++) {
+    if (i >= uEyeN) break;
+    vec4 s = i == 0 ? uEye0 : i == 1 ? uEye1 : i == 2 ? uEye2 : uEye3;
+    float rn = length(wrapTo(uv, s.xy)) / max(s.z, 1e-5);
+    e = max(e, s.w * exp(-rn * rn));
+  }
+  return e;
+}
+void main() {
+  vec2 raw = texture(uVel, vUv).xy;
+  vec2 vel = raw * THERM_ADV;
+  vec2 src = vUv - vel * TEX;
+  vec4 s = texture(uTherm, src);
+  vec4 blur = 0.25 * (
+    texture(uTherm, src + vec2(TEX, 0.0)) +
+    texture(uTherm, src - vec2(TEX, 0.0)) +
+    texture(uTherm, src + vec2(0.0, TEX)) +
+    texture(uTherm, src - vec2(0.0, TEX))
+  );
+  s = mix(s, blur, 0.08);
+
+  float qv = s.x;
+  float qc = s.y;
+  float t = s.z;
+  float rain = s.w;
+
+  float div = 0.4 * divergenceAt(uVel, vUv)
+    + 0.15 * (
+      divergenceAt(uVel, vUv + vec2(TEX, 0.0)) +
+      divergenceAt(uVel, vUv - vec2(TEX, 0.0)) +
+      divergenceAt(uVel, vUv + vec2(0.0, TEX)) +
+      divergenceAt(uVel, vUv - vec2(0.0, TEX))
     );
+  float lift = clamp(-div / DIV_SCALE, -1.6, 1.6);
+  t -= ADIA * lift;
+  qv += MOIST_CONV * lift * qv;
 
-    const blitAttrib = gl.getAttribLocation(blitProgram, "aVertexPosition");
-    const lensAttrib = gl.getAttribLocation(lensProgram, "aVertexPosition");
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
-    gl.vertexAttribPointer(blitAttrib, 2, gl.FLOAT, false, 0, 0);
-    gl.enableVertexAttribArray(blitAttrib);
-    if (lensAttrib >= 0 && lensAttrib !== blitAttrib) {
-      gl.vertexAttribPointer(lensAttrib, 2, gl.FLOAT, false, 0, 0);
-      gl.enableVertexAttribArray(lensAttrib);
+  float teq = tEquilibrium(vUv);
+  t += RAD_RELAX * (teq - t);
+
+  float trigger = tileFbm(vUv + vec2(uTime * 0.008, uTime * 0.005), 10.0, uNoise) - 0.47;
+  t += TRIGGER_T * trigger;
+  qv += TRIGGER_Q * trigger;
+
+  float qs = qsat(t);
+  float wind = length(raw);
+  float sst = texture(uSst, vUv).x;
+  qv += SURF_EVAP * (0.55 + WISHE * wind) * (1.0 + 3.2 * sst) * max(qs * SURF_RH - qv, 0.0);
+  t += 0.00035 * sst * (0.55 + wind);
+  qs = qsat(t);
+  float excess = qv - qs;
+  float cond = excess > 0.0 ? excess * COND_RATE : -min(qc, -excess * REVAP_RATE);
+  qv -= cond;
+  qc += cond;
+  t += LATENT * cond;
+
+  float core = smoothstep(0.025, 0.11, abs(vorticityAt(uVel, vUv)));
+  float eyeW = eyeEnv(vUv) * (1.0 - smoothstep(0.12, 0.45, wind));
+  qc = max(qc - eyeW * (qc * 0.12 + 0.002), 0.0);
+  qv -= eyeW * qv * 0.01;
+  t += eyeW * 0.0022;
+  float fall = max(qc - mix(RAIN_THRESH, RAIN_THRESH + 0.07, core), 0.0) * mix(RAIN_RATE, RAIN_RATE * 0.42, core);
+  qc -= fall;
+  rain = rain * RAIN_DECAY + fall * 4.0;
+  t -= RAIN_COOL * rain;
+  qv += rain * 0.0025;
+
+  fragColor = vec4(
+    clamp(qv, 0.0, 2.0),
+    clamp(qc, 0.0, 1.6),
+    clamp(t, 0.0, 1.4),
+    clamp(rain, 0.0, 2.0)
+  );
+}`;
+
+    const copyFs = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  fragColor = texture(uSrc, vUv);
+}`;
+
+    const divergenceFs = `#version 300 es
+precision highp float;
+uniform sampler2D uVel;
+uniform sampler2D uTherm;
+uniform sampler2D uMean;
+uniform vec4 uSeed0;
+uniform vec4 uSeed1;
+uniform vec4 uSeed2;
+uniform vec4 uSeed3;
+uniform int uSeedN;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+float seedEnv(vec2 uv) {
+  float e = 0.0;
+  for (int i = 0; i < 4; i++) {
+    if (i >= uSeedN) break;
+    vec4 s = i == 0 ? uSeed0 : i == 1 ? uSeed1 : i == 2 ? uSeed2 : uSeed3;
+    float rn = length(wrapTo(uv, s.xy)) / max(s.z, 1e-5);
+    e = max(e, smoothstep(1.2, 0.32, rn));
+  }
+  return e;
+}
+void main() {
+  float div = divergenceAt(uVel, vUv);
+  vec4 s = texture(uTherm, vUv);
+  vec4 avg = textureLod(uMean, vec2(0.5), ${SIM_MIP.toFixed(1)});
+  float buoy = (s.z - avg.z) * BUOY_T + (s.y - avg.y) * BUOY_QC;
+  float cover = smoothstep(0.03, 0.18, s.y);
+  float vort = vortSmooth(uVel, vUv);
+  float org = max(seedEnv(vUv), smoothstep(0.014, 0.08, vort));
+  float moist = smoothstep(0.02, 0.12, s.x);
+  float convect = cover * mix(0.35, 1.0, moist) * mix(0.2, 1.0, org);
+  float speed = length(texture(uVel, vUv).xy);
+  float eye = smoothstep(0.06, 0.16, vort) * (1.0 - smoothstep(0.18, 0.5, speed)) * org;
+  float target = -CONV_BUOY * buoy + CONV_RAIN * (s.w - avg.w) - CONV_STORM * convect + EYE_SUBSIDE * eye;
+  fragColor = vec4(div - target, 0.0, 0.0, 1.0);
+}`;
+
+    const jacobiFs = `#version 300 es
+precision highp float;
+uniform sampler2D uPressure;
+uniform sampler2D uDiv;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  float l = texture(uPressure, vUv - vec2(TEX, 0.0)).x;
+  float r = texture(uPressure, vUv + vec2(TEX, 0.0)).x;
+  float b = texture(uPressure, vUv - vec2(0.0, TEX)).x;
+  float t = texture(uPressure, vUv + vec2(0.0, TEX)).x;
+  float rhs = texture(uDiv, vUv).x;
+  fragColor = vec4(0.25 * (l + r + b + t - rhs), 0.0, 0.0, 1.0);
+}`;
+
+    const projectFs = `#version 300 es
+precision highp float;
+uniform sampler2D uVel;
+uniform sampler2D uPressure;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  float l = texture(uPressure, vUv - vec2(TEX, 0.0)).x;
+  float r = texture(uPressure, vUv + vec2(TEX, 0.0)).x;
+  float b = texture(uPressure, vUv - vec2(0.0, TEX)).x;
+  float t = texture(uPressure, vUv + vec2(0.0, TEX)).x;
+  vec2 vel = texture(uVel, vUv).xy - 0.5 * vec2(r - l, t - b);
+  float speed = length(vel);
+  if (speed > VEL_MAX) vel *= VEL_MAX / speed;
+  fragColor = vec4(vel, 0.0, 1.0);
+}`;
+
+    const noiseGenFs = `#version 300 es
+precision highp float;
+uniform float uZ;
+in vec2 vUv;
+out vec4 fragColor;
+float hash13(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+vec3 hash33(vec3 p) {
+  return vec3(hash13(p), hash13(p + 19.19), hash13(p + 47.71));
+}
+float valueTile(vec3 p, float cells) {
+  vec3 pc = p * cells;
+  vec3 i = floor(pc);
+  vec3 f = fract(pc);
+  f = f * f * (3.0 - 2.0 * f);
+  float sum = 0.0;
+  for (int dz = 0; dz < 2; dz++) {
+    for (int dy = 0; dy < 2; dy++) {
+      for (int dx = 0; dx < 2; dx++) {
+        vec3 o = vec3(float(dx), float(dy), float(dz));
+        float v = hash13(mod(i + o, cells) + 0.5);
+        vec3 w = mix(1.0 - f, f, o);
+        sum += v * w.x * w.y * w.z;
+      }
     }
+  }
+  return sum;
+}
+float worleyTile(vec3 p, float cells) {
+  vec3 pc = p * cells;
+  vec3 i = floor(pc);
+  vec3 f = fract(pc);
+  float md = 4.0;
+  for (int dz = -1; dz <= 1; dz++) {
+    for (int dy = -1; dy <= 1; dy++) {
+      for (int dx = -1; dx <= 1; dx++) {
+        vec3 o = vec3(float(dx), float(dy), float(dz));
+        vec3 d = o + hash33(mod(i + o, cells) + 0.5) - f;
+        md = min(md, dot(d, d));
+      }
+    }
+  }
+  return 1.0 - clamp(sqrt(md), 0.0, 1.0);
+}
+void main() {
+  vec3 p = vec3(vUv, uZ);
+  float perlin = 0.5 * valueTile(p, 4.0) + 0.26 * valueTile(p, 8.0) + 0.14 * valueTile(p, 16.0) + 0.10 * valueTile(p, 32.0);
+  float w3 = worleyTile(p, 3.0);
+  float w6 = worleyTile(p, 6.0);
+  float w12 = worleyTile(p, 12.0);
+  fragColor = vec4(clamp(perlin * 0.62 + w3 * 0.38, 0.0, 1.0), w3, w6, w12);
+}`;
 
-    gl.disable(gl.BLEND);
-    gl.disable(gl.DEPTH_TEST);
-    gl.disable(gl.CULL_FACE);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
-    gl.pixelStorei(gl.PACK_ALIGNMENT, 4);
-    gl.useProgram(blitProgram);
-    gl.uniform1i(gl.getUniformLocation(blitProgram, "uTex"), 0);
-    gl.useProgram(colorBlitProgram);
-    gl.uniform1i(gl.getUniformLocation(colorBlitProgram, "uTex"), 0);
-    gl.activeTexture(gl.TEXTURE0);
+    const weatherFs = `#version 300 es
+precision highp float;
+uniform highp sampler3D uNoise3;
+uniform sampler2D uField;
+uniform sampler2D uVel;
+uniform sampler2D uBlueNoise;
+uniform sampler2D uStorm;
+uniform vec2 uResolution;
+uniform int uFrame;
+uniform int uSteps;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
 
-    let compositeFb = null;
-    let fieldFb = null;
-    let compositeTexture = null;
-    let fieldTexture = null;
-    let displayTexture = null;
-    let pbos = null;
-    let pboIndex = 0;
-    let pboHasPrev = false;
-    let fboWidth = 0;
-    let fboHeight = 0;
-    let packStride = 0;
-    let uploadStride = 0;
-    let hasPresented = false;
+#define MAX_STEPS 96
+#define LIGHT_STEPS 4
 
-    let heap = null;
-    let graySrc = null;
-    let grayDst = null;
-    let rgbaStage = null;
-    let packDest = null;
-    let uploadPack = null;
-    let rowsPtr = 0;
-    let srcPtr = 0;
-    let dstPtr = 0;
+const vec3 SUN_DIR = normalize(vec3(0.52, 0.64, 0.44));
+const float SIGMA = 14.0;
+const float SIGMA_L = 8.8;
 
-    const colorInternal = webgl2 ? gl.RGBA8 : gl.RGBA;
-    const colorFormat = gl.RGBA;
+float worleyFbm(vec4 n) {
+  return n.g * 0.6 + n.b * 0.28 + n.a * 0.12;
+}
+float remap(float v, float lo, float hi) {
+  return clamp((v - lo) / max(hi - lo, 1e-4), 0.0, 1.0);
+}
 
-    function createTexture(width, height, internal, format, filter) {
+float lobe(vec3 p, vec2 uv, float yMid, float thick, float cov, float nOff, float nScale, float settle, bool cheap) {
+  if (cov < 0.02) return 0.0;
+  float vh = (p.y - yMid) / max(thick, 1e-4);
+  if (abs(vh) > 1.05) return 0.0;
+  float vert = smoothstep(0.0, 0.28, 1.0 - vh * vh);
+  vec4 n = texture(uNoise3, vec3(uv.x, yMid * 0.4 + nOff, uv.y) * nScale);
+  vec2 shift = (n.gb - 0.5) * (0.028 + nOff * 0.05);
+  vec4 n2 = texture(uNoise3, vec3(uv.x + shift.x, yMid * 0.4 + nOff, uv.y + shift.y) * nScale);
+  float cell = mix(0.06, 0.14, settle) * mix(1.0, 0.4, cov);
+  float shape = mix(n2.r, worleyFbm(n2), cell);
+  float rim = mix(0.04, 0.14, nOff) + (1.0 - cov) * 0.32;
+  float d = remap(shape * vert, rim, 1.0);
+  if (!cheap && d > 0.0) {
+    vec4 t = texture(uNoise3, vec3(uv.x, p.y, uv.y) * nScale * 1.45 + 0.28);
+    d = remap(d, worleyFbm(t) * mix(0.01, 0.04, settle) * (0.2 + 0.25 * abs(vh)), 1.0);
+  }
+  return d * mix(1.25, 1.7, cov);
+}
+
+float cloudDensity(vec3 p, bool cheap) {
+  if (p.y < 0.0 || p.y > 1.42) return 0.0;
+  float h = min(p.y, 1.0);
+  vec2 vel = texture(uVel, p.xz).xy;
+  vec4 n0 = texture(uNoise3, vec3(p.x, p.y * 0.55, p.z) * 2.4);
+  vec4 n1 = texture(uNoise3, vec3(p.x, p.y * 0.8, p.z) * 4.0 + 0.19);
+  vec4 f0 = texture(uField, p.xz);
+  float qcN0 = 0.25 * (
+    texture(uField, p.xz + vec2(TEX, 0.0)).y +
+    texture(uField, p.xz - vec2(TEX, 0.0)).y +
+    texture(uField, p.xz + vec2(0.0, TEX)).y +
+    texture(uField, p.xz - vec2(0.0, TEX)).y
+  );
+  float fresh0 = smoothstep(0.03, 0.14, abs(f0.y - qcN0) * 7.0);
+  vec2 warp = (n0.gb - 0.5) * mix(0.03, 0.11, h) + (n1.ba - 0.5) * mix(0.016, 0.06, h);
+  warp += vel * CLOUD_ADV * h * 0.04;
+  warp += (n0.ra - 0.5) * fresh0 * mix(0.02, 0.09, h);
+  vec2 uv = p.xz + warp;
+  vec4 f = texture(uField, uv);
+  float qc = f.y;
+  float temp = f.z;
+  float rain = f.w;
+  float cover = smoothstep(0.012, 0.2, qc);
+  if (cover < 0.008) return 0.0;
+
+  float qcN = 0.25 * (
+    texture(uField, uv + vec2(TEX, 0.0)).y +
+    texture(uField, uv - vec2(TEX, 0.0)).y +
+    texture(uField, uv + vec2(0.0, TEX)).y +
+    texture(uField, uv - vec2(0.0, TEX)).y
+  );
+  float fresh = max(fresh0, smoothstep(0.03, 0.14, abs(qc - qcN) * 7.0));
+  float qcSoft = mix(qc, qcN, 0.48);
+  float settle = 1.0 - 0.86 * fresh;
+
+  float unstable = clamp((temp - tEquilibrium(uv)) * 5.5 + cover * 0.35, 0.0, 1.0);
+  float wet = smoothstep(0.05, 0.45, rain);
+  float mass = smoothstep(0.05, 0.2, qcSoft);
+  float tower = smoothstep(0.14, 0.42, qcSoft);
+  float overshoot = smoothstep(0.28, 0.65, qcSoft);
+  float top = mix(0.26, 0.5, mass);
+  top = mix(top, 0.96, tower * 0.8 + unstable * 0.26);
+  top = mix(top, 1.34, overshoot);
+  vec4 bump0 = texture(uNoise3, vec3(uv.x, 0.12, uv.y) * 1.8);
+  top *= mix(1.0, mix(0.93, 1.04, bump0.r), settle * (1.0 - cover * 0.35));
+  top *= 1.0 - 0.14 * wet * (1.0 - overshoot);
+  if (p.y > top) return 0.0;
+
+  float d0 = lobe(p, uv, top * 0.18, top * 0.26, cover, 0.0, 1.8, settle, cheap);
+  float d1 = lobe(p, uv, top * 0.42, top * 0.22, cover * mix(0.45, 0.92, mass), 0.16, 2.2, settle, cheap);
+  float d2 = lobe(p, uv, top * 0.68, top * 0.18, cover * mix(0.0, 0.88, tower), 0.32, 2.6, settle, cheap);
+  float d3 = lobe(p, uv, top * 0.9, top * 0.14, cover * mix(0.0, 0.82, overshoot), 0.5, 3.0, settle, cheap);
+  float d = max(max(d0, d1), max(d2, d3));
+  float wisp = remap(n0.r, mix(0.18, 0.42, cover), 0.78);
+  d *= mix(wisp, 1.0, settle * cover);
+  return clamp(d, 0.0, 1.0);
+}
+
+float peakShade(vec2 uv, float tower, float overshoot) {
+  vec2 sd = normalize(SUN_DIR.xz) * 0.02;
+  float h0 = texture(uNoise3, vec3(uv.x, 0.3, uv.y) * 2.4).r;
+  float h1 = texture(uNoise3, vec3(uv.x + sd.x, 0.3, uv.y + sd.y) * 2.4).r;
+  float t0 = texture(uNoise3, vec3(uv.x, 0.48, uv.y) * 3.6).r;
+  float t1 = texture(uNoise3, vec3(uv.x + sd.x, 0.48, uv.y + sd.y) * 3.6).r;
+  float block = max(h1 - h0, 0.0) * tower + max(t1 - t0, 0.0) * overshoot;
+  return exp(-block * 1.15);
+}
+
+float lightTau(vec3 p, float jitter) {
+  float tau = 0.0;
+  float s = 0.04;
+  p += SUN_DIR * s * jitter;
+  for (int i = 0; i < LIGHT_STEPS; i++) {
+    p += SUN_DIR * s;
+    tau += cloudDensity(p, true) * s;
+    s *= 1.45;
+  }
+  return tau;
+}
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec2 hash22(vec2 p) {
+  return vec2(hash12(p), hash12(p + 17.13));
+}
+
+const vec3 BOLT_CORE = vec3(1.0, 0.93, 1.0);
+const vec3 BOLT_SCAT = vec3(0.5, 0.34, 1.0);
+
+float distSeg(vec3 p, vec3 a, vec3 b, out float u) {
+  vec3 ba = b - a;
+  u = clamp(dot(p - a, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
+  return length(p - a - ba * u);
+}
+
+vec3 pathAt(vec3 a, vec3 b, vec3 c, vec3 d, float u) {
+  if (u < 0.33) return mix(a, b, u / 0.33);
+  if (u < 0.66) return mix(b, c, (u - 0.33) / 0.33);
+  return mix(c, d, (u - 0.66) / 0.34);
+}
+
+float moistDen(vec3 p) {
+  float d = cloudDensity(p, true);
+  float qc = texture(uField, p.xz).y;
+  return d * (0.55 + 0.6 * smoothstep(0.03, 0.3, qc));
+}
+
+float boltFlicker(float frame, float seed) {
+  float a = step(0.28, hash12(vec2(floor(frame * 0.55), seed)));
+  float b = step(0.42, hash12(vec2(floor(frame), seed + 2.7)));
+  float c = 0.45 + 0.55 * hash12(vec2(floor(frame * 0.28), seed + 8.1));
+  float dart = exp(-abs(fract(frame * 0.19 + seed) - 0.5) * 14.0);
+  return mix(0.35, 1.0, a) * mix(0.5, 1.0, b) * c + dart * 0.85;
+}
+
+vec3 boltLight(vec3 pos, vec3 a, vec3 b, vec3 c, vec3 d, float amp, float den, float travel) {
+  if (amp < 0.008) return vec3(0.0);
+  float u0, u1, u2;
+  float d0 = distSeg(pos, a, b, u0);
+  float d1 = distSeg(pos, b, c, u1);
+  float d2 = distSeg(pos, c, d, u2);
+  float md = d0;
+  float u = u0 * 0.33;
+  vec3 closest = mix(a, b, u0);
+  if (d1 < md) {
+    md = d1;
+    u = 0.33 + u1 * 0.33;
+    closest = mix(b, c, u1);
+  }
+  if (d2 < md) {
+    md = d2;
+    u = 0.66 + u2 * 0.34;
+    closest = mix(c, d, u2);
+  }
+  if (md > 0.2) return vec3(0.0);
+  float live = 1.0 - smoothstep(travel, travel + 0.1, u);
+  float head = exp(-abs(u - travel) * 16.0) * step(u, travel + 0.06);
+  if (live < 0.02 && head < 0.02) return vec3(0.0);
+  float alongTau = 0.0;
+  for (int i = 1; i <= 4; i++) {
+    alongTau += moistDen(pathAt(a, b, c, d, min(u, travel) * float(i) / 4.0));
+  }
+  alongTau *= min(u, travel) * 0.12;
+  vec3 toC = closest - pos;
+  float clen = length(toC);
+  vec3 dir = toC / max(clen, 1e-5);
+  float s = min(clen, 0.12) / 4.0;
+  vec3 p = pos;
+  float offTau = 0.0;
+  for (int i = 0; i < 4; i++) {
+    p += dir * s;
+    offTau += moistDen(p) * s;
+  }
+  float transAlong = exp(-alongTau * 1.8);
+  float transOff = exp(-offTau * 4.2);
+  float moist = texture(uField, pos.xz).y;
+  float scatter = den * (0.35 + 0.65 * smoothstep(0.03, 0.28, moist));
+  float core = (head * 2.4 + live * 1.1) * exp(-md * md * 700.0) * transAlong;
+  float fill = (head * 1.1 + live) * exp(-md / 0.065) / (1.0 + md * 5.0);
+  fill *= transOff * transAlong * scatter;
+  return amp * (core * BOLT_CORE * 4.2 + fill * BOLT_SCAT * 3.1);
+}
+
+void main() {
+  vec3 rd = normalize(vec3(0.1, -1.0, 0.07));
+  vec3 ro = vec3(vUv.x, 1.74, vUv.y);
+  float tAim = (0.42 - ro.y) / rd.y;
+  ro.xz -= rd.xz * tAim;
+  float t0 = (1.42 - ro.y) / rd.y;
+  float t1 = (0.0 - ro.y) / rd.y;
+  float dt = (t1 - t0) / float(max(uSteps, 1));
+  float jitter = fract(texture(uBlueNoise, gl_FragCoord.xy / 128.0).r + float(uFrame % 24) * 0.618034);
+  float t = t0 + dt * jitter;
+  float trans = 1.0;
+  float acc = 0.0;
+  vec3 boltAcc = vec3(0.0);
+  vec3 ba[4];
+  vec3 bb[4];
+  vec3 bc[4];
+  vec3 bd[4];
+  float boltF[4];
+  float boltT[4];
+  float tm = float(uFrame);
+  for (int s = 0; s < 4; s++) {
+    ba[s] = bb[s] = bc[s] = bd[s] = vec3(0.5, 0.12, 0.5);
+    boltF[s] = 0.0;
+    boltT[s] = 0.0;
+    float seed = 8.3 + float(s) * 21.9;
+    float period = 130.0 + hash12(vec2(seed, 1.4)) * 150.0;
+    float shifted = tm + seed * 37.0;
+    float cycle = floor(shifted / period);
+    float phase = fract(shifted / period);
+    float env = exp(-phase * 4.8) * step(phase, 0.4);
+    if (env < 0.008) continue;
+    vec2 best = hash22(vec2(cycle, seed));
+    float bestCh = 0.0;
+    for (int k = 0; k < 5; k++) {
+      vec2 p = hash22(vec2(cycle + 0.13, seed + float(k) * 9.4));
+      float ch = texture(uStorm, p).x;
+      if (ch > bestCh) {
+        bestCh = ch;
+        best = p;
+      }
+    }
+    if (bestCh < 0.14) continue;
+    vec2 dir = normalize(hash22(vec2(cycle, seed + 3.2)) - 0.5);
+    float reach = 0.12 + hash12(vec2(cycle, seed + 5.0)) * 0.16;
+    vec2 endp = best + dir * reach;
+    if (texture(uStorm, endp).x < 0.1) {
+      vec2 alt = hash22(vec2(cycle, seed + 14.0));
+      if (texture(uStorm, alt).x > 0.12) endp = mix(best, alt, 0.8);
+    }
+    vec2 n = vec2(-dir.y, dir.x);
+    vec2 m1 = mix(best, endp, 0.34) + n * (hash12(vec2(cycle, seed + 6.1)) * 2.0 - 1.0) * 0.055;
+    vec2 m2 = mix(best, endp, 0.67) + n * (hash12(vec2(cycle, seed + 7.4)) * 2.0 - 1.0) * 0.05;
+    ba[s] = vec3(best.x, 0.045 + hash12(vec2(cycle, seed + 11.0)) * 0.07, best.y);
+    bb[s] = vec3(m1.x, 0.07 + hash12(vec2(cycle, seed + 12.0)) * 0.16, m1.y);
+    bc[s] = vec3(m2.x, 0.06 + hash12(vec2(cycle, seed + 13.0)) * 0.18, m2.y);
+    bd[s] = vec3(endp.x, 0.08 + hash12(vec2(cycle, seed + 14.2)) * 0.2, endp.y);
+    boltF[s] = env * smoothstep(0.14, 0.55, bestCh) * boltFlicker(tm, seed + cycle);
+    boltT[s] = clamp(phase / 0.11, 0.0, 1.0);
+  }
+
+  for (int i = 0; i < MAX_STEPS; i++) {
+    if (i >= uSteps || trans < 0.03) break;
+    vec3 pos = ro + rd * t;
+    float den = cloudDensity(pos, false);
+    if (den > 0.004) {
+      float light = exp(-lightTau(pos, jitter) * SIGMA_L);
+      float powder = 1.0 - exp(-den * 4.2);
+      float h = clamp(pos.y, 0.0, 1.0);
+      vec4 fld = texture(uField, pos.xz);
+      float rain = fld.w;
+      float tower = smoothstep(0.14, 0.42, fld.y);
+      float overshoot = smoothstep(0.28, 0.65, fld.y);
+      light *= peakShade(pos.xz, tower, overshoot);
+      float crest = smoothstep(0.6, 1.1, pos.y) * mix(0.1, 0.7, tower);
+      float lit = mix(0.18, 1.08, light) * mix(0.7, 1.08, powder);
+      lit *= mix(1.0, 1.08, crest * light);
+      lit *= mix(1.0, 0.62, smoothstep(0.06, 0.5, rain) * (1.0 - h));
+      vec3 glow = vec3(0.0);
+      for (int s = 0; s < 4; s++) glow += boltLight(pos, ba[s], bb[s], bc[s], bd[s], boltF[s], den, boltT[s]);
+      glow *= 0.55 + 0.45 * powder;
+      float alpha = 1.0 - exp(-den * dt * SIGMA);
+      acc += trans * alpha * lit;
+      boltAcc += trans * alpha * glow;
+      trans *= 1.0 - alpha;
+    }
+    t += dt;
+  }
+
+  float lum = acc / (1.0 + acc * 0.35);
+  vec3 flash = boltAcc / (1.0 + boltAcc * 0.05);
+  float w = clamp(max(flash.b, flash.r) * 1.15, 0.0, 0.92);
+  vec3 col = vec3(lum) * (1.0 - w * 0.82) + flash;
+  fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}`;
+
+    const stormFs = `#version 300 es
+precision highp float;
+uniform sampler2D uStorm;
+uniform sampler2D uTherm;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec4 f = texture(uTherm, vUv);
+  float moist = f.y + f.w * 0.28;
+  float prev = texture(uStorm, vUv).x;
+  float blur = 0.25 * (
+    texture(uStorm, vUv + vec2(TEX, 0.0)).x +
+    texture(uStorm, vUv - vec2(TEX, 0.0)).x +
+    texture(uStorm, vUv + vec2(0.0, TEX)).x +
+    texture(uStorm, vUv - vec2(0.0, TEX)).x
+  );
+  prev = mix(prev, blur, 0.18);
+  float charge = prev;
+  if (moist > 0.11) charge = min(1.0, charge + 0.018 + (moist - 0.11) * 0.05);
+  else if (moist < 0.055) charge = max(0.0, charge - 0.005);
+  else charge = max(0.0, charge - 0.0012);
+  fragColor = vec4(charge, 0.0, 0.0, 1.0);
+}`;
+
+    const inkFs = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc;
+uniform vec2 uA;
+uniform vec2 uB;
+uniform float uWidth;
+uniform float uStrength;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  vec3 prev = texture(uSrc, vUv).rgb;
+  vec2 ab = uB - uA;
+  float len = max(length(ab), 1e-5);
+  vec2 t = ab / len;
+  vec2 rel = vUv - uA;
+  float along = clamp(dot(rel, t), 0.0, len);
+  float dist = length(rel - t * along);
+  float w = exp(-dist * dist / max(uWidth * uWidth, 1e-6));
+  fragColor = vec4(max(prev, vec3(w * uStrength)), 1.0);
+}`;
+
+    const fadeFs = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc;
+uniform float uFade;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(texture(uSrc, vUv).rgb * uFade, 1.0);
+}`;
+
+    const compositeFs = `#version 300 es
+precision highp float;
+uniform sampler2D uWeather;
+uniform sampler2D uInk;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  vec3 cloud = texture(uWeather, vUv).rgb;
+  float ink = texture(uInk, vUv).r;
+  fragColor = vec4(max(cloud, vec3(ink * 0.55)), 1.0);
+}`;
+
+    const thermInit = makeProgram(blitVs, thermInitFs, ["uNoise"]);
+    const velInit = makeProgram(blitVs, velInitFs, ["uNoise"]);
+    const impulseTherm = makeProgram(blitVs, impulseThermFs, [
+      "uTherm",
+      "uPoint",
+      "uRadius",
+      "uHeat",
+      "uMoist",
+    ]);
+    const impulseVel = makeProgram(blitVs, impulseVelFs, [
+      "uVel",
+      "uPoint",
+      "uDir",
+      "uRadius",
+      "uForce",
+      "uSpin",
+      "uConverge",
+    ]);
+    const systemLineVelFs = `#version 300 es
+precision highp float;
+uniform sampler2D uVel;
+uniform vec2 uA;
+uniform vec2 uB;
+uniform float uWidth;
+uniform float uSign;
+uniform float uMix;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  vec2 vel = texture(uVel, vUv).xy;
+  vec2 ab = wrapTo(uB, uA);
+  float len = max(length(ab), 1e-5);
+  vec2 t = ab / len;
+  vec2 rel = wrapTo(vUv, uA);
+  float along = clamp(dot(rel, t), 0.0, len);
+  vec2 closest = t * along;
+  vec2 d = rel - closest;
+  float dist = length(d);
+  float rad = max(uWidth, 1e-5);
+  if (dist < rad * 2.1 && uMix > 0.001) {
+    float env = exp(-dist * dist / max(rad * rad, 1e-8));
+    float taper = smoothstep(0.0, rad * 0.35, along) * smoothstep(len, len - rad * 0.35, along);
+    env *= mix(0.5, 1.0, taper);
+    vec2 radial = d / max(dist, 1e-5);
+    vec2 tang = vec2(-radial.y, radial.x);
+    float vth = uSign * 0.9;
+    float vr = -uSign * 0.13;
+    vec2 target = tang * vth + radial * vr + t * 0.05;
+    vel = mix(vel, target, 0.3 * env * uMix);
+  }
+  float speed = length(vel);
+  if (speed > VEL_MAX) vel *= VEL_MAX / speed;
+  fragColor = vec4(vel, 0.0, 1.0);
+}`;
+
+    const sstStampFs = `#version 300 es
+precision highp float;
+uniform sampler2D uSst;
+uniform vec2 uPoint;
+uniform float uRadius;
+uniform float uWarm;
+in vec2 vUv;
+out vec4 fragColor;
+${simLib}
+void main() {
+  float s = texture(uSst, vUv).x;
+  vec2 rel = wrapTo(vUv, uPoint);
+  float w = exp(-dot(rel, rel) / max(uRadius * uRadius, 1e-6));
+  fragColor = vec4(clamp(s + uWarm * w, 0.0, 1.0), 0.0, 0.0, 1.0);
+}`;
+
+    const sstRelaxFs = `#version 300 es
+precision highp float;
+uniform sampler2D uSst;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  fragColor = vec4(texture(uSst, vUv).x * 0.9997, 0.0, 0.0, 1.0);
+}`;
+
+    const cycloneVel = makeProgram(blitVs, cycloneVelFs, [
+      "uVel",
+      "uPoint",
+      "uRadius",
+      "uSpin",
+      "uMix",
+    ]);
+    const systemLineVel = makeProgram(blitVs, systemLineVelFs, [
+      "uVel",
+      "uA",
+      "uB",
+      "uWidth",
+      "uSign",
+      "uMix",
+    ]);
+    const sstStamp = makeProgram(blitVs, sstStampFs, ["uSst", "uPoint", "uRadius", "uWarm"]);
+    const sstRelax = makeProgram(blitVs, sstRelaxFs, ["uSst"]);
+    const frontTherm = makeProgram(blitVs, frontThermFs, [
+      "uTherm",
+      "uA",
+      "uB",
+      "uWidth",
+      "uCold",
+      "uMoist",
+    ]);
+    const frontVel = makeProgram(blitVs, frontVelFs, [
+      "uVel",
+      "uA",
+      "uB",
+      "uWidth",
+      "uAlong",
+      "uConverge",
+      "uSpin",
+    ]);
+    const advectVel = makeProgram(blitVs, advectVelFs, ["uVel", "uTherm"]);
+    const advectTherm = makeProgram(blitVs, advectThermFs, [
+      "uTherm",
+      "uVel",
+      "uNoise",
+      "uSst",
+      "uTime",
+      "uEye0",
+      "uEye1",
+      "uEye2",
+      "uEye3",
+      "uEyeN",
+    ]);
+    const noiseGen = makeProgram(blitVs, noiseGenFs, ["uZ"]);
+    const copy = makeProgram(blitVs, copyFs, ["uSrc"]);
+    const divergence = makeProgram(blitVs, divergenceFs, [
+      "uVel",
+      "uTherm",
+      "uMean",
+      "uSeed0",
+      "uSeed1",
+      "uSeed2",
+      "uSeed3",
+      "uSeedN",
+    ]);
+    const jacobi = makeProgram(blitVs, jacobiFs, ["uPressure", "uDiv"]);
+    const project = makeProgram(blitVs, projectFs, ["uVel", "uPressure"]);
+    const weather = makeProgram(blitVs, weatherFs, [
+      "uNoise3",
+      "uField",
+      "uVel",
+      "uBlueNoise",
+      "uStorm",
+      "uResolution",
+      "uFrame",
+      "uSteps",
+    ]);
+    const stormCharge = makeProgram(blitVs, stormFs, ["uStorm", "uTherm"]);
+    const accum = makeProgram(blitVs, `#version 300 es
+precision highp float;
+uniform sampler2D uRaw;
+uniform sampler2D uHistory;
+uniform float uBlend;
+in vec2 vUv;
+out vec4 fragColor;
+void main() {
+  vec3 raw = texture(uRaw, vUv).rgb;
+  vec3 hist = texture(uHistory, vUv).rgb;
+  float rawFlash = max(raw.b - raw.r, 0.0);
+  float k = mix(uBlend, max(uBlend, 0.78), smoothstep(0.012, 0.07, rawFlash));
+  fragColor = vec4(mix(hist, raw, k), 1.0);
+}`, ["uRaw", "uHistory", "uBlend"]);
+    const ink = makeProgram(blitVs, inkFs, ["uSrc", "uA", "uB", "uWidth", "uStrength"]);
+    const fade = makeProgram(blitVs, fadeFs, ["uSrc", "uFade"]);
+    const composite = makeProgram(blitVs, compositeFs, ["uWeather", "uInk"]);
+
+    const programs = [
+      noiseGen,
+      thermInit,
+      velInit,
+      impulseTherm,
+      impulseVel,
+      cycloneVel,
+      systemLineVel,
+      sstStamp,
+      sstRelax,
+      frontTherm,
+      frontVel,
+      advectVel,
+      advectTherm,
+      copy,
+      divergence,
+      jacobi,
+      project,
+      weather,
+      stormCharge,
+      accum,
+      ink,
+      fade,
+      composite,
+    ];
+    if (programs.some((prog) => !prog)) return null;
+
+    const quad = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+
+    function makeTex(w, h, repeat, data, wantFloat) {
       const tex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, internal, width, height, 0, format, gl.UNSIGNED_BYTE, null);
-      const mag = filter || gl.NEAREST;
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mag);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mag);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, repeat ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, repeat ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+      if (wantFloat) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, data);
+      } else {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+      }
       return tex;
     }
 
-    function allocScratch(width, height) {
-      const n = width * height;
-      packStride = rowStride(width, sceneBytes);
-      uploadStride = rowStride(width, 1);
-      srcPtr = 0;
-      dstPtr = align16(n + width + 16);
-      rowsPtr = align16(dstPtr + n);
-      const packPtr = align16(rowsPtr + 2 * (width + 4) * 4);
-      const packBytes = packStride * height;
-      const uploadPtr = align16(packPtr + packBytes);
-      const uploadBytes = uploadStride === width ? 0 : uploadStride * height;
-      const total = uploadPtr + uploadBytes;
-      if (wasmExports) {
-        wasmExports.ensure(total);
-        heap = wasmExports.memory.buffer;
-        graySrc = new Uint8Array(heap, srcPtr, n);
-        grayDst = new Uint8Array(heap, dstPtr, n);
-        packDest = new Uint8Array(heap, packPtr, packBytes);
-        uploadPack = uploadBytes ? new Uint8Array(heap, uploadPtr, uploadBytes) : null;
-        rgbaStage = singleTarget ? null : packDest;
-      } else {
-        heap = null;
-        graySrc = new Uint8Array(n);
-        grayDst = new Uint8Array(n);
-        packDest = new Uint8Array(packBytes);
-        uploadPack = uploadBytes ? new Uint8Array(uploadBytes) : null;
-        rgbaStage = singleTarget ? null : packDest;
-      }
+    function makeTex3(size) {
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_3D, tex);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.REPEAT);
+      gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, size, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      return tex;
     }
 
-    function destroyPbos() {
-      if (!pbos) return;
-      gl.deleteBuffer(pbos[0]);
-      gl.deleteBuffer(pbos[1]);
-      pbos = null;
-      pboHasPrev = false;
+    function bindTex3(unit, tex, loc) {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_3D, tex);
+      gl.uniform1i(loc, unit);
     }
 
-    function initFramebuffer(width, height) {
-      if (compositeFb) {
-        gl.deleteFramebuffer(compositeFb);
-        gl.deleteFramebuffer(fieldFb);
-        gl.deleteTexture(compositeTexture);
-        gl.deleteTexture(fieldTexture);
-        gl.deleteTexture(displayTexture);
-      }
-      destroyPbos();
+    const noiseTex = makeTex(NOISE_SIZE, NOISE_SIZE, true, makeNoiseData(), false);
+    const noise3Tex = makeTex3(NOISE3_SIZE);
+    const blueTex = makeTex(BLUE_SIZE, BLUE_SIZE, true, makeBlueNoiseData(), false);
+    gl.bindTexture(gl.TEXTURE_2D, blueTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
-      compositeTexture = createTexture(width, height, displayInternal, displayFormat);
-      fieldTexture = createTexture(width, height, displayInternal, displayFormat);
-      displayTexture = createTexture(width, height, displayInternal, displayFormat);
-      compositeFb = gl.createFramebuffer();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, compositeFb);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, compositeTexture, 0);
-      fieldFb = gl.createFramebuffer();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fieldFb);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fieldTexture, 0);
-      fboWidth = width;
-      fboHeight = height;
-      hasPresented = false;
-      allocScratch(width, height);
+    const simTex = () => makeTex(SIM_SIZE, SIM_SIZE, false, null, true);
+    const thermTex = [simTex(), simTex()];
+    const velTex = [simTex(), simTex()];
+    const stormTex = [simTex(), simTex()];
+    const sstTex = [simTex(), simTex()];
+    const prsTex = [simTex(), simTex()];
+    const divTex = simTex();
+    const meanTex = simTex();
+    gl.bindTexture(gl.TEXTURE_2D, meanTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
 
-      if (usePbo) {
-        const bytes = packStride * height;
-        pbos = [gl.createBuffer(), gl.createBuffer()];
-        for (let i = 0; i < 2; i++) {
-          gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[i]);
-          gl.bufferData(gl.PIXEL_PACK_BUFFER, bytes, gl.STREAM_READ);
-        }
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-        pboIndex = 0;
-      }
+    const simFb = gl.createFramebuffer();
+
+    function bindQuad(prog) {
+      gl.useProgram(prog.p);
+      gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+      gl.enableVertexAttribArray(prog.aPos);
+      gl.vertexAttribPointer(prog.aPos, 2, gl.FLOAT, false, 0, 0);
     }
 
-    function refreshViews() {
-      if (wasmExports && heap !== wasmExports.memory.buffer) {
-        allocScratch(fboWidth, fboHeight);
-      }
+    function targetTex(tex, w, h) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, simFb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      gl.viewport(0, 0, w, h);
     }
 
-    function dither(width, height) {
-      if (wasmExports) {
-        wasmExports.dither(srcPtr, dstPtr, rowsPtr, width, height);
-      } else {
-        ditherJS(graySrc, grayDst, width, height);
-      }
+    function bindTex(unit, tex, loc) {
+      gl.activeTexture(gl.TEXTURE0 + unit);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.uniform1i(loc, unit);
     }
 
-    function toGray(n) {
-      if (wasmExports) {
-        wasmExports.gray(rgbaStage.byteOffset, srcPtr, n);
-      } else {
-        grayJS(rgbaStage, graySrc, n);
-      }
+    function drawSim(tex) {
+      targetTex(tex, SIM_SIZE, SIM_SIZE);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
+    bindQuad(noiseGen);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, simFb);
+    gl.viewport(0, 0, NOISE3_SIZE, NOISE3_SIZE);
+    for (let z = 0; z < NOISE3_SIZE; z++) {
+      gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, noise3Tex, 0, z);
+      gl.uniform1f(noiseGen.u.uZ, (z + 0.5) / NOISE3_SIZE);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    bindQuad(thermInit);
+    bindTex(0, noiseTex, thermInit.u.uNoise);
+    drawSim(thermTex[0]);
+
+    bindQuad(velInit);
+    bindTex(0, noiseTex, velInit.u.uNoise);
+    drawSim(velTex[0]);
+    gl.clearColor(0, 0, 0, 1);
+    targetTex(stormTex[0], SIM_SIZE, SIM_SIZE);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    targetTex(stormTex[1], SIM_SIZE, SIM_SIZE);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    targetTex(sstTex[0], SIM_SIZE, SIM_SIZE);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    targetTex(sstTex[1], SIM_SIZE, SIM_SIZE);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    let thermPing = 0;
+    let velPing = 0;
+    let stormPing = 0;
+    let sstPing = 0;
+    let prsPing = 0;
+    let weatherTex = null;
+    let rawTex = null;
+    let accumTex = [null, null];
+    let accumPing = 0;
+    let accumWarm = false;
+    let inkTex = [null, null];
+    let inkPing = 0;
+    let viewWidth = 0;
+    let viewHeight = 0;
+    let marchWidth = 0;
+    let marchHeight = 0;
+    let displayWidth = 0;
+    let displayHeight = 0;
+    let marchSteps = 40;
     let running = false;
     let hidden = false;
     let raf = 0;
-    let mouseX = 0;
-    let mouseY = 0;
-    let nextMouseX = 0;
-    let nextMouseY = 0;
-    let prevNow = 0;
-    let haveTime = false;
+    let frame = 0;
     let fpsFrames = 0;
     let fpsLast = 0;
-    let simTimeScale = 1;
-    let simClock = 0;
-    let simFrame = 0;
-    let progress = 0;
-    let easedProgress = 0;
-    const minRadius = 0.16;
-    const maxRadius = 2.8;
-    let schwarzschildRadius = 0.5;
-    let targetRadius = 0.5;
-    let holeMass = BH_MU0 / GRAV_G;
-    let camX = 253;
-    let camY = 253;
-    let camZ = 381;
-    let camYaw = -2.553;
-    let camPitch = -0.508;
-    let lookYaw = -2.553;
-    let lookPitch = -0.508;
-    let velX = 0;
-    let velY = 0;
-    let velZ = 0;
-    let keyF = 0;
-    let keyB = 0;
-    let keyL = 0;
-    let keyR = 0;
-    let keyU = 0;
-    let keyD = 0;
-    let keyBoost = 0;
-    let engine = 0;
-    let displayWidth = 0;
-    let displayHeight = 0;
+    let onFps = null;
+    const impulses = [];
+    const fronts = [];
+    const warms = [];
+    let systems = [];
 
-    function camBasis() {
-      const cp = Math.cos(camPitch);
-      const sp = Math.sin(camPitch);
-      const cy = Math.cos(camYaw);
-      const sy = Math.sin(camYaw);
-      const fx = sy * cp;
-      const fy = sp;
-      const fz = cy * cp;
-      let rx = fz;
-      let rz = -fx;
-      const rl = Math.hypot(rx, rz) || 1;
-      rx /= rl;
-      rz /= rl;
-      const ux = fy * rz;
-      const uy = fz * rx - fx * rz;
-      const uz = -fy * rx;
-      return { fx, fy, fz, rx, ry: 0, rz, ux, uy, uz };
+    function ensureView(w, h) {
+      let mw = Math.max(1, (w * MARCH_SCALE) | 0);
+      let mh = Math.max(1, (h * MARCH_SCALE) | 0);
+      const longEdge = Math.max(mw, mh);
+      if (longEdge > MAX_MARCH) {
+        const s = MAX_MARCH / longEdge;
+        mw = Math.max(1, (mw * s) | 0);
+        mh = Math.max(1, (mh * s) | 0);
+      }
+      if (w === viewWidth && h === viewHeight && mw === marchWidth && weatherTex) return;
+      viewWidth = w;
+      viewHeight = h;
+      marchWidth = mw;
+      marchHeight = mh;
+      if (weatherTex) gl.deleteTexture(weatherTex);
+      if (rawTex) gl.deleteTexture(rawTex);
+      for (const tex of accumTex) if (tex) gl.deleteTexture(tex);
+      for (const tex of inkTex) if (tex) gl.deleteTexture(tex);
+      weatherTex = makeTex(w, h, false, null, false);
+      rawTex = makeTex(mw, mh, false, null, false);
+      accumTex = [makeTex(mw, mh, false, null, false), makeTex(mw, mh, false, null, false)];
+      inkTex = [makeTex(w, h, false, null, false), makeTex(w, h, false, null, false)];
+      accumWarm = false;
     }
 
-    function keepOut() {
-      if (!Number.isFinite(camX + camY + camZ + velX + velY + velZ)) {
-        camX = 253;
-        camY = 253;
-        camZ = 381;
-        velX = 0;
-        velY = 0;
-        velZ = 0;
+    function screenToSim(sx, sy) {
+      return { x: sx, y: sy };
+    }
+
+    function applyFront(seg) {
+      const srcT = thermPing;
+      const dstT = 1 - thermPing;
+      bindQuad(frontTherm);
+      bindTex(0, thermTex[srcT], frontTherm.u.uTherm);
+      gl.uniform2f(frontTherm.u.uA, seg.ax, seg.ay);
+      gl.uniform2f(frontTherm.u.uB, seg.bx, seg.by);
+      gl.uniform1f(frontTherm.u.uWidth, seg.width);
+      gl.uniform1f(frontTherm.u.uCold, seg.cold);
+      gl.uniform1f(frontTherm.u.uMoist, seg.moist);
+      drawSim(thermTex[dstT]);
+      thermPing = dstT;
+
+      const srcV = velPing;
+      const dstV = 1 - velPing;
+      bindQuad(frontVel);
+      bindTex(0, velTex[srcV], frontVel.u.uVel);
+      gl.uniform2f(frontVel.u.uA, seg.ax, seg.ay);
+      gl.uniform2f(frontVel.u.uB, seg.bx, seg.by);
+      gl.uniform1f(frontVel.u.uWidth, seg.width);
+      gl.uniform1f(frontVel.u.uAlong, seg.along);
+      gl.uniform1f(frontVel.u.uConverge, seg.converge);
+      gl.uniform1f(frontVel.u.uSpin, seg.spin);
+      drawSim(velTex[dstV]);
+      velPing = dstV;
+    }
+
+    function applyImpulse(imp) {
+      if (imp.heat || imp.moist) {
+        const src = thermPing;
+        const dst = 1 - thermPing;
+        bindQuad(impulseTherm);
+        bindTex(0, thermTex[src], impulseTherm.u.uTherm);
+        gl.uniform2f(impulseTherm.u.uPoint, imp.x, imp.y);
+        gl.uniform1f(impulseTherm.u.uRadius, imp.radius);
+        gl.uniform1f(impulseTherm.u.uHeat, imp.heat);
+        gl.uniform1f(impulseTherm.u.uMoist, imp.moist);
+        drawSim(thermTex[dst]);
+        thermPing = dst;
+      }
+      if (imp.force || imp.spin || imp.converge) {
+        const src = velPing;
+        const dst = 1 - velPing;
+        bindQuad(impulseVel);
+        bindTex(0, velTex[src], impulseVel.u.uVel);
+        gl.uniform2f(impulseVel.u.uPoint, imp.x, imp.y);
+        gl.uniform2f(impulseVel.u.uDir, imp.dx || 0, imp.dy || 0);
+        gl.uniform1f(impulseVel.u.uRadius, imp.radius);
+        gl.uniform1f(impulseVel.u.uForce, imp.force || 0);
+        gl.uniform1f(impulseVel.u.uSpin, imp.spin);
+        gl.uniform1f(impulseVel.u.uConverge, imp.converge);
+        drawSim(velTex[dst]);
+        velPing = dst;
       }
     }
 
-    function disableAttrib(loc) {
-      if (loc >= 0) gl.disableVertexAttribArray(loc);
-    }
+    function applyImpulses() {
+      while (fronts.length) applyFront(fronts.shift());
 
-    function bindFullscreen() {
-      disableAttrib(starAttribs.corner);
-      disableAttrib(starAttribs.star);
-      disableAttrib(starAttribs.color);
-      disableAttrib(starAttribs.kind);
-      disableAttrib(lineAttribs.pos);
-      disableAttrib(lineAttribs.meta);
-      disableAttrib(dustAttribs.corner);
-      disableAttrib(dustAttribs.dust);
-      disableAttrib(dustAttribs.color);
-      disableAttrib(holeDiscAttribs.corner);
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
-      gl.vertexAttribPointer(blitAttrib, 2, gl.FLOAT, false, 0, 0);
-      gl.enableVertexAttribArray(blitAttrib);
-      if (lensAttrib >= 0 && lensAttrib !== blitAttrib) {
-        gl.vertexAttribPointer(lensAttrib, 2, gl.FLOAT, false, 0, 0);
-        gl.enableVertexAttribArray(lensAttrib);
+      while (impulses.length) {
+        applyImpulse(impulses.shift());
       }
     }
 
-    function drawStarGeom(geom, count, renderWidth, renderHeight, b, useLens, useMask) {
-      if (!count) return;
-      disableAttrib(dustAttribs.corner);
-      disableAttrib(dustAttribs.dust);
-      disableAttrib(dustAttribs.color);
-      gl.useProgram(starProgram);
-      gl.uniform2f(starUniforms.resolution, renderWidth, renderHeight);
-      gl.uniform1f(starUniforms.progress, easedProgress);
-      gl.uniform1f(starUniforms.schwarzschildRadius, schwarzschildRadius);
-      gl.uniform3f(starUniforms.camPos, camX, camY, camZ);
-      gl.uniform3f(starUniforms.camFwd, b.fx, b.fy, b.fz);
-      gl.uniform3f(starUniforms.camRight, b.rx, b.ry, b.rz);
-      gl.uniform3f(starUniforms.camUp, b.ux, b.uy, b.uz);
-      gl.uniform1i(starUniforms.mask, 0);
-      gl.uniform1f(starUniforms.useLens, useLens ? 1 : 0);
-      gl.uniform1f(starUniforms.useMask, useMask ? 1 : 0);
-      gl.uniform2f(starUniforms.maskRes, fboWidth, fboHeight);
-      gl.bindBuffer(gl.ARRAY_BUFFER, starBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, geom.subarray(0, count * 10), gl.STREAM_DRAW);
-      const stride = 40;
-      gl.vertexAttribPointer(starAttribs.corner, 2, gl.FLOAT, false, stride, 0);
-      gl.enableVertexAttribArray(starAttribs.corner);
-      gl.vertexAttribPointer(starAttribs.star, 4, gl.FLOAT, false, stride, 8);
-      gl.enableVertexAttribArray(starAttribs.star);
-      gl.vertexAttribPointer(starAttribs.color, 3, gl.FLOAT, false, stride, 24);
-      gl.enableVertexAttribArray(starAttribs.color);
-      gl.vertexAttribPointer(starAttribs.kind, 1, gl.FLOAT, false, stride, 36);
-      gl.enableVertexAttribArray(starAttribs.kind);
-      gl.drawArrays(gl.TRIANGLES, 0, count);
+    function applySystemLine(seg, sign, width, mix) {
+      const srcV = velPing;
+      const dstV = 1 - velPing;
+      bindQuad(systemLineVel);
+      bindTex(0, velTex[srcV], systemLineVel.u.uVel);
+      gl.uniform2f(systemLineVel.u.uA, seg.ax, seg.ay);
+      gl.uniform2f(systemLineVel.u.uB, seg.bx, seg.by);
+      gl.uniform1f(systemLineVel.u.uWidth, width);
+      gl.uniform1f(systemLineVel.u.uSign, sign);
+      gl.uniform1f(systemLineVel.u.uMix, mix);
+      drawSim(velTex[dstV]);
+      velPing = dstV;
     }
 
-    function drawLineGeom(geom, count, renderWidth, renderHeight, b, useMask) {
-      if (!count) return;
-      disableAttrib(starAttribs.corner);
-      disableAttrib(starAttribs.star);
-      disableAttrib(starAttribs.color);
-      disableAttrib(starAttribs.kind);
-      gl.useProgram(lineProgram);
-      gl.uniform2f(lineUniforms.resolution, renderWidth, renderHeight);
-      gl.uniform1f(lineUniforms.progress, easedProgress);
-      gl.uniform3f(lineUniforms.camPos, camX, camY, camZ);
-      gl.uniform3f(lineUniforms.camFwd, b.fx, b.fy, b.fz);
-      gl.uniform1i(lineUniforms.mask, 0);
-      gl.uniform1f(lineUniforms.useMask, useMask ? 1 : 0);
-      gl.uniform2f(lineUniforms.maskRes, fboWidth, fboHeight);
-      gl.bindBuffer(gl.ARRAY_BUFFER, lineBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, geom.subarray(0, count * 4), gl.STREAM_DRAW);
-      const stride = 16;
-      gl.vertexAttribPointer(lineAttribs.pos, 2, gl.FLOAT, false, stride, 0);
-      gl.enableVertexAttribArray(lineAttribs.pos);
-      gl.vertexAttribPointer(lineAttribs.meta, 2, gl.FLOAT, false, stride, 8);
-      gl.enableVertexAttribArray(lineAttribs.meta);
-      gl.drawArrays(gl.TRIANGLES, 0, count);
+    function pickSegs(segs) {
+      if (segs.length <= 4) return segs;
+      const out = [];
+      const last = segs.length - 1;
+      for (let i = 0; i < 4; i++) out.push(segs[Math.round((i * last) / 3)]);
+      return out;
     }
 
-    function clearComposite(renderWidth, renderHeight) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, compositeFb);
-      gl.viewport(0, 0, renderWidth, renderHeight);
-      gl.disable(gl.BLEND);
-      gl.clearColor(0, 0, 0, 1);
-      gl.clear(gl.COLOR_BUFFER_BIT);
+    function seedFade(born) {
+      const age = (performance.now() - (born || 0)) / 1000;
+      if (age < 2.5) return 1;
+      return 0.12 + 0.88 * Math.max(0, 1 - (age - 2.5) / 5);
     }
 
-    function drawHoleDisc(renderWidth, renderHeight, b) {
-      if (easedProgress <= 0 || !holeDiscProgram) return;
-      disableAttrib(starAttribs.corner);
-      disableAttrib(starAttribs.star);
-      disableAttrib(starAttribs.color);
-      disableAttrib(starAttribs.kind);
-      disableAttrib(lineAttribs.pos);
-      disableAttrib(lineAttribs.meta);
-      disableAttrib(dustAttribs.corner);
-      disableAttrib(dustAttribs.dust);
-      disableAttrib(dustAttribs.color);
-      gl.useProgram(holeDiscProgram);
-      gl.uniform2f(holeDiscUniforms.resolution, renderWidth, renderHeight);
-      gl.uniform1f(holeDiscUniforms.progress, easedProgress);
-      gl.uniform1f(holeDiscUniforms.schwarzschildRadius, schwarzschildRadius);
-      gl.uniform3f(holeDiscUniforms.camPos, camX, camY, camZ);
-      gl.uniform3f(holeDiscUniforms.camFwd, b.fx, b.fy, b.fz);
-      gl.uniform3f(holeDiscUniforms.camRight, b.rx, b.ry, b.rz);
-      gl.uniform3f(holeDiscUniforms.camUp, b.ux, b.uy, b.uz);
-      gl.uniform1f(holeDiscUniforms.spin, BH_SPIN);
-      let dm = 0;
-      for (let i = 0; i < discCount; i++) dm += discPm[i];
-      gl.uniform1f(holeDiscUniforms.discMass, dm / Math.max(holeMass, 1e-8));
-      gl.bindBuffer(gl.ARRAY_BUFFER, holeDiscBuffer);
-      gl.vertexAttribPointer(holeDiscAttribs.corner, 2, gl.FLOAT, false, 0, 0);
-      gl.enableVertexAttribArray(holeDiscAttribs.corner);
-      gl.enable(gl.BLEND);
-      gl.uniform1f(holeDiscUniforms.pass, 0);
-      gl.blendFunc(gl.ONE, gl.ONE);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-      gl.uniform1f(holeDiscUniforms.pass, 1);
-      gl.blendFunc(gl.ZERO, gl.ONE_MINUS_SRC_COLOR);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-    }
-
-    function renderStars(renderWidth, renderHeight, b) {
-      clearComposite(renderWidth, renderHeight);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, compositeFb);
-      gl.viewport(0, 0, renderWidth, renderHeight);
-      if (starVertCount) {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.ONE, gl.ONE);
-        drawStarGeom(starGeom, starVertCount, renderWidth, renderHeight, b, true, false);
+    function applySystems() {
+      for (const s of systems) {
+        const fade = seedFade(s.born);
+        const srcV = velPing;
+        const dstV = 1 - velPing;
+        bindQuad(cycloneVel);
+        bindTex(0, velTex[srcV], cycloneVel.u.uVel);
+        gl.uniform2f(cycloneVel.u.uPoint, s.x, s.y);
+        gl.uniform1f(cycloneVel.u.uRadius, s.radius);
+        gl.uniform1f(cycloneVel.u.uSpin, s.spin);
+        gl.uniform1f(cycloneVel.u.uMix, 0.5 * fade);
+        drawSim(velTex[dstV]);
+        velPing = dstV;
+        stampWarm(s.x, s.y, s.radius * 1.9, 0.0032);
+        const width = Math.max(s.radius * 0.38, 0.045);
+        for (const seg of pickSegs(s.segs)) applySystemLine(seg, s.kind, width, fade);
       }
-      drawHoleDisc(renderWidth, renderHeight, b);
-      if (starFrontCount) {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.ONE, gl.ONE);
-        drawStarGeom(starGeomFront, starFrontCount, renderWidth, renderHeight, b, false, false);
+    }
+
+    function stampWarm(x, y, radius, amount) {
+      const src = sstPing;
+      const dst = 1 - sstPing;
+      bindQuad(sstStamp);
+      bindTex(0, sstTex[src], sstStamp.u.uSst);
+      gl.uniform2f(sstStamp.u.uPoint, x, y);
+      gl.uniform1f(sstStamp.u.uRadius, radius);
+      gl.uniform1f(sstStamp.u.uWarm, amount);
+      drawSim(sstTex[dst]);
+      sstPing = dst;
+    }
+
+    function applyWarms() {
+      while (warms.length) {
+        const w = warms.shift();
+        stampWarm(w.x, w.y, w.radius, w.amount);
       }
-      gl.disable(gl.BLEND);
     }
 
-    function drawDustGeom(geom, count, renderWidth, renderHeight, b, useMask) {
-      if (!count) return;
-      disableAttrib(starAttribs.corner);
-      disableAttrib(starAttribs.star);
-      disableAttrib(starAttribs.color);
-      disableAttrib(starAttribs.kind);
-      disableAttrib(lineAttribs.pos);
-      disableAttrib(lineAttribs.meta);
-      gl.useProgram(dustProgram);
-      gl.uniform2f(dustUniforms.resolution, renderWidth, renderHeight);
-      gl.uniform1f(dustUniforms.progress, easedProgress);
-      gl.uniform3f(dustUniforms.camPos, camX, camY, camZ);
-      gl.uniform3f(dustUniforms.camFwd, b.fx, b.fy, b.fz);
-      gl.uniform1i(dustUniforms.mask, 0);
-      gl.uniform1f(dustUniforms.useMask, useMask ? 1 : 0);
-      gl.uniform2f(dustUniforms.maskRes, fboWidth, fboHeight);
-      gl.bindBuffer(gl.ARRAY_BUFFER, dustBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, geom.subarray(0, count * 9), gl.STREAM_DRAW);
-      const stride = 36;
-      gl.vertexAttribPointer(dustAttribs.corner, 2, gl.FLOAT, false, stride, 0);
-      gl.enableVertexAttribArray(dustAttribs.corner);
-      gl.vertexAttribPointer(dustAttribs.dust, 4, gl.FLOAT, false, stride, 8);
-      gl.enableVertexAttribArray(dustAttribs.dust);
-      gl.vertexAttribPointer(dustAttribs.color, 3, gl.FLOAT, false, stride, 24);
-      gl.enableVertexAttribArray(dustAttribs.color);
-      gl.drawArrays(gl.TRIANGLES, 0, count);
+    function relaxSst() {
+      bindQuad(sstRelax);
+      bindTex(0, sstTex[sstPing], sstRelax.u.uSst);
+      drawSim(sstTex[1 - sstPing]);
+      sstPing = 1 - sstPing;
     }
 
-    function renderDust(renderWidth, renderHeight, b) {
-      if (!dustVertCount && !dustFrontCount) return;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, compositeFb);
-      gl.viewport(0, 0, renderWidth, renderHeight);
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.ONE, gl.ONE);
-      if (dustVertCount) drawDustGeom(dustGeom, dustVertCount, renderWidth, renderHeight, b, false);
-      if (dustFrontCount) drawDustGeom(dustGeomFront, dustFrontCount, renderWidth, renderHeight, b, false);
-      gl.disable(gl.BLEND);
+    function bindSeeds() {
+      const slots = [divergence.u.uSeed0, divergence.u.uSeed1, divergence.u.uSeed2, divergence.u.uSeed3];
+      const lows = systems.filter((s) => s.kind > 0).slice(0, 4);
+      gl.uniform1i(divergence.u.uSeedN, lows.length);
+      for (let i = 0; i < 4; i++) {
+        const s = lows[i];
+        if (s) gl.uniform4f(slots[i], s.x, s.y, s.radius, 1);
+        else gl.uniform4f(slots[i], 0, 0, 1, 0);
+      }
     }
 
-    function renderScene(renderWidth, renderHeight, now, b) {
-      renderStars(renderWidth, renderHeight, b);
-      renderDust(renderWidth, renderHeight, b);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, compositeFb);
-      gl.flush();
+    function stampInk(ax, ay, bx, by, width, strength) {
+      if (!inkTex[0] || viewWidth <= 0) return;
+      const src = inkPing;
+      const dst = 1 - inkPing;
+      bindQuad(ink);
+      bindTex(0, inkTex[src], ink.u.uSrc);
+      gl.uniform2f(ink.u.uA, ax, ay);
+      gl.uniform2f(ink.u.uB, bx, by);
+      gl.uniform1f(ink.u.uWidth, width);
+      gl.uniform1f(ink.u.uStrength, strength);
+      targetTex(inkTex[dst], viewWidth, viewHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      inkPing = dst;
     }
 
-    function present(width, height, upload) {
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-      if (gl.PIXEL_UNPACK_BUFFER) gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
-      bindFullscreen();
-      gl.bindTexture(gl.TEXTURE_2D, displayTexture);
-      if (upload) {
-        let pixels = ENABLE_DITHER ? grayDst : graySrc;
-        if (uploadStride !== width) {
-          copyRows(grayDst, uploadPack, width, height, width, uploadStride);
-          pixels = uploadPack;
+    function drawSystemInk() {
+      for (const s of systems) {
+        const segs = s.segs;
+        if (!segs.length) continue;
+        if (segs.length <= 16) {
+          for (const seg of segs) stampInk(seg.ax, seg.ay, seg.bx, seg.by, 0.0038, 0.28);
+          continue;
         }
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, displayFormat, gl.UNSIGNED_BYTE, pixels);
+        const pts = [{ x: segs[0].ax, y: segs[0].ay }];
+        for (const seg of segs) pts.push({ x: seg.bx, y: seg.by });
+        const step = (pts.length - 1) / 16;
+        for (let i = 0; i < 16; i++) {
+          const a = pts[Math.round(i * step)];
+          const b = pts[Math.round((i + 1) * step)];
+          stampInk(a.x, a.y, b.x, b.y, 0.0038, 0.28);
+        }
       }
+    }
+
+    function bindEyes() {
+      const slots = [advectTherm.u.uEye0, advectTherm.u.uEye1, advectTherm.u.uEye2, advectTherm.u.uEye3];
+      const n = Math.min(systems.length, 4);
+      gl.uniform1i(advectTherm.u.uEyeN, n);
+      for (let i = 0; i < 4; i++) {
+        const s = systems[i];
+        if (s) {
+          const age = (performance.now() - (s.born || 0)) / 1000;
+          const strength = Math.max(0, Math.min(1, (age - 4) / 8));
+          gl.uniform4f(slots[i], s.x, s.y, s.radius * 0.05, strength);
+        } else {
+          gl.uniform4f(slots[i], 0, 0, 1, 0);
+        }
+      }
+    }
+
+    function stepSim() {
+      applyWarms();
+      applyImpulses();
+
+      bindQuad(advectVel);
+      bindTex(0, velTex[velPing], advectVel.u.uVel);
+      bindTex(1, thermTex[thermPing], advectVel.u.uTherm);
+      drawSim(velTex[1 - velPing]);
+      velPing = 1 - velPing;
+
+      bindQuad(advectTherm);
+      bindTex(0, thermTex[thermPing], advectTherm.u.uTherm);
+      bindTex(1, velTex[velPing], advectTherm.u.uVel);
+      bindTex(2, noiseTex, advectTherm.u.uNoise);
+      bindTex(3, sstTex[sstPing], advectTherm.u.uSst);
+      gl.uniform1f(advectTherm.u.uTime, frame * 0.016);
+      bindEyes();
+      drawSim(thermTex[1 - thermPing]);
+      thermPing = 1 - thermPing;
+
+      bindQuad(copy);
+      bindTex(0, thermTex[thermPing], copy.u.uSrc);
+      drawSim(meanTex);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, meanTex);
+      gl.generateMipmap(gl.TEXTURE_2D);
+
+      bindQuad(divergence);
+      bindTex(0, velTex[velPing], divergence.u.uVel);
+      bindTex(1, thermTex[thermPing], divergence.u.uTherm);
+      bindTex(2, meanTex, divergence.u.uMean);
+      bindSeeds();
+      drawSim(divTex);
+
+      bindQuad(jacobi);
+      bindTex(1, divTex, jacobi.u.uDiv);
+      for (let i = 0; i < JACOBI_STEPS; i++) {
+        bindTex(0, prsTex[prsPing], jacobi.u.uPressure);
+        drawSim(prsTex[1 - prsPing]);
+        prsPing = 1 - prsPing;
+      }
+
+      bindQuad(project);
+      bindTex(0, velTex[velPing], project.u.uVel);
+      bindTex(1, prsTex[prsPing], project.u.uPressure);
+      drawSim(velTex[1 - velPing]);
+      velPing = 1 - velPing;
+
+      applySystems();
+
+      bindQuad(stormCharge);
+      bindTex(0, stormTex[stormPing], stormCharge.u.uStorm);
+      bindTex(1, thermTex[thermPing], stormCharge.u.uTherm);
+      drawSim(stormTex[1 - stormPing]);
+      stormPing = 1 - stormPing;
+
+      relaxSst();
+    }
+
+    function fadeInk() {
+      if (!inkTex[0]) return;
+      const src = inkPing;
+      const dst = 1 - inkPing;
+      bindQuad(fade);
+      bindTex(0, inkTex[src], fade.u.uSrc);
+      gl.uniform1f(fade.u.uFade, 0.94);
+      targetTex(inkTex[dst], viewWidth, viewHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      inkPing = dst;
+    }
+
+    function drawWeather() {
+      ensureView(displayWidth, displayHeight);
+      fadeInk();
+      drawSystemInk();
+
+      bindQuad(weather);
+      bindTex3(3, noise3Tex, weather.u.uNoise3);
+      bindTex(0, thermTex[thermPing], weather.u.uField);
+      bindTex(1, velTex[velPing], weather.u.uVel);
+      bindTex(2, blueTex, weather.u.uBlueNoise);
+      bindTex(4, stormTex[stormPing], weather.u.uStorm);
+      gl.uniform2f(weather.u.uResolution, marchWidth, marchHeight);
+      gl.uniform1i(weather.u.uFrame, frame);
+      gl.uniform1i(weather.u.uSteps, marchSteps);
+      targetTex(rawTex, marchWidth, marchHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+      const histSrc = accumPing;
+      const histDst = 1 - accumPing;
+      bindQuad(accum);
+      bindTex(0, rawTex, accum.u.uRaw);
+      bindTex(1, accumWarm ? accumTex[histSrc] : rawTex, accum.u.uHistory);
+      gl.uniform1f(accum.u.uBlend, accumWarm ? 0.28 : 1.0);
+      targetTex(accumTex[histDst], marchWidth, marchHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      accumPing = histDst;
+      accumWarm = true;
+
+      bindQuad(copy);
+      bindTex(0, accumTex[accumPing], copy.u.uSrc);
+      targetTex(weatherTex, viewWidth, viewHeight);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, displayWidth, displayHeight);
-      gl.useProgram(blitProgram);
+      bindQuad(composite);
+      bindTex(0, weatherTex, composite.u.uWeather);
+      bindTex(1, inkTex[inkPing], composite.u.uInk);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
-      hasPresented = true;
     }
 
-    function readDest(width) {
-      return singleTarget && packStride === width ? graySrc : packDest;
-    }
-
-    function unpackRead(width, height) {
-      if (singleTarget) {
-        if (packStride !== width) copyRows(packDest, graySrc, width, height, packStride, width);
-      } else {
-        toGray(width * height);
-      }
-    }
-
-    function pullPrevRead(renderWidth, renderHeight) {
-      if (!pbos || !pboHasPrev) return false;
-      const dest = readDest(renderWidth);
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[pboIndex ^ 1]);
-      gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, dest);
-      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-      unpackRead(renderWidth, renderHeight);
-      return true;
-    }
-
-    function packCurrent(renderWidth, renderHeight) {
-      if (pbos) {
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbos[pboIndex]);
-        gl.readPixels(0, 0, renderWidth, renderHeight, displayFormat, gl.UNSIGNED_BYTE, 0);
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-        pboIndex ^= 1;
-        pboHasPrev = true;
-        return false;
-      }
-      const dest = readDest(renderWidth);
-      gl.readPixels(0, 0, renderWidth, renderHeight, displayFormat, gl.UNSIGNED_BYTE, dest);
-      unpackRead(renderWidth, renderHeight);
-      return true;
-    }
-
-    function render(now) {
+    function render() {
       raf = 0;
       if (!running || hidden) return;
       raf = requestAnimationFrame(render);
-      const t = typeof now === "number" && now > 0 ? now : performance.now();
-      fpsFrames += 1;
-      if (!fpsLast) fpsLast = t;
-      const elapsed = t - fpsLast;
-      if (elapsed >= 500) {
-        if (emit) emit({ type: "fps", v: Math.round((fpsFrames * 1000) / elapsed), time: simTimeScale });
-        fpsFrames = 0;
-        fpsLast = t;
-      }
-
-      let frameMs = 16;
-      let timeScale;
-      if (!haveTime) {
-        haveTime = true;
-        prevNow = now;
-        timeScale = 15;
-      } else {
-        frameMs = Math.min(50, Math.max(1, now - prevNow));
-        prevNow = now;
-        timeScale = Math.abs(1 - (frameMs - 1));
-        if (timeScale > 32) timeScale = 32;
-      }
-      simClock += frameMs * 0.001 * simTimeScale;
-
-      if (progress < 1) {
-        progress = Math.min(1, progress + 0.0025);
-        easedProgress = easeOutBack(progress);
-      }
-
-      mouseX += (nextMouseX - mouseX) * 0.01 * timeScale;
-      mouseY += (nextMouseY - mouseY) * 0.01 * timeScale;
-      schwarzschildRadius += (targetRadius - schwarzschildRadius) * 0.02 * timeScale;
-      camYaw = lookYaw;
-      camPitch = lookPitch;
-      const b = camBasis();
-      let wishX = b.fx * (keyF - keyB) + b.rx * (keyR - keyL) + b.ux * (keyU - keyD);
-      let wishY = b.fy * (keyF - keyB) + b.ry * (keyR - keyL) + b.uy * (keyU - keyD);
-      let wishZ = b.fz * (keyF - keyB) + b.rz * (keyR - keyL) + b.uz * (keyU - keyD);
-      let wishLen = Math.hypot(wishX, wishY, wishZ);
-      if (keyBoost && wishLen < 1e-6) {
-        wishX = b.fx;
-        wishY = b.fy;
-        wishZ = b.fz;
-        wishLen = 1;
-      }
-      const thrusting = wishLen > 1e-6;
-      const targetEngine = thrusting ? (keyBoost ? 1 : 0.4) : 0;
-      const spool = targetEngine > engine ? (keyBoost ? 0.0042 : 0.0024) : 0.0055;
-      engine += (targetEngine - engine) * spool * timeScale;
-      if (engine < 1e-4) engine = 0;
-      if (thrusting) {
-        const inv = 1 / wishLen;
-        const accel = engine * (keyBoost ? 0.0001 : 0.0000085) * timeScale;
-        velX += wishX * inv * accel;
-        velY += wishY * inv * accel;
-        velZ += wishZ * inv * accel;
-      }
-      const dragMul = Math.pow(thrusting ? 0.99992 : 0.99974, timeScale);
-      velX *= dragMul;
-      velY *= dragMul;
-      velZ *= dragMul;
-      const cruiseSpeed = 0.007;
-      const warpSpeed = 0.075;
-      const speed = Math.hypot(velX, velY, velZ);
-      const cap = keyBoost ? warpSpeed : cruiseSpeed;
-      if (speed > cap) {
-        let next = cap;
-        if (!keyBoost) {
-          next = cap + (speed - cap) * Math.pow(0.985, timeScale);
-        }
-        const s = next / speed;
-        velX *= s;
-        velY *= s;
-        velZ *= s;
-      }
-      camX += velX * timeScale;
-      camY += velY * timeScale;
-      camZ += velZ * timeScale;
-      keepOut();
-      updateGravity(frameMs, simTimeScale);
-
       if (displayWidth <= 0 || displayHeight <= 0) return;
-
-      const renderWidth = Math.max(1, (displayWidth * RENDER_SCALE) | 0);
-      const renderHeight = Math.max(1, (displayHeight * RENDER_SCALE) | 0);
-
-      if (canvas.width !== displayWidth || canvas.height !== displayHeight || !compositeFb) {
+      if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
         canvas.width = displayWidth;
         canvas.height = displayHeight;
-        initFramebuffer(renderWidth, renderHeight);
       }
-
-      refreshViews();
-      const prevReady = pullPrevRead(renderWidth, renderHeight);
-      packScene(b, renderWidth, renderHeight, schwarzschildRadius * easedProgress);
-      renderScene(renderWidth, renderHeight, now, b);
-      const syncReady = packCurrent(renderWidth, renderHeight);
-      if (prevReady || syncReady) {
-        if (ENABLE_DITHER) dither(renderWidth, renderHeight);
-        present(renderWidth, renderHeight, true);
-      } else if (hasPresented) {
-        present(renderWidth, renderHeight, false);
+      stepSim();
+      frame++;
+      drawWeather();
+      fpsFrames++;
+      const now = performance.now();
+      if (!fpsLast) fpsLast = now;
+      if (now - fpsLast >= 500) {
+        if (onFps) onFps((fpsFrames * 1000) / (now - fpsLast));
+        fpsFrames = 0;
+        fpsLast = now;
       }
     }
 
@@ -2458,39 +1738,6 @@
         displayWidth = width | 0;
         displayHeight = height | 0;
       },
-      setPointer(x, y) {
-        nextMouseX = x;
-        nextMouseY = y;
-      },
-      adjustRadius(delta) {
-        targetRadius = Math.max(minRadius, Math.min(maxRadius, targetRadius + delta));
-        holeMass = massOfRs(targetRadius);
-      },
-      adjustTimeScale(factor) {
-        simTimeScale = Math.max(SIM_TIME_MIN, Math.min(SIM_TIME_MAX, simTimeScale * factor));
-      },
-      resetTimeScale() {
-        simTimeScale = 1;
-      },
-      look(dx, dy) {
-        lookYaw += dx;
-        lookPitch = Math.max(-1.2, Math.min(1.2, lookPitch - dy));
-      },
-      thrust(delta) {
-        const b = camBasis();
-        velX += b.fx * delta * 0.002;
-        velY += b.fy * delta * 0.002;
-        velZ += b.fz * delta * 0.002;
-      },
-      setKeys(keys) {
-        keyF = keys.f ? 1 : 0;
-        keyB = keys.b ? 1 : 0;
-        keyL = keys.l ? 1 : 0;
-        keyR = keys.r ? 1 : 0;
-        keyU = keys.u ? 1 : 0;
-        keyD = keys.d ? 1 : 0;
-        keyBoost = keys.boost ? 1 : 0;
-      },
       setHidden(value) {
         hidden = value;
         start();
@@ -2499,9 +1746,84 @@
         running = value;
         start();
       },
-      setClusters,
+      setSteps(value) {
+        marchSteps = Math.max(16, Math.min(96, value | 0));
+      },
+      setOnFps(fn) {
+        onFps = fn;
+      },
+      setSystems(list) {
+        systems = (list || []).map((s) => {
+          const at = screenToSim(s.sx, s.sy);
+          const kind = s.kind === "H" || s.kind < 0 ? -1 : 1;
+          return {
+            kind,
+            x: at.x,
+            y: at.y,
+            radius: s.radius || 0.22,
+            spin: (s.spin || 1.55) * kind,
+            born: s.born || 0,
+            segs: (s.segs || []).map((seg) => {
+              const a = screenToSim(seg.ax, seg.ay);
+              const b = screenToSim(seg.bx, seg.by);
+              return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
+            }),
+          };
+        });
+      },
+      addWarm(w) {
+        const at = screenToSim(w.sx, w.sy);
+        warms.push({
+          x: at.x,
+          y: at.y,
+          radius: w.radius || 0.22,
+          amount: w.amount || 0.45,
+        });
+      },
+      addImpulse(imp) {
+        const at = screenToSim(imp.sx, imp.sy);
+        const dx = imp.dx || 0;
+        const dy = imp.dy || 0;
+        const len = Math.hypot(dx, dy);
+        impulses.push({
+          x: at.x,
+          y: at.y,
+          dx: len > 1e-6 ? dx / len : 0,
+          dy: len > 1e-6 ? dy / len : 0,
+          radius: imp.radius || 0.06,
+          force: len > 1e-6 ? Math.min(len * 70, 2.2) : 0,
+          spin: imp.spin || 0,
+          converge: imp.converge || 0,
+          heat: imp.heat || 0,
+          moist: imp.moist || 0,
+        });
+      },
+      addFront(seg) {
+        const a = screenToSim(seg.ax, seg.ay);
+        const b = screenToSim(seg.bx, seg.by);
+        fronts.push({
+          ax: a.x,
+          ay: a.y,
+          bx: b.x,
+          by: b.y,
+          width: seg.width || 0.035,
+          cold: seg.cold || 0.045,
+          moist: seg.moist || 0.08,
+          along: seg.along || 0.22,
+          converge: seg.converge || 0.16,
+          spin: seg.spin || 0.12,
+        });
+        stampInk(
+          a.x,
+          a.y,
+          b.x,
+          b.y,
+          Math.max(0.004, (seg.width || 0.035) * 0.32),
+          0.7
+        );
+      },
     };
   }
 
   scope.createRenderer = createRenderer;
-})(self);
+})(typeof self !== "undefined" ? self : window);
