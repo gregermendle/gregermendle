@@ -686,6 +686,65 @@ body {
   color: rgb(255 255 255 / 0.35);
 }
 
+#consent {
+  pointer-events: auto;
+  position: fixed;
+  left: 0px;
+  right: 0px;
+  bottom: 0px;
+  z-index: 30;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  background-color: rgb(0 0 0 / 0.7);
+  padding: 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.25rem;
+  color: rgb(255 255 255 / 0.65);
+  --tw-backdrop-blur: blur(4px);
+  -webkit-backdrop-filter: var(--tw-backdrop-blur) var(--tw-backdrop-brightness) var(--tw-backdrop-contrast) var(--tw-backdrop-grayscale) var(--tw-backdrop-hue-rotate) var(--tw-backdrop-invert) var(--tw-backdrop-opacity) var(--tw-backdrop-saturate) var(--tw-backdrop-sepia);
+  backdrop-filter: var(--tw-backdrop-blur) var(--tw-backdrop-brightness) var(--tw-backdrop-contrast) var(--tw-backdrop-grayscale) var(--tw-backdrop-hue-rotate) var(--tw-backdrop-invert) var(--tw-backdrop-opacity) var(--tw-backdrop-saturate) var(--tw-backdrop-sepia);
+}
+
+#consent p {
+  max-width: 28rem;
+}
+
+#consent div {
+  display: flex;
+  gap: 1rem;
+}
+
+#consent button {
+  color: rgb(255 255 255 / 0.4);
+}
+
+#consent button:hover {
+  color: rgb(255 255 255 / 0.85);
+}
+
+#consent button:active {
+  --tw-text-opacity: 1;
+  color: rgb(255 255 255 / var(--tw-text-opacity));
+}
+
+#consent button[data-consent="accept"] {
+  color: rgb(255 255 255 / 0.75);
+}
+
+#consent button[data-consent="accept"]:hover {
+  --tw-text-opacity: 1;
+  color: rgb(255 255 255 / var(--tw-text-opacity));
+}
+
+#consent button[data-consent="accept"]:active {
+  --tw-text-opacity: 1;
+  color: rgb(255 255 255 / var(--tw-text-opacity));
+}
+
 .block {
   display: block;
 }
