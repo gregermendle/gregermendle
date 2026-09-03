@@ -80,4 +80,24 @@
   .mark {
     @apply absolute -translate-x-1/2 -translate-y-1/2 font-mono text-[13px] font-light tracking-wide text-white/35;
   }
+
+  #consent {
+    @apply pointer-events-auto fixed inset-x-0 bottom-0 z-30 flex flex-wrap items-end justify-between gap-4 bg-black/70 p-4 font-mono text-[11px] leading-5 text-white/65 backdrop-blur-sm;
+  }
+
+  #consent p {
+    @apply max-w-md;
+  }
+
+  #consent div {
+    @apply flex gap-4;
+  }
+
+  #consent button {
+    @apply text-white/40 hover:text-white/85 active:text-white;
+  }
+
+  #consent button[data-consent="accept"] {
+    @apply text-white/75 hover:text-white active:text-white;
+  }
 }
